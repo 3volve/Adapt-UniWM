@@ -49,6 +49,14 @@ pip install torch==2.4.0
 pip install -r requirements.txt --user
 ```
 
+## Habitat Setup
+
+For the current Habitat setup inside the existing `uniwm` Python 3.10 environment, see [docs/habitat025_uniwm_setup.md](docs/habitat025_uniwm_setup.md). The reproducible files live in [envs/uniwm-habitat025-addons.yml](envs/uniwm-habitat025-addons.yml), [envs/uniwm-habitat025-pip.txt](envs/uniwm-habitat025-pip.txt), and [scripts/setup_habitat025_uniwm.sh](scripts/setup_habitat025_uniwm.sh).
+
+The setup scripts clone `habitat-lab/` and `habitat-sim/` into the repo root as local ignored checkouts rather than vendoring those upstream trees into this fork.
+
+The older Habitat 0.2.3 material from the separate `hab23` environment is kept only as historical reference in [docs/habitat23_core_setup.md](docs/habitat23_core_setup.md).
+
 ## Implementation
 
 ### Data

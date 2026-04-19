@@ -1,0 +1,22 @@
+name: uniwm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - glm
+  - freeglut
+  - libjpeg-turbo
+  - libegl-devel
+  - libgl-devel
+  - libopengl-devel
+  - xorg-libx11
+  - xorg-libxi
+  - xorg-libxrandr
+  - xorg-libxcursor
+  - xorg-libxinerama
+  - xorg-libxext
+  - xorg-libxfixes
+  - xorg-libxrender
+  - xorg-libxau
+  - xorg-libxdmcp
+  - zlib

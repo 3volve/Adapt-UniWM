@@ -25,3 +25,7 @@ env/
 
 .vscode/
 .idea/
+
+# local upstream Habitat source checkouts; recreated by setup scripts
+habitat-lab/
+habitat-sim/

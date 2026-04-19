@@ -1,0 +1,24 @@
+name: hab23-core
+channels:
+  - aihabitat
+  - conda-forge
+dependencies:
+  - python=3.8.19
+  - cmake=3.14.0
+  - pip
+  - git
+  - habitat-sim-challenge-2023=0.2.3
+  - attrs=24.2.0
+  - numpy=1.24.4
+  - scipy=1.10.1
+  - numba=0.58.1
+  - quaternion=2023.0.4
+  - pillow=9.5.0
+  - imageio=2.36.0
+  - imageio-ffmpeg=0.5.1
+  - gitpython=3.1.43
+  - pip:
+      - gym==0.23.0
+      - hydra-core==1.3.2
+      - omegaconf==2.3.0
+      - opencv-python==4.13.0.90
