@@ -55,8 +55,6 @@ For the current Habitat setup inside the existing `uniwm` Python 3.10 environmen
 
 The setup scripts clone `habitat-lab/` and `habitat-sim/` into the repo root as local ignored checkouts rather than vendoring those upstream trees into this fork.
 
-The older Habitat 0.2.3 material from the separate `hab23` environment is kept only as historical reference in [docs/habitat23_core_setup.md](docs/habitat23_core_setup.md).
-
 ## Implementation
 
 ### Data
