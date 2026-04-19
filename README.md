@@ -43,17 +43,23 @@ You are also welcome to explore our previous work, including [**GOViG**](https:/
 ## Quick Start
 
 ```bash
-conda create -n uniwm python=3.10
+conda env create -f environment.yml
 conda activate uniwm
-pip install torch==2.4.0
-pip install -r requirements.txt --user
 ```
+
+To update an existing base environment in place:
+
+```bash
+conda env update -f environment.yml --prune
+```
+
+This base environment targets the repo's CUDA-backed training and evaluation path and includes packages such as `flash-attn` and `deepspeed`.
 
 ## Habitat Setup
 
 For the current Habitat setup inside the existing `uniwm` Python 3.10 environment, see [docs/habitat025_uniwm_setup.md](docs/habitat025_uniwm_setup.md). The reproducible files live in [envs/uniwm-habitat025-addons.yml](envs/uniwm-habitat025-addons.yml), [envs/uniwm-habitat025-pip.txt](envs/uniwm-habitat025-pip.txt), and [scripts/setup_habitat025_uniwm.sh](scripts/setup_habitat025_uniwm.sh).
 
-The setup scripts clone `habitat-lab/` and `habitat-sim/` into the repo root as local ignored checkouts rather than vendoring those upstream trees into this fork.
+The base `environment.yml` intentionally excludes Habitat. The setup scripts clone `habitat-lab/` and `habitat-sim/` into the repo root as local ignored checkouts rather than vendoring those upstream trees into this fork.
 
 ## Implementation
 
