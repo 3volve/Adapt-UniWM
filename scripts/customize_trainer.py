@@ -40,7 +40,13 @@ from transformers.trainer_utils import PredictionOutput, speed_metrics
 
 from scripts.training_arguments import WrappedSeq2SeqTrainingArguments
 from scripts.postprocess_logits_utils import split_token_sequence
-from scripts.action_utils import generate_bin_tokens, extract_bin_values, DATASET_RANGES, DEFAULT_RANGES, action_to_text
+from scripts.action_utils import (
+    generate_bin_tokens,
+    extract_bin_values,
+    action_to_text,
+    get_action_ranges,
+    DEFAULT_ACTION_RANGE_PROFILE,
+)
 from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.metrics import coords_to_evo_traj, eval_ate_rpe, ImageMetricsCalculator
@@ -372,7 +378,8 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             self.action_cfg = {
                 'min_dxy': -2.46, 'max_dxy': 2.46,
                 'min_dyaw': -2.82, 'max_dyaw': 2.82,
-                'bin_step': 0.01
+                'bin_step': 0.01,
+                'range_profile': DEFAULT_ACTION_RANGE_PROFILE,
             }
     
     def evaluate(
@@ -1193,15 +1200,9 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         all_actions = []
         all_decoded = []
 
-        def _get_dataset_ranges(image_path):
-            """ Determine the dataset ranges based on the image path."""
-            for name, ranges in DATASET_RANGES.items():
-                if f"/{name}/" in image_path.replace("\\", "/"):
-                    return ranges
-            return DEFAULT_RANGES
-
-        ranges = _get_dataset_ranges(raw_item['input_img_paths'][0])
-        print(f"  Using ranges: {ranges} for trajectory {raw_item['input_img_paths'][0]}")
+        range_profile = raw_item.get('range_profile') or self.action_cfg.get('range_profile') or DEFAULT_ACTION_RANGE_PROFILE
+        ranges = get_action_ranges(range_profile)
+        print(f"  Using range profile '{range_profile}' with ranges {ranges}")
         dxy_range, dyaw_range = ranges['dxy'], ranges['dyaw']
         
 
