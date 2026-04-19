@@ -64,14 +64,47 @@ class HabitatUniWMConverter:
             is_stop=False,
         )
 
+    def snap_uniwm_action_to_habitat(self, action: Union[str, UniWMAction]) -> UniWMAction:
+        parsed = self.parse_uniwm_action(action) if isinstance(action, str) else action
+        spec = self.config.action_space
+
+        if parsed.is_stop:
+            return parsed
+
+        linear_threshold = spec.forward_step_m * spec.linear_tolerance_ratio
+        angular_step = float(np.deg2rad(spec.turn_angle_deg))
+        angular_threshold = angular_step * spec.angular_tolerance_ratio
+
+        snapped_dx = 0.0
+        snapped_dy = 0.0
+        snapped_dyaw = 0.0
+
+        if parsed.dx >= linear_threshold:
+            snapped_dx = spec.forward_step_m
+        elif parsed.dx <= -linear_threshold and spec.move_backward_action and spec.backward_step_m:
+            snapped_dx = -spec.backward_step_m
+
+        if abs(parsed.dyaw) >= angular_threshold:
+            snapped_dyaw = angular_step if parsed.dyaw > 0 else -angular_step
+
+        return UniWMAction(
+            dx=float(snapped_dx),
+            dy=float(snapped_dy),
+            dyaw=float(snapped_dyaw),
+            raw_text=parsed.raw_text,
+            is_stop=False,
+        )
+
     def uniwm_action_to_habitat(self, action: Union[str, UniWMAction]) -> HabitatActionConversion:
         parsed = self.parse_uniwm_action(action) if isinstance(action, str) else action
+        snapped = self.snap_uniwm_action_to_habitat(parsed)
         spec = self.config.action_space
         warnings = []
 
         if parsed.is_stop:
             return HabitatActionConversion(
                 raw_action=parsed,
+                snapped_action=parsed,
                 habitat_actions=[HabitatDiscreteAction(action=spec.stop_action, reason="UniWM predicted stop")],
                 warnings=[],
             )
@@ -82,66 +115,37 @@ class HabitatUniWMConverter:
         angular_threshold = angular_step * spec.angular_tolerance_ratio
 
         turn_actions = []
-        if abs(parsed.dyaw) >= angular_threshold:
-            turn_steps = max(1, int(round(abs(parsed.dyaw) / angular_step)))
-            turn_steps = min(turn_steps, spec.max_consecutive_turn_steps)
-            turn_name = spec.turn_left_action if parsed.dyaw > 0 else spec.turn_right_action
+        if abs(snapped.dyaw) >= angular_threshold:
+            turn_name = spec.turn_left_action if snapped.dyaw > 0 else spec.turn_right_action
             turn_actions = [
-                HabitatDiscreteAction(action=turn_name, amount=angular_step, axis="dyaw", reason="mapped from UniWM dyaw")
-                for _ in range(turn_steps)
+                HabitatDiscreteAction(action=turn_name, amount=angular_step, axis="dyaw", reason="mapped from snapped UniWM dyaw")
             ]
 
         move_actions = []
-        if parsed.dx >= linear_threshold:
-            move_steps = max(1, int(round(parsed.dx / spec.forward_step_m)))
-            move_steps = min(move_steps, spec.max_consecutive_forward_steps)
+        if snapped.dx >= linear_threshold:
             move_actions = [
                 HabitatDiscreteAction(
                     action=spec.move_forward_action,
                     amount=spec.forward_step_m,
                     axis="dx",
-                    reason="mapped from UniWM dx",
+                    reason="mapped from snapped UniWM dx",
                 )
-                for _ in range(move_steps)
             ]
-        elif parsed.dx <= -linear_threshold:
+        elif snapped.dx <= -linear_threshold:
             if spec.move_backward_action and spec.backward_step_m:
-                move_steps = max(1, int(round(abs(parsed.dx) / spec.backward_step_m)))
-                move_steps = min(move_steps, spec.max_consecutive_forward_steps)
                 move_actions = [
                     HabitatDiscreteAction(
                         action=spec.move_backward_action,
                         amount=spec.backward_step_m,
                         axis="dx",
-                        reason="mapped from UniWM negative dx",
+                        reason="mapped from snapped UniWM negative dx",
                     )
-                    for _ in range(move_steps)
                 ]
             else:
                 warnings.append("Negative dx cannot be mapped because backward movement is not configured.")
 
-        strafe_actions = []
         if abs(parsed.dy) >= linear_threshold:
-            if parsed.dy > 0 and spec.strafe_left_action and spec.strafe_step_m:
-                strafe_actions.append(
-                    HabitatDiscreteAction(
-                        action=spec.strafe_left_action,
-                        amount=spec.strafe_step_m,
-                        axis="dy",
-                        reason="mapped from UniWM dy",
-                    )
-                )
-            elif parsed.dy < 0 and spec.strafe_right_action and spec.strafe_step_m:
-                strafe_actions.append(
-                    HabitatDiscreteAction(
-                        action=spec.strafe_right_action,
-                        amount=spec.strafe_step_m,
-                        axis="dy",
-                        reason="mapped from UniWM dy",
-                    )
-                )
-            else:
-                warnings.append("Non-zero dy cannot be mapped because strafe actions are not configured.")
+            warnings.append("Non-zero dy is ignored by the Habitat converter; only turn, move, or turn+move are emitted.")
 
         if spec.compose_turn_then_move:
             habitat_actions.extend(turn_actions if spec.rotation_first_when_mixed else move_actions)
@@ -149,13 +153,15 @@ class HabitatUniWMConverter:
         else:
             habitat_actions.extend(move_actions)
             habitat_actions.extend(turn_actions)
-        habitat_actions.extend(strafe_actions)
 
         if not habitat_actions:
             warnings.append("UniWM action did not produce any Habitat action above the configured thresholds.")
+        if (parsed.dx, parsed.dy, parsed.dyaw) != (snapped.dx, snapped.dy, snapped.dyaw):
+            warnings.append("UniWM action was snapped to Habitat-configured move/turn distances before conversion.")
 
         return HabitatActionConversion(
             raw_action=parsed,
+            snapped_action=snapped,
             habitat_actions=habitat_actions,
             warnings=warnings,
         )

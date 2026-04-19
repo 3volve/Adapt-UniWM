@@ -64,6 +64,7 @@ class UniWMInputBundle:
 @dataclass(frozen=True)
 class HabitatActionConversion:
     raw_action: UniWMAction
+    snapped_action: UniWMAction
     habitat_actions: List[HabitatDiscreteAction]
     warnings: List[str] = field(default_factory=list)
 
