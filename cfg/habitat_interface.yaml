@@ -1,0 +1,26 @@
+action_space:
+  move_forward_action: move_forward
+  turn_left_action: turn_left
+  turn_right_action: turn_right
+  stop_action: stop
+  strafe_left_action: null
+  strafe_right_action: null
+  move_backward_action: null
+  forward_step_m: 0.25
+  turn_angle_deg: 10.0
+  strafe_step_m: null
+  backward_step_m: null
+  compose_turn_then_move: true
+  rotation_first_when_mixed: true
+  linear_tolerance_ratio: 0.5
+  angular_tolerance_ratio: 0.5
+  max_consecutive_forward_steps: 1
+  max_consecutive_turn_steps: 1
+
+bin_step: 0.01
+
+observation_mapping:
+  rgb_sensor_key: rgb
+  image_size: [256, 256]
+  image_mode: RGB
+  start_pose_template: "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
