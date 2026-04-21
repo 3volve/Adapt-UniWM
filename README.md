@@ -53,7 +53,14 @@ To update an existing base environment in place:
 conda env update -f environment.yml --prune
 ```
 
-This base environment targets the repo's CUDA-backed training and evaluation path and includes packages such as `flash-attn` and `deepspeed`.
+# Optional: Install flash-attn
+If your environment supports `flash-attn`, then you can install it separately:
+
+```bash
+# While the uniwm conda environment is active
+conda install -c nvidia cuda
+pip install flash-attn==2.5.9.post1 --no-build-isolation
+```
 
 ## Habitat Setup
 
