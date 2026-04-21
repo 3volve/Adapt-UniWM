@@ -6,13 +6,22 @@ dependencies:
   - pip
   - git
   - pip:
-      # Base UniWM environment only. Habitat is managed separately via:
+      # Base UniWM environment only.
+      
+      # Habitat is managed separately via:
       #   - envs/uniwm-habitat025-addons.yml
       #   - envs/uniwm-habitat025-pip.txt
       #   - scripts/setup_habitat025_uniwm.sh
+
+      # flash-attn is installed separately via:
+      #   - conda install -c nvidia cuda
+      #   - pip install flash-attn==2.5.9.post1 --no-build-isolation
       - torch==2.4.0
       - torchvision==0.19.0
       - torchaudio==2.4.0
+      - torchmetrics==1.2.0
+      - torch-fidelity==0.3.0
+      - pytorch-msssim==1.0.0
       - accelerate==0.33.0
       - datasets==2.20.0
       - deepspeed==0.15.0
@@ -27,11 +36,9 @@ dependencies:
       - packaging==24.1
       - peft==0.12.0
       - pillow==10.4.0
-      - pytorch-msssim==1.0.0
       - pyyaml==6.0.1
       - requests==2.32.2
       - sentencepiece==0.2.0
-      - torchmetrics==1.2.0
       - tqdm==4.66.4
       - transformers @ git+https://github.com/leloykun/transformers.git@dae439cb93e7c2ef61943554b7a2f4590c2118cd
       - wandb==0.17.4
