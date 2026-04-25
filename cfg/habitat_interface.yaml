@@ -14,6 +14,8 @@ action_space:
   rotation_first_when_mixed: true
   linear_tolerance_ratio: 0.5
   angular_tolerance_ratio: 0.5
+  linear_deadband_m: 0.02
+  angular_deadband_rad: 0.02
   max_consecutive_forward_steps: 1
   max_consecutive_turn_steps: 1
 
@@ -21,6 +23,13 @@ bin_step: 0.01
 
 observation_mapping:
   rgb_sensor_key: rgb
+  goal_sensor_keys:
+    - instance_imagegoal
+    - imagegoal
+    - goal_image
+    - goal_observation
   image_size: [256, 256]
   image_mode: RGB
+  start_position_indices: [0, 2]
+  start_rotation_format: xyzw
   start_pose_template: "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"

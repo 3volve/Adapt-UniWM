@@ -492,6 +492,9 @@ class AnoleforConditionalGeneration(nn.Module):
     def reset_memory_bank(self) -> None:
         self.memory_bank_initialized = False
 
+    def decode_image_tokens(self, bpe_tokens: torch.Tensor) -> torch.Tensor:
+        return self.model.decode_image_tokens(bpe_tokens)
+
     def _assert_inputs(
         self,
         input_ids: Optional[torch.Tensor],

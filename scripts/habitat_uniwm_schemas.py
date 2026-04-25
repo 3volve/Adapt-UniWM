@@ -40,6 +40,8 @@ class HabitatActionSpaceSpec:
     rotation_first_when_mixed: bool = True
     linear_tolerance_ratio: float = 0.5
     angular_tolerance_ratio: float = 0.5
+    linear_deadband_m: float = 0.02
+    angular_deadband_rad: float = 0.02
     max_consecutive_forward_steps: int = 1
     max_consecutive_turn_steps: int = 1
 
@@ -47,17 +49,26 @@ class HabitatActionSpaceSpec:
 @dataclass(frozen=True)
 class ObservationSchema:
     rgb_sensor_key: str = "rgb"
+    goal_sensor_keys: Tuple[str, ...] = (
+        "instance_imagegoal",
+        "imagegoal",
+        "goal_image",
+        "goal_observation",
+    )
     image_size: Tuple[int, int] = (256, 256)
     image_mode: str = "RGB"
+    start_position_indices: Tuple[int, int] = (0, 2)
+    start_rotation_format: str = "xyzw"
     start_pose_template: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
 
 @dataclass(frozen=True)
 class UniWMInputBundle:
-    mode: str
-    input_text: str
-    input_imgs: List[Image.Image]
+    start_observation: Any
+    goal_observation: Any
+    current_observation: Any
     start_pose_str: str
+    action_text: Optional[str]
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -82,6 +93,16 @@ class HabitatUniWMConverterConfig:
             observation_mapping = {
                 **observation_mapping,
                 "image_size": tuple(observation_mapping["image_size"]),
+            }
+        if "goal_sensor_keys" in observation_mapping:
+            observation_mapping = {
+                **observation_mapping,
+                "goal_sensor_keys": tuple(observation_mapping["goal_sensor_keys"]),
+            }
+        if "start_position_indices" in observation_mapping:
+            observation_mapping = {
+                **observation_mapping,
+                "start_position_indices": tuple(observation_mapping["start_position_indices"]),
             }
         return cls(
             action_space=HabitatActionSpaceSpec(**data.get("action_space", {})),
