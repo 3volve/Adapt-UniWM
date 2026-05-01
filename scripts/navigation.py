@@ -8,15 +8,16 @@ import math
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 
 from scripts.action_utils import (
-    DATASET_RANGES,
-    DEFAULT_RANGES,
     calculate_action_delta,
-    action_to_text
+    action_to_text,
+    get_action_ranges,
+    DEFAULT_ACTION_RANGE_PROFILE,
 )
 
 
 class NavigationConfig(datasets.BuilderConfig):
     def __init__(self, tasks, modes, data_dir, **kwargs):
+        self.action_range_profile = kwargs.pop("action_range_profile", None)
         super(NavigationConfig, self).__init__(**kwargs)
         self.tasks = tasks
         self.modes = modes
@@ -49,6 +50,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "input_img_paths": datasets.Sequence(datasets.Value("string")),
             'task': datasets.Value('string'),
             'train_task': datasets.Value("string"),
+            'range_profile': datasets.Value("string"),
             'coords': datasets.Sequence(datasets.Sequence(datasets.Value("float32"))), # sequence of [x,y,yaw]
             "action_vector": datasets.Sequence(datasets.Value("float32")),
         })
@@ -141,16 +143,13 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         return ["input_img"] + numeric_actions
     
 
-    def _get_dataset_ranges(self, image_path):
-        """ Determine the dataset ranges based on the image path."""
-        for name, ranges in DATASET_RANGES.items():
-            if f"/{name}/" in image_path.replace("\\", "/"):
-                return ranges
-        return DEFAULT_RANGES
+    def _get_action_ranges(self):
+        """Use the explicit action range profile selected for this dataset build."""
+        return get_action_ranges(self.config.action_range_profile)
     
 
 ####Key 1
-    def _prepare_visualization_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
+    def _prepare_visualization_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         current_img = all_images[k]
@@ -184,12 +183,13 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "label_imgs": [next_img],
             "label_img_paths": [next_path],
             "train_task": "single_step_visualization",
+            "range_profile": range_profile,
             "coords": states_xy_yaw[:k+1],
             "action_vector": [],
         }
 
 # ###Key 2
-    def _prepare_reasoning_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
+    def _prepare_reasoning_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         current_img = all_images[k]
@@ -220,11 +220,12 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "label_imgs": [],
             "label_img_paths": [],
             "train_task": "action_reasoning",
+            "range_profile": range_profile,
             "coords": states_xy_yaw[:k+1],
             "action_vector": actions[k+1] if k < len_seq - 1 else [0.0, 0.0, 0.0],
         }
     
-    def _prepare_task_level_sample(self, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
+    def _prepare_task_level_sample(self, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         start_path = all_image_paths[0]
@@ -250,6 +251,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "label_imgs": [goal_img],
             "label_img_paths": [goal_path],
             "train_task": "task_level_evaluation",
+            "range_profile": range_profile,
             "coords": states_xy_yaw,
             "action_vector": [],
             "ranges": ranges,
@@ -263,7 +265,8 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             traj_data = self._load_and_validate_trajectory(traj_dir)
             if not traj_data:
                 continue
-            trajectory_ranges = self._get_dataset_ranges(traj_data["image_paths"][0])
+            range_profile = self.config.action_range_profile or DEFAULT_ACTION_RANGE_PROFILE
+            trajectory_ranges = self._get_action_ranges()
 
             # 2. Prepare the definitive list of actions for this trajectory
             actions = self._prepare_actions(
@@ -281,7 +284,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 print(1)
                 sample = self._prepare_task_level_sample(len(all_images), all_images,
                                                          traj_data["image_paths"], actions,
-                                                         traj_data["states_xy_yaw"], trajectory_ranges)
+                                                         traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
                 sample['task'] = self.config.tasks[0]
                 sample['idx'] = global_idx
                 yield global_idx, sample
@@ -294,7 +297,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 if "action_reasoning" in self.config.modes and split != datasets.Split.TEST:
                     sample = self._prepare_reasoning_sample(k, len(all_images), all_images,
                                                             traj_data["image_paths"], actions,
-                                                            traj_data["states_xy_yaw"], trajectory_ranges)
+                                                            traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
 
                     sample['task'] = self.config.tasks[0]
                     sample['idx'] = global_idx
@@ -306,7 +309,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 if "single_step_visualization" in self.config.modes and split != datasets.Split.TEST:
                     sample = self._prepare_visualization_sample(k, len(all_images), all_images,
                                                                 traj_data["image_paths"], actions,
-                                                                traj_data["states_xy_yaw"], trajectory_ranges)
+                                                                traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
                     sample['task'] = self.config.tasks[0]
                     sample['idx'] = global_idx
                     yield global_idx, sample

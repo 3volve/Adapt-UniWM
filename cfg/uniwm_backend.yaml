@@ -1,0 +1,16 @@
+model: anole
+model_ckpt: null
+image_seq_length: 784
+action_range_profile: habitat
+
+mode_flags:
+  do_train: false
+  do_single_step_eval: false
+  do_task_level_eval: true
+  do_rollout_eval: false
+  use_memory_bank_inference: false
+
+generation:
+  max_new_tokens: 64
+  multimodal_generation_mode: interleaved-text-image
+  current_substep: action

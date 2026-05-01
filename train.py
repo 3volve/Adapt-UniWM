@@ -187,6 +187,7 @@ if __name__ == '__main__':
     # model argument
     parser.add_argument('--model_ckpt', type=str, default=None, help='path of the checkpoint')
     parser.add_argument('--load_last_checkpoint', action='store_true')
+    parser.add_argument('--action_range_profile', type=str, default=None, help='Optional explicit action-range profile to use instead of the dataset default.')
 
     # training arguments
     parser.add_argument('--do_train', action='store_true')
@@ -239,8 +240,17 @@ if __name__ == '__main__':
     training_cfg, training_args = init(args)
     training_args = _add_bfloat16_to_args(args, training_args)
 
+    selected_action_range_profile = args.action_range_profile or training_cfg['action_token_generation'].get('range_profile')
+    if selected_action_range_profile:
+        print(f"Using explicit action range profile: {selected_action_range_profile}")
+        training_cfg['action_token_generation']['range_profile'] = selected_action_range_profile
+
     print(f'Preparing the {args.data} dataset... ')
-    data = load_data(dataset=args.data, data_dir=args.data_dir)
+    data = load_data(
+        dataset=args.data,
+        data_dir=args.data_dir,
+        action_range_profile=selected_action_range_profile,
+    )
 
     if len(data) == 2:
         train_split, eval_split, test_split = data['train'], None, data['test']

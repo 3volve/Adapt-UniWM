@@ -1,10 +1,11 @@
 import math
 import re
+from typing import Dict, Optional
 
 # ===================================================================
 # 1. Action Range Constants
 # ===================================================================
-DATASET_RANGES = {
+ACTION_RANGES = {
     "tartan_drive": {
         "dxy": [-2.05, 2.05],
         "dyaw": [-0.17, 0.17]
@@ -24,9 +25,36 @@ DATASET_RANGES = {
     "stanford": {
         "dxy": [-0.18, 0.18],
         "dyaw": [-0.63, 0.63]
+    },
+    "go_stanford": {
+        "dxy": [-0.18, 0.18],
+        "dyaw": [-0.63, 0.63]
+    },
+    "habitat": {
+        "dxy": [-0.25, 0.25],
+        "dyaw": [-0.1745, 0.1745]
     }
 }
-DEFAULT_RANGES = {"dxy": [-0.18, 0.18], "dyaw": [-0.4, 0.4]}
+DEFAULT_ACTION_RANGE_PROFILE = "go_stanford"
+
+
+def get_action_ranges(range_profile: Optional[str]) -> Dict[str, list]:
+    if range_profile is None:
+        return {
+            "dxy": list(ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dxy"]),
+            "dyaw": list(ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dyaw"]),
+        }
+
+    if range_profile not in ACTION_RANGES:
+        raise KeyError(
+            f"Unknown action range profile '{range_profile}'. "
+            f"Known profiles: {sorted(ACTION_RANGES.keys())}"
+        )
+
+    return {
+        "dxy": list(ACTION_RANGES[range_profile]["dxy"]),
+        "dyaw": list(ACTION_RANGES[range_profile]["dyaw"]),
+    }
 
 
 # ===================================================================
