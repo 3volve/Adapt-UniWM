@@ -234,6 +234,8 @@ if __name__ == '__main__':
     def _add_bfloat16_to_args(args, training_args):
         if hasattr(args, "bfloat16") and args.bfloat16:
             # Set the attribute on training_args if supported
+            setattr(training_args, "bf16", True)
+            setattr(training_args, "bf16_full_eval", True)
             setattr(training_args, "bfloat16", True)
         return training_args
 
@@ -269,6 +271,15 @@ if __name__ == '__main__':
 
     model_processor = load_model(args, training_cfg)
     model, processor = model_processor['model'], model_processor["processor"]
+
+    if hasattr(model, "config"):
+        model.config.use_cache = False
+
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
 
     # def generate_bin_tokens(prefix, vmin, vmax, step):
     #     nbins = int((vmax - vmin) / step) + 1

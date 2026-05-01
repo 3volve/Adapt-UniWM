@@ -705,7 +705,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 img_label = None
         else:
             labels = None
-        outputs = model(**inputs, output_hidden_states=True)
+        outputs = model(**inputs, use_cache=False)
 
         if self.args.past_index >= 0:
             self._past = outputs[self.args.past_index]
