@@ -6,8 +6,9 @@ dependencies:
   - pip
   - git
   - pip:
+      # Base UniWM environment only. Habitat is managed separately via:
       # Base UniWM environment only.
-      
+
       # Habitat is managed separately via:
       #   - envs/uniwm-habitat025-addons.yml
       #   - envs/uniwm-habitat025-pip.txt

@@ -243,17 +243,6 @@ class HabitatUniWMConverter:
             metadata=bundle_metadata,
         )
 
-    def to_processor_payload(self, input_text: str, bundle: UniWMInputBundle) -> Dict[str, Any]:
-        return {
-            "text": [input_text],
-            "images": [
-                bundle.start_observation,
-                bundle.goal_observation,
-                bundle.current_observation,
-            ],
-            "return_tensors": "pt",
-        }
-
     def _extract_step_observation(
         self,
         habitat_step_result: Optional[Mapping[str, Any]],
