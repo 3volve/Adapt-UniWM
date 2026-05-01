@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping, Optional
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 import torch
+import yaml
+import peft
 from PIL import Image
 
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
@@ -159,3 +162,30 @@ def _resize_model_embeddings(model: Any, processor: Any) -> None:
     inner_resize = getattr(getattr(model, "model", None), "resize_token_embeddings", None)
     if callable(inner_resize):
         inner_resize(tokenizer_size)
+
+
+#----------------- Direct Engine Helper Functions ------------------#
+def step_image_output_path(output_dir: Optional[str], step_index: int) -> Optional[str]:
+    return None if not output_dir else str(Path(output_dir) / f"step_{step_index + 1}_observation.png")
+
+def is_stop_action(action_text: str) -> bool:
+    return action_text.strip().lower() == "stop"
+
+def load_config(config_path: str) -> Dict[str, Any]:
+    path = Path(config_path)
+
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+def validate_config(config_node: Any, required_fields_at_node: Any, parent_str: str = "config") -> None:
+    if not isinstance(config_node, dict):
+        raise AssertionError(f"{parent_str} must be a mapping.")
+
+    if isinstance(required_fields_at_node, str):
+        if required_fields_at_node not in config_node[required_fields_at_node]:
+            raise AssertionError(f"{parent_str} is missing required key '{required_fields_at_node}'.")
+    else:
+        for key in required_fields_at_node:
+            if key not in config_node:
+                raise AssertionError(f"{parent_str} is missing required key '{key}'.")
+            validate_config(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
