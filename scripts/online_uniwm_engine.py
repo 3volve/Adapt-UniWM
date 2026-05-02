@@ -35,13 +35,13 @@ class OnlineRoutePrediction:
     stop_reason: str
 
 REQUIRED_FIELDS = {
-    "load_model_args": ("model", "image_seq_length", "device"),
-    "action_token_generation": ("range_profile", "bin_step"),
+    "load_model_args": ["model", "image_seq_length", "device"],
+    "action_token_generation": ["range_profile", "bin_step"],
     "generation": {
-        "action": ("multimodal_generation_mode", "current_substep", "max_new_tokens"),
-        "visualization": ("multimodal_generation_mode", "current_substep")
+        "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
+        "visualization": ["multimodal_generation_mode", "current_substep"]
     },
-    "route": "max_steps",
+    "route": ["max_steps"],
 }
 
 class OnlineUniWMEngine:

@@ -181,11 +181,10 @@ def validate_config(config_node: Any, required_fields_at_node: Any, parent_str: 
     if not isinstance(config_node, dict):
         raise AssertionError(f"{parent_str} must be a mapping.")
 
-    if isinstance(required_fields_at_node, str):
-        if required_fields_at_node not in config_node[required_fields_at_node]:
-            raise AssertionError(f"{parent_str} is missing required key '{required_fields_at_node}'.")
     else:
         for key in required_fields_at_node:
             if key not in config_node:
                 raise AssertionError(f"{parent_str} is missing required key '{key}'.")
-            validate_config(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
+
+            if isinstance(required_fields_at_node, dict):
+                validate_config(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
