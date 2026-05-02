@@ -35,7 +35,7 @@ class OnlineRoutePrediction:
     stop_reason: str
 
 REQUIRED_FIELDS = {
-    "load_model_args": ["model", "image_seq_length", "device"],
+    "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference"],
     "action_token_generation": ["range_profile", "bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
@@ -124,6 +124,7 @@ class OnlineUniWMEngine:
                 start_pose_str=start_pose_str,
                 dxy_range=self.action_ranges["dxy"],
                 dyaw_range=self.action_ranges["dyaw"],
+                prompt_style_idx=self.config.get("prompt_style_idx", 0),
             ),
             input_images=[start_observation, goal_observation, current_observation],
             device=self.device,
@@ -137,7 +138,8 @@ class OnlineUniWMEngine:
                 self.processor,
                 input_text=build_viz_prompt(
                     decoded_action=action_text,
-                    start_pose_str=start_pose_str
+                    start_pose_str=start_pose_str,
+                    prompt_style_idx=self.config.get("prompt_style_idx", 0),
                 ),
                 input_images=[start_observation, goal_observation, current_observation],
                 device=self.device,
@@ -148,13 +150,22 @@ class OnlineUniWMEngine:
         return OnlineStepPrediction(action_text=action_text, visualization=visualization)
 
     def _predict_action(self, processor_inputs: Any) -> str:
-        with torch.no_grad():
-            outputs = self.model.generate(**processor_inputs, **dict(self.config["generation"]["action"]))
+        kwargs = dict(self.config["generation"]["action"])
+
+        if not self.config["load_model_args"]["use_memory_bank_inference"]:
+            kwargs.pop("current_substep", None)
+
+        with torch.no_grad(), torch.amp.autocast(device_type=self.device, dtype=getattr(self.model, "dtype", None)):
+            outputs = self.model.generate(**processor_inputs, **kwargs)
         return decode_generated_text(self.processor, outputs)
 
     def _predict_visualization(self, processor_inputs: Any, save_path: Optional[str]) -> Optional[Image.Image]:
         kwargs = dict(self.config["generation"]["visualization"])
         kwargs["max_new_tokens"] = self.model.image_token_num + 20
-        with torch.no_grad():
+
+        if not self.config["load_model_args"]["use_memory_bank_inference"]:
+            kwargs.pop("current_substep", None)
+
+        with torch.no_grad(), torch.amp.autocast(device_type=self.device, dtype=getattr(self.model, "dtype", None)):
             outputs = self.model.generate(**processor_inputs, **kwargs)
         return decode_generated_image(self.model, self.processor, outputs, save_path=save_path)

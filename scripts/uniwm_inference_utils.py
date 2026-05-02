@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -43,7 +44,11 @@ def extract_generated_tokens(outputs: Any) -> torch.Tensor:
 
 def decode_generated_text(processor: Any, outputs: Any) -> str:
     tokens = extract_generated_tokens(outputs)
-    return processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
+    decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
+    is_stop = decoded.lower() == "stop"
+    pattern = r'(<d[^>]+>)+(<d[^>]+>)'
+    decoded = re.sub(pattern, r'\2', decoded)
+    return decoded
 
 
 def decode_generated_image(

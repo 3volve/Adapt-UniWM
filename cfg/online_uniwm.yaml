@@ -13,10 +13,12 @@ action_token_generation:
   range_profile: habitat
   bin_step: 0.01
 
+prompt_style_idx: 0
+
 generation:
   action:
     max_new_tokens: 64
-    multimodal_generation_mode: interleaved-text-image
+    multimodal_generation_mode: text-only
     current_substep: action
   visualization:
     num_beams: 1
