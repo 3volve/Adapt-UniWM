@@ -29,3 +29,12 @@ generation:
 
 route:
   max_steps: 10
+
+wrapper:
+  max_route_steps: null
+  full_replan_threshold: 0.12
+  divergence_metric: mean_absolute_error
+  replan_on_route_exhausted: true
+  memory_mode: off
+  log_predicted_observations: true
+  log_real_observations: true

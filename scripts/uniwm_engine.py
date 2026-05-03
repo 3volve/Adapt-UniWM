@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
 import torch
-import yaml
 from PIL import Image
 
 from scripts.habitat_uniwm_schemas import UniWMInputBundle
@@ -20,19 +18,10 @@ from scripts.uniwm_inference_utils import (
     step_image_output_path,
     is_stop_action,
     load_config,
-    validate_config
+    validate_config,
+    StepPrediction,
+    RoutePrediction
 )
-
-@dataclass(frozen=True)
-class OnlineStepPrediction:
-    action_text: str
-    visualization: Optional[Image.Image] = None
-
-@dataclass(frozen=True)
-class OnlineRoutePrediction:
-    steps: List[OnlineStepPrediction]
-    stopped: bool
-    stop_reason: str
 
 REQUIRED_FIELDS = {
     "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference"],
@@ -44,7 +33,7 @@ REQUIRED_FIELDS = {
     "route": ["max_steps"],
 }
 
-class OnlineUniWMEngine:
+class UniWMEngine:
     """Persistent online UniWM inference engine."""
 
     def __init__(self, config_path: str = "cfg/online_uniwm.yaml", data_id = "habitat"):
@@ -70,12 +59,12 @@ class OnlineUniWMEngine:
         bundle: UniWMInputBundle,
         max_steps: Optional[int] = None,
         output_dir: Optional[str] = None,
-    ) -> OnlineRoutePrediction:
+    ) -> RoutePrediction:
         start_observation, goal_observation, current_observation, start_pose_str = bundle.unpack()
 
         limit = int(max_steps) if max_steps is not None else int(self.config["route"]["max_steps"])
         current = current_observation
-        steps: List[OnlineStepPrediction] = []
+        steps: List[StepPrediction] = []
 
         for step_index in range(limit):
             save_path = step_image_output_path(output_dir, step_index)
@@ -88,18 +77,18 @@ class OnlineUniWMEngine:
             )
             steps.append(step)
             if is_stop_action(step.action_text):
-                return OnlineRoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
+                return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             if step.visualization is None:
-                return OnlineRoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
+                return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
             current = step.visualization
 
-        return OnlineRoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
+        return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
 
     def predict_step(
             self,
             bundle: UniWMInputBundle,
             save_path: Optional[str] = None,
-    ) -> OnlineStepPrediction:
+    ) -> StepPrediction:
         return self._predict_step(save_path=save_path, **(bundle.unpack()))
 
     def _predict_step(
@@ -110,7 +99,7 @@ class OnlineUniWMEngine:
         current_observation: Any,
         start_pose_str: str,
         save_path: Optional[str],
-    ) -> OnlineStepPrediction:
+    ) -> StepPrediction:
         if start_observation is None or goal_observation is None:
             raise AssertionError("start_observation and goal_observation are required.")
         if not start_pose_str:
@@ -147,7 +136,7 @@ class OnlineUniWMEngine:
 
             visualization = self._predict_visualization(visualization_inputs, save_path=save_path)
 
-        return OnlineStepPrediction(action_text=action_text, visualization=visualization)
+        return StepPrediction(action_text=action_text, visualization=visualization)
 
     def _predict_action(self, processor_inputs: Any) -> str:
         kwargs = dict(self.config["generation"]["action"])

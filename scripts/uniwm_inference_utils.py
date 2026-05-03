@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, List, Dict, Mapping, Optional
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -13,6 +14,20 @@ from PIL import Image
 
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
 
+
+@dataclass(frozen=True)
+class StepPrediction:
+    action_text: str
+    visualization: Image.Image
+
+@dataclass(frozen=True)
+class RoutePrediction:
+    steps: List[StepPrediction]
+    stopped: bool
+    stop_reason: str
+
+    def __len__(self):
+        return len(self.steps)
 
 def processor_inputs_from_prompt(
     processor: Any,
@@ -168,6 +183,10 @@ def _resize_model_embeddings(model: Any, processor: Any) -> None:
     if callable(inner_resize):
         inner_resize(tokenizer_size)
 
+
+def image_to_array(self, observation: Image.Image) -> np.ndarray:
+    array = np.asarray(observation, dtype=np.float32)
+    return array / 255.0
 
 #----------------- Direct Engine Helper Functions ------------------#
 def step_image_output_path(output_dir: Optional[str], step_index: int) -> Optional[str]:
