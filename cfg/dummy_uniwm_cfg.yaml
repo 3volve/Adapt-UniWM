@@ -1,0 +1,49 @@
+load_model_args:
+  model: anole
+  model_ckpt: null
+  image_seq_length: 784
+  device: cuda
+  do_train: false
+  do_single_step_eval: false
+  do_task_level_eval: true
+  do_rollout_eval: false
+  use_memory_bank_inference: false
+
+action_token_generation:
+  range_profile: habitat
+  bin_step: 0.01
+
+prompt_style_idx: 0
+
+generation:
+  action:
+    max_new_tokens: 64
+    multimodal_generation_mode: text-only
+    current_substep: action
+  visualization:
+    num_beams: 1
+    temperature: 0.7
+    top_p: 0.9
+    multimodal_generation_mode: interleaved-text-image
+    current_substep: visualization
+
+route:
+  max_steps: 10
+
+wrapper:
+  max_route_steps: null
+  full_replan_threshold: 0.12
+  divergence_metric: mean_absolute_error
+  replan_on_route_exhausted: true
+  memory_mode: off
+  log_predicted_observations: true
+  log_real_observations: true
+
+runner:
+  max_episode_steps: 5
+  stop_on_wrapper_done: true
+  log_every_step: true
+  adapter_file_name: "dummy_episode_adapter"
+
+adapter:
+  example_kwarg: "example"
