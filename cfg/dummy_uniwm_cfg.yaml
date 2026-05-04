@@ -38,3 +38,12 @@ wrapper:
   memory_mode: off
   log_predicted_observations: true
   log_real_observations: true
+
+runner:
+  max_episode_steps: 5
+  stop_on_wrapper_done: true
+  log_every_step: true
+  adapter_file_name: "dummy_episode_adapter"
+
+adapter:
+  example_kwarg: "example"

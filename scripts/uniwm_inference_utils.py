@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 import yaml
-import peft
 from PIL import Image
 
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
@@ -18,7 +17,7 @@ from scripts.action_utils import generate_bin_tokens, get_action_ranges
 @dataclass(frozen=True)
 class StepPrediction:
     action_text: str
-    visualization: Image.Image
+    visualization: Optional[Image.Image]
 
 @dataclass(frozen=True)
 class RoutePrediction:
@@ -184,7 +183,7 @@ def _resize_model_embeddings(model: Any, processor: Any) -> None:
         inner_resize(tokenizer_size)
 
 
-def image_to_array(self, observation: Image.Image) -> np.ndarray:
+def image_to_array(observation: Image.Image) -> np.ndarray:
     array = np.asarray(observation, dtype=np.float32)
     return array / 255.0
 
@@ -196,9 +195,11 @@ def is_stop_action(action_text: str) -> bool:
     return action_text.strip().lower() == "stop"
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    path = Path(config_path)
+    if config_path is None:
+        print("It is highly recommended to utilize a config for running this version of UniWM.")
+        return {}
 
-    with path.open("r", encoding="utf-8") as handle:
+    with Path(config_path).open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle) or {}
 
 def validate_config(config_node: Any, required_fields_at_node: Any, parent_str: str = "config") -> None:

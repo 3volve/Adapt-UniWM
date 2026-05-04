@@ -36,7 +36,7 @@ REQUIRED_FIELDS = {
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
 
-    def __init__(self, config_path: str = "cfg/online_uniwm.yaml", data_id = "habitat"):
+    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id = "habitat"):
         self.config = load_config(config_path)
         validate_config(self.config, REQUIRED_FIELDS)
 

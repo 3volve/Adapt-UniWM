@@ -4,11 +4,17 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import torch
 from PIL import Image
 
+from scripts.uniwm_engine import UniWMEngine
 from scripts.habitat_uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_inference_utils import load_config, image_to_array, StepPrediction, RoutePrediction
+from scripts.uniwm_inference_utils import (
+    RoutePrediction,
+    StepPrediction,
+    image_to_array,
+    is_stop_action,
+    load_config,
+)
 
 
 DEFAULT_WRAPPER_CONFIG: Dict[str, Any] = {
@@ -46,8 +52,8 @@ class RouteRecord:
 
 
 class UniWMWrapper:
-    def __init__(self, engine: Any, config_path: str = ""):
-        self.engine = engine
+    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id: str = "habitat"):
+        self.engine = UniWMEngine(config_path=config_path, data_id=data_id)
         self.config = load_config(config_path).get("wrapper", DEFAULT_WRAPPER_CONFIG)
         self._validate_config()
         self._reset_wrapper_state()
@@ -59,7 +65,7 @@ class UniWMWrapper:
         self._plan_route(initial_bundle, reason="episode_reset")
         return self.get_state_snapshot()
 
-    def get_next_action(self) -> Any:
+    def get_next_action(self) -> str:
         if self.pending_step is not None:
             raise AssertionError("observe_transition(...) must be called before requesting another action.")
 
@@ -82,9 +88,7 @@ class UniWMWrapper:
 
     def observe_transition(
         self,
-        observed_bundle: UniWMInputBundle,
-        *,
-        env_info: Optional[dict] = None,
+        observed_bundle: UniWMInputBundle
     ) -> TransitionRecord:
         if self.pending_step is None or self.pending_step_idx is None:
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
@@ -111,7 +115,7 @@ class UniWMWrapper:
             divergence=divergence,
             replanned=replanned,
             replan_reason=replan_reason,
-            env_info=env_info,
+            env_info=observed_bundle.metadata,
         )
         self.transition_log.append(record)
         self.last_divergence = divergence
