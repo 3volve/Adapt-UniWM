@@ -6,6 +6,8 @@ from pathlib import Path
 
 import torch
 
+from scripts.action_utils import ActionCfg
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -79,20 +81,14 @@ def main() -> None:
         "ignore_index": -100,
         "log_prefix": "smoke_",
     }
-    action_cfg = {
-        "min_dxy": 0.0,
-        "max_dxy": 0.0,
-        "min_dyaw": 0.0,
-        "max_dyaw": 0.0,
-        "bin_step": 1.0,
-    }
+    action_cfg = ActionCfg(0.0, 0.0, 0.0, 0.0, 1.0)
 
     action_loss = compute_action_token_loss(
         logits,
         labels,
         tokenizer=tokenizer,
-        action_ranges=action_cfg,
         ignore_index=-100,
+        action_config=action_cfg,
     )
     image_loss = compute_image_codebook_discrepancy_loss(
         model=model,
@@ -108,7 +104,7 @@ def main() -> None:
         tokenizer=tokenizer,
         loss_config=loss_config,
         label_smoother=None,
-        action_ranges=action_cfg,
+        action_config=action_cfg,
     )
 
     assert action_loss.ndim == 0

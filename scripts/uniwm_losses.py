@@ -7,11 +7,7 @@ from torch import Tensor
 import torch.nn.functional as F
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
-from scripts.action_utils import DEFAULT_ACTION_RANGE_PROFILE, generate_bin_tokens, get_action_ranges
-
-
-LossConfig = Mapping[str, Any]
-LossComponents = dict[str, float]
+from scripts.action_utils import generate_bin_tokens, ActionCfg
 
 
 def detach_loss_value(value: Tensor | float | int) -> float:
@@ -66,19 +62,18 @@ def compute_action_token_loss(
     labels: Tensor,
     *,
     tokenizer: Any,
-    action_ranges: Any | None,
     ignore_index: int,
+    action_config: ActionCfg,
 ) -> Tensor:
     """
     Compute the action-token cross entropy currently embedded in
     CustomizeSeq2SeqTrainer.compute_loss.
     """
     hf_tokenizer = _get_hf_tokenizer(tokenizer)
-    dxy_range, dyaw_range, bin_step = _resolve_action_token_ranges(action_ranges)
 
-    dx_tokens = generate_bin_tokens("dx", dxy_range[0], dxy_range[1], bin_step)
-    dy_tokens = generate_bin_tokens("dy", dxy_range[0], dxy_range[1], bin_step)
-    dyaw_tokens = generate_bin_tokens("dyaw", dyaw_range[0], dyaw_range[1], bin_step)
+    dx_tokens = generate_bin_tokens("dx", *action_config.get_dxy_tok_params())
+    dy_tokens = generate_bin_tokens("dy", *action_config.get_dxy_tok_params())
+    dyaw_tokens = generate_bin_tokens("dyaw", *action_config.get_dyaw_tok_params())
 
     dx_ids = set(hf_tokenizer.convert_tokens_to_ids(dx_tokens))
     dy_ids = set(hf_tokenizer.convert_tokens_to_ids(dy_tokens))
@@ -156,10 +151,10 @@ def compute_supervised_uniwm_loss(
     outputs: Any,
     batch: Mapping[str, Any],
     tokenizer: Any,
-    loss_config: LossConfig,
+    loss_config: dict[str, Any],
     label_smoother: Any | None = None,
-    action_ranges: Any | None = None,
-) -> tuple[Tensor, LossComponents]:
+    action_config: ActionCfg | None,
+) -> tuple[Tensor, dict]:
     """
     Compute the combined UniWM supervised loss.
     """
@@ -177,7 +172,7 @@ def compute_supervised_uniwm_loss(
     )
 
     total_loss = base_loss
-    components: LossComponents = {
+    components: dict[str, float] = {
         f"{log_prefix}base_loss": detach_loss_value(base_loss),
     }
 
@@ -186,8 +181,8 @@ def compute_supervised_uniwm_loss(
             _get_output_value(outputs, "logits"),
             labels,
             tokenizer=tokenizer,
-            action_ranges=action_ranges,
             ignore_index=ignore_index,
+            action_config=action_config or ActionCfg(),
         )
         total_loss = total_loss + float(loss_config["action_loss_weight"]) * action_loss
         components[f"{log_prefix}action_loss"] = detach_loss_value(action_loss)
@@ -214,13 +209,20 @@ def _get_output_value(outputs: Any, key: str) -> Any:
     return getattr(outputs, key, None)
 
 
-def _get_model_name(model: Any | None) -> str:
+def _get_model_name(model) -> str:
     if model is None:
         return ""
+
+    if (
+        hasattr(model, "base_model")
+        and hasattr(model.base_model, "model")
+        and hasattr(model.base_model.model, "_get_name")
+    ):
+        return model.base_model.model._get_name()
+
     if hasattr(model, "_get_name"):
         return model._get_name()
-    if hasattr(model, "base_model") and hasattr(model.base_model, "model") and hasattr(model.base_model.model, "_get_name"):
-        return model.base_model.model._get_name()
+
     return type(model).__name__
 
 
@@ -228,18 +230,3 @@ def _get_hf_tokenizer(tokenizer: Any) -> Any:
     if hasattr(tokenizer, "tokenizer"):
         return tokenizer.tokenizer
     return tokenizer
-
-
-def _resolve_action_token_ranges(action_ranges: Any | None) -> tuple[list[float], list[float], float]:
-    if action_ranges is None:
-        ranges = get_action_ranges(DEFAULT_ACTION_RANGE_PROFILE)
-        return ranges["dxy"], ranges["dyaw"], 0.01
-
-    if "dxy" in action_ranges and "dyaw" in action_ranges:
-        return action_ranges["dxy"], action_ranges["dyaw"], float(action_ranges["bin_step"])
-
-    return (
-        [float(action_ranges["min_dxy"]), float(action_ranges["max_dxy"])],
-        [float(action_ranges["min_dyaw"]), float(action_ranges["max_dyaw"])],
-        float(action_ranges["bin_step"]),
-    )
