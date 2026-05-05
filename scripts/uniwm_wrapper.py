@@ -96,10 +96,13 @@ class UniWMWrapper:
         pending_step = self.pending_step
         pending_step_idx = self.pending_step_idx
         real_obs = observed_bundle.current_observation
-        divergence = self.compute_divergence(pending_step.visualization, real_obs)
+        if is_stop_action(self.pending_step.action_text):
+            divergence = 0
+        else:
+            divergence = self.compute_divergence(pending_step.visualization, real_obs)
+
         replan_reason = None
         replanned = False
-
         if divergence > float(self.config["full_replan_threshold"]):
             replan_reason = f"divergence>{self.config['full_replan_threshold']:.4f}"
             self.replan_route(observed_bundle, reason=replan_reason)
