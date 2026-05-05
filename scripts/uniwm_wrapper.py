@@ -52,8 +52,8 @@ class RouteRecord:
 
 
 class UniWMWrapper:
-    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id: str = "habitat"):
-        self.engine = UniWMEngine(config_path=config_path, data_id=data_id)
+    def __init__(self, engine: UniWMEngine, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
+        self.engine = engine
         self.config = load_config(config_path).get("wrapper", DEFAULT_WRAPPER_CONFIG)
         self._validate_config()
         self._reset_wrapper_state()
@@ -78,7 +78,7 @@ class UniWMWrapper:
         if not self.current_route or self.route_index >= len(self.current_route):
             return "stop"
 
-        step = self.current_route[self.route_index]
+        step = self.current_route.steps[self.route_index]
         self.pending_step = step
         self.pending_step_idx = self.route_index
         self.last_planned_action = step.action_text
@@ -163,11 +163,11 @@ class UniWMWrapper:
 
     def _validate_config(self) -> None:
         if float(self.config["full_replan_threshold"]) < 0.0:
-            raise AssertionError("wrapper.full_replan_threshold must be non-negative.")
+            raise AssertionError(f"wrapper.full_replan_threshold must be non-negative. Instead found: {self.config['full_replan_threshold']}")
         if self.config["divergence_metric"] != "mean_absolute_error":
-            raise AssertionError("wrapper.divergence_metric must currently be 'mean_absolute_error'.")
+            raise AssertionError(f"wrapper.divergence_metric must currently be 'mean_absolute_error'. Instead found: {self.config['divergence_metric']}")
         if self.config["memory_mode"] not in {"off", "real_only", "real_plus_plan_weighted"}:
-            raise AssertionError("wrapper.memory_mode must be one of: off, real_only, real_plus_plan_weighted.")
+            raise AssertionError(f"wrapper.memory_mode must be one of: off, real_only, real_plus_plan_weighted. Instead found: {self.config['memory_mode']}")
 
     def _reset_wrapper_state(self) -> None:
         self.current_route: RoutePrediction = RoutePrediction([], False, "")

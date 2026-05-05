@@ -23,6 +23,9 @@ class StubRoutePrediction:
     stopped: bool
     stop_reason: str
 
+    def __len__(self):
+        return len(self.steps)
+
 
 class StubModel:
     def __init__(self) -> None:
@@ -37,7 +40,7 @@ class StubModel:
 
 
 class StubEngine:
-    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml") -> None:
+    def __init__(self, config_path: str = "cfg/dummy_uniwm_cfg.yaml") -> None:
         self.config = load_config(config_path)
         self.model = StubModel()
         self.predict_route_calls = []
@@ -92,7 +95,7 @@ def _bundle(level: int, env_info=None) -> UniWMInputBundle:
 
 def main() -> None:
     engine = StubEngine()
-    wrapper = UniWMWrapper()
+    wrapper = UniWMWrapper(engine, config_path="cfg/dummy_uniwm_cfg.yaml")
 
     snapshot = wrapper.reset_episode(_bundle(0))
     assert snapshot["route_length"] == 2

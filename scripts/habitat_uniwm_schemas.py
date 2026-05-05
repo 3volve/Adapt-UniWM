@@ -64,20 +64,20 @@ class ObservationSchema:
 
 @dataclass(frozen=True)
 class UniWMInputBundle:
-    start_observation: Any
-    goal_observation: Any
-    current_observation: Any
+    start_observation: Image.Image
+    goal_observation: Image.Image
+    current_observation: Image.Image
     start_pose_str: str
     action_text: Optional[str]
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def unpack(self) -> Dict[str, Any]:
-        return {
-            "start_observation": self.start_observation,
-            "goal_observation": self.goal_observation,
-            "current_observation": self.current_observation,
-            "start_pose_str": self.start_pose_str,
-        }
+    def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str]:
+        return (
+            self.start_observation,
+            self.goal_observation,
+            self.current_observation,
+            self.start_pose_str,
+        )
 
 
 @dataclass(frozen=True)

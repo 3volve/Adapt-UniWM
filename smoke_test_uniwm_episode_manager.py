@@ -12,7 +12,7 @@ def main() -> None:
     engine = StubEngine()
     adapter = DummyEpisodeAdapter(observation_levels=[32, 255], episode_id="manager_smoke")
     manager = UniWMEpisodeRunner(
-        data_id="habitat"
+        data_id="dummy"
     )
 
     episode_log = manager.run_episode()

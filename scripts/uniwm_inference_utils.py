@@ -32,9 +32,12 @@ def processor_inputs_from_prompt(
     processor: Any,
     *,
     input_text: str,
-    input_images: list[Any],
+    input_images: list[Image.Image],
     device: Optional[str] = None,
 ) -> Any:
+    if not isinstance(input_images[0], Image.Image) or not isinstance(input_images, list):
+        raise AssertionError(f"Input images given for processor inputs must be a list of Image.Image types.  Instead found: {type(input_images)}[{type(input_images[0])}]")
+
     inputs = processor(
         text=[input_text],
         images=input_images,

@@ -41,7 +41,7 @@ class UniWMEngine:
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
-        self.action_ranges = get_action_ranges(data_id)
+        self.action_ranges = get_action_ranges("habitat" if data_id == "dummy" else data_id)
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), None)
         self.processor = loaded["processor"]

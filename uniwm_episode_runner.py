@@ -9,6 +9,7 @@ import yaml
 from scripts.habitat_uniwm_schemas import UniWMInputBundle
 from scripts.uniwm_inference_utils import is_stop_action
 from scripts.uniwm_wrapper import UniWMWrapper
+from scripts.uniwm_engine import UniWMEngine
 
 class EpisodeAdapter:
     """Small environment/replay adapter interface for the episode manager."""
@@ -31,7 +32,8 @@ class UniWMEpisodeRunner:
     ) -> None:
 
         config_path = self._resolve_and_load_config(data_id, config_path)
-        self.wrapper = UniWMWrapper(config_path, data_id)
+        engine = UniWMEngine(config_path, data_id)
+        self.wrapper = UniWMWrapper(engine, config_path)
         self.adapter = self._load_adapter(data_id)
         self.max_episode_steps = self.config["runner"].get("max_episode_steps", 100)
         self.stop_on_wrapper_done = self.config["runner"].get("stop_on_wrapper_done", True)
@@ -118,7 +120,7 @@ class UniWMEpisodeRunner:
 
     def _load_adapter(self, data_id: str):
         adapter_file_name = self.config["runner"]["adapter_file_name"]
-        adapter_path = Path(__file__).resolve().parent / "data_adapters" / adapter_file_name / ".py"
+        adapter_path = Path(__file__).resolve().parent / "data_adapters" / f"{adapter_file_name}.py"
         if not adapter_path.is_file():
             raise FileNotFoundError(f"Unable to find adapter file from environment config path '{adapter_path}'")
 
