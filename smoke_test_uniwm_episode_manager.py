@@ -3,16 +3,14 @@ from __future__ import annotations
 from pprint import pprint
 
 from smoke_test_uniwm_wrapper import StubEngine
-
-from data_adapters.dummy_episode_adapter import DummyEpisodeAdapter
 from uniwm_episode_runner import UniWMEpisodeRunner
 
 
 def main() -> None:
     engine = StubEngine()
-    adapter = DummyEpisodeAdapter(observation_levels=[32, 255], episode_id="manager_smoke")
     manager = UniWMEpisodeRunner(
-        data_id="dummy"
+        data_id="dummy",
+        engine=engine
     )
 
     episode_log = manager.run_episode()

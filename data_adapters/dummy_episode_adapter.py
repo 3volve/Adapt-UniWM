@@ -61,6 +61,7 @@ class DummyEpisodeAdapter(EpisodeAdapter):
             "observation_source": "real",
             "adapter_step_idx": self._adapter_step_idx,
             "received_action_text": action_text,
+            "done": done
         })
 
     def _bundle(self, current_level: int, action_text: Optional[str] = None, info: dict[str, Any] = None) -> UniWMInputBundle:

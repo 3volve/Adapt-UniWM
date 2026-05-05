@@ -28,13 +28,15 @@ class UniWMEpisodeRunner:
     def __init__(
         self,
         data_id: str,
-        config_path: Optional[str] = None
+        config_path: Optional[str] = None,
+        engine: Optional[UniWMEngine] = None # Mostly for testing purposes
     ) -> None:
-
         config_path = self._resolve_and_load_config(data_id, config_path)
-        engine = UniWMEngine(config_path, data_id)
+
+        engine = UniWMEngine(config_path, data_id) if engine is None else engine
         self.wrapper = UniWMWrapper(engine, config_path)
         self.adapter = self._load_adapter(data_id)
+
         self.max_episode_steps = self.config["runner"].get("max_episode_steps", 100)
         self.stop_on_wrapper_done = self.config["runner"].get("stop_on_wrapper_done", True)
         self.log_every_step = self.config["runner"].get("log_every_step", True)
