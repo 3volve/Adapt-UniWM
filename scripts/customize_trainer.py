@@ -15,10 +15,6 @@ from evo.core.metrics import PoseRelation
 from transformers import Trainer, Seq2SeqTrainer
 
 from transformers.utils import is_peft_available
-from transformers.models.auto.modeling_auto import (
-    MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
-)
-
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union, NamedTuple
 from collections import defaultdict
@@ -41,7 +37,6 @@ from transformers.trainer_utils import PredictionOutput, speed_metrics
 from scripts.training_arguments import WrappedSeq2SeqTrainingArguments
 from scripts.postprocess_logits_utils import split_token_sequence
 from scripts.action_utils import (
-    generate_bin_tokens,
     extract_bin_values,
     action_to_text,
     get_action_ranges,
@@ -50,6 +45,7 @@ from scripts.action_utils import (
 from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.metrics import coords_to_evo_traj, eval_ate_rpe, ImageMetricsCalculator
+from scripts.uniwm_losses import compute_supervised_uniwm_loss
 
 
 _is_torch_generator_available = False
@@ -360,6 +356,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             wandb_run_dir: Optional[str] = None,
             image_loss_func: Optional[torch.nn.Module],
             action_cfg: Optional[Dict] = None,
+            loss_config: Optional[Dict] = None,
             **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -370,6 +367,14 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         self.wandb_run_dir = wandb_run_dir
 
         self.image_loss_func = image_loss_func
+        self.loss_config = loss_config or {
+            "include_action_loss": True,
+            "include_image_loss": bool(image_loss_func),
+            "action_loss_weight": 1.0,
+            "image_loss_weight": 1.0,
+            "ignore_index": -100,
+            "log_prefix": "",
+        }
 
         if action_cfg:
             self.action_cfg = action_cfg
@@ -713,62 +718,29 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         # text-wise loss
         if labels is not None:
             unwrapped_model = self.accelerator.unwrap_model(model)
-            if _is_peft_model(unwrapped_model):
-                model_name = unwrapped_model.base_model.model._get_name()
-            else:
-                model_name = unwrapped_model._get_name()
-            if model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values() or model_name.endswith('ConditionalGeneration'):
-                loss = self.label_smoother(outputs, labels, shift_labels=True)
-            else:
-                loss = self.label_smoother(outputs, labels)
+            loss_config = dict(self.loss_config)
+            if not self.image_loss_func:
+                loss_config["include_image_loss"] = False
 
-            min_dxy = self.action_cfg['min_dxy']
-            max_dxy = self.action_cfg['max_dxy']
-            min_dyaw = self.action_cfg['min_dyaw']
-            max_dyaw = self.action_cfg['max_dyaw']
-            bin_step = self.action_cfg['bin_step']
-
-            dx_tokens = generate_bin_tokens("dx", min_dxy, max_dxy, bin_step)
-            dy_tokens = generate_bin_tokens("dy", min_dxy, max_dxy, bin_step)
-            dyaw_tokens = generate_bin_tokens("dyaw", min_dyaw, max_dyaw, bin_step)
-
-            # 2. Convert to token ids
-            dx_ids = set(self.tokenizer.tokenizer.convert_tokens_to_ids(dx_tokens))
-            dy_ids = set(self.tokenizer.tokenizer.convert_tokens_to_ids(dy_tokens))
-            dyaw_ids = set(self.tokenizer.tokenizer.convert_tokens_to_ids(dyaw_tokens))
-
-            # 3. Prepare shifted logits and labels
-            logits = outputs.logits[:, :-1, :].contiguous().view(-1, outputs.logits.shape[-1])
-            labels_shifted = labels[:, 1:].contiguous().view(-1)
-
-            stop_token_id = self.tokenizer.tokenizer.convert_tokens_to_ids("stop")
-            is_stop = labels_shifted == stop_token_id
-            stop_loss = (
-                nn.CrossEntropyLoss()(logits[is_stop], labels_shifted[is_stop])
-                if is_stop.any()
-                else torch.tensor(0.0, device=logits.device)
+            loss, loss_components = compute_supervised_uniwm_loss(
+                model=unwrapped_model,
+                outputs=outputs,
+                batch={"labels": labels},
+                tokenizer=self.tokenizer,
+                loss_config=loss_config,
+                label_smoother=self.label_smoother,
+                action_ranges=self.action_cfg,
             )
 
-            # 4. Helper to compute loss
-            def compute_bin_ce(bin_ids):
-                mask = torch.isin(labels_shifted, torch.tensor(list(bin_ids), device=labels.device))
-                if mask.any():
-                    return nn.CrossEntropyLoss()(logits[mask], labels_shifted[mask])
-                else:
-                    return None
+            if self.state.global_step == self._globalstep_last_logged and self.state.global_step != 0:
+                log_prefix = str(loss_config["log_prefix"])
+                action_key = f"{log_prefix}action_loss"
+                image_key = f"{log_prefix}image_loss"
 
-            dx_loss = compute_bin_ce(dx_ids)
-            dy_loss = compute_bin_ce(dy_ids)
-            dyaw_loss = compute_bin_ce(dyaw_ids)
-
-            # 5. Combine with equal weights or customize
-            loss_components = [l for l in [dx_loss, dy_loss, dyaw_loss] if l is not None]
-            if loss_components:
-                bc_loss = sum(loss_components) / len(loss_components)
-  
-                loss += bc_loss
-                if self.state.global_step == self._globalstep_last_logged and self.state.global_step != 0:
-                    self.log({"bc_loss": float(bc_loss)})
+                if action_key in loss_components and loss_components[action_key] != 0.0:
+                    self.log({"bc_loss": loss_components[action_key]})
+                if image_key in loss_components and loss_components[image_key] != 0.0:
+                    self.log({"discrepancy_loss": loss_components[image_key]})
 
         else:
             if isinstance(outputs, dict) and "loss" not in outputs:
@@ -778,31 +750,6 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 )
  
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
- 
-        image_mask = torch.isin(labels, torch.tensor(unwrapped_model.model.bpe_indices).to(labels.device))
-
-        if torch.any(image_mask) and self.image_loss_func:
-            # use image_mask to retrieve image tokens from labels and logits distribution from output.logits as well
-            image_labels = labels[image_mask]
-            image_logits = outputs.logits[:, :-1, :][image_mask[:, 1:], :]
-
-            # for image tokens in the labels, we use model.model.model.convert_bpe2img_tokens to convert it back to visual token indices
-            vis_img_tokens = unwrapped_model.model.model.convert_bpe2img_tokens(image_labels)
-            # for logits distributions from outputs.logits, we retrieve the corresponding indices from 60k dimensions 1) using torch matmul or 2) just retrieve
-            image_probs = torch.nn.functional.softmax(image_logits[:, unwrapped_model.model.bpe_indices], dim=-1)
-
-            label_one_hot = torch.nn.functional.one_hot(vis_img_tokens.reshape(-1).to(torch.int64), num_classes=unwrapped_model.model.model.vqmodel.quantize.embedding.weight.shape[0]).to(torch.bfloat16)
-            label_sim_matrix = torch.matmul(label_one_hot.to(unwrapped_model.device), unwrapped_model.model.codebook_sim_matrix)
-            discrepancy_loss = torch.mean(torch.sum(label_sim_matrix * image_probs.to(torch.bfloat16), -1))
-            # print(f"[DEBUG] discrepancy_loss: {discrepancy_loss}")
-
-            loss += discrepancy_loss
-            
-            # log the image loss every logging step in addition to total loss
-            if self.state.global_step == self._globalstep_last_logged and self.state.global_step != 0:
-                self.log({"discrepancy_loss": float(discrepancy_loss)})
-
-
         return (loss, outputs) if return_outputs else loss
 
     

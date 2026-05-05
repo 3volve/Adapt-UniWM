@@ -56,7 +56,6 @@ def get_action_ranges(range_profile: Optional[str]) -> Dict[str, list]:
         "dyaw": list(ACTION_RANGES[range_profile]["dyaw"]),
     }
 
-
 # ===================================================================
 # 2. Action Calculation Utilities
 # ===================================================================
@@ -67,6 +66,34 @@ def calculate_action_delta(current_pos_yaw, next_pos_yaw):
     delta_yaw = next_pos_yaw[2] - current_pos_yaw[2]
     return [float(delta_x), float(delta_y), float(delta_yaw)]
 
+class ActionCfg:
+    """Convenient action-relevant variable data class"""
+    min_dxy: float
+    max_dxy: float
+    min_dyaw: float
+    max_dyaw: float
+    bin_step: float
+
+    def __init__(self,
+        min_dxy: Optional[float] = None,
+        max_dxy: Optional[float] = None,
+        min_dyaw: Optional[float] = None,
+        max_dyaw: Optional[float] = None,
+        bin_step: Optional[float] = None
+    ):
+        default_ranges = get_action_ranges(DEFAULT_ACTION_RANGE_PROFILE)
+
+        self.min_dxy = min_dxy or default_ranges["dxy"][0]
+        self.max_dxy = max_dxy or default_ranges["dxy"][1]
+        self.min_dyaw = min_dyaw or default_ranges["dyaw"][0]
+        self.max_dyaw = max_dyaw or default_ranges["dyaw"][1]
+        self.bin_step = bin_step or 0.01
+
+    def get_dxy_tok_params(self) -> tuple[float, float, float]:
+        return self.min_dxy, self.max_dxy, self.bin_step
+
+    def get_dyaw_tok_params(self) -> tuple[float, float, float]:
+        return self.min_dyaw, self.max_dyaw, self.bin_step
 
 # ===================================================================
 # 3. Action Tokenization Toolkit (Encoder, Decoder, Generator)

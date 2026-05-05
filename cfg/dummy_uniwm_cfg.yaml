@@ -48,3 +48,11 @@ runner:
 adapter:
   observation_levels: [32, 255]
   episode_id: manager_smoke
+
+loss:
+  include_action_loss: true
+  include_image_loss: true
+  action_loss_weight: 1.0
+  image_loss_weight: 1.0
+  ignore_index: -100
+  log_prefix: ""
