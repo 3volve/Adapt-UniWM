@@ -1,7 +1,4 @@
 import torch
-import torch.nn as nn
-
-from typing import Optional, Literal, List, Tuple
 
 def split_token_sequence(
     tokens: torch.LongTensor,
@@ -10,17 +7,22 @@ def split_token_sequence(
     eoi: int,
     max_length: int,
     pad_token_id: int
-) -> List[Tuple[str, torch.LongTensor]]:
+) -> dict[str, list[torch.Tensor] | torch.Tensor | None]:
     """
     Split a sequence of tokens into text and image segments.
     
     Args:
         tokens (torch.LongTensor): The token sequence.
+        image_seq_length (int): The length of the image sequence.
         boi (int): Begin of image token.
         eoi (int): End of image token.
+        max_length (int): The maximum length of the image sequence.
+        pad_token_id (int): The token id of the image sequence.
     
     Returns:
-        List[Tuple[str, torch.LongTensor]]: List of tuples indicating segment type and tokens.
+        dict ->
+            "texts" (list[Tensor]): list of text tokens,
+            "images" (list[Tensor]): list of image tokens,
     """
     batch_size, _ = tokens.shape
     assert batch_size == 1, "Batch size must be 1"
@@ -28,7 +30,7 @@ def split_token_sequence(
     device = tokens.device
     tokens = tokens[0]  # remove batch dimension
     tokens = tokens.to(device)
-    segments = []
+    segments: list[tuple[str, torch.Tensor | torch.LongTensor]] = []
     current_segment = []
     in_image_seg = False
 
@@ -53,8 +55,8 @@ def split_token_sequence(
         else:
             segments.append(("text_seg", torch.tensor(current_segment, dtype=tokens.dtype, device=device).reshape(1, -1)))
 
-    generated_imgs = []
-    generated_texts = []
+    generated_imgs: list[torch.Tensor] = []
+    generated_texts: list[torch.Tensor] = []
     for seg_id, (seg_type, seg_tokens) in enumerate(segments):
         if seg_type == "image_seg":
             assert seg_tokens.shape[1] == image_seq_length

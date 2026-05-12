@@ -56,13 +56,28 @@ class UniWMInputBundle:
     action_text: str | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
-    def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str]:
+    def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | None]:
         return (
             self.start_observation,
             self.goal_observation,
             self.current_observation,
             self.start_pose_str,
+            self.action_text
         )
+
+@dataclass(frozen=True)
+class StepPrediction:
+    action_text: str
+    visualization: Image.Image | None
+
+@dataclass(frozen=True)
+class RoutePrediction:
+    steps: list[StepPrediction]
+    stopped: bool
+    stop_reason: str
+
+    def __len__(self):
+        return len(self.steps)
 
 @dataclass
 class TransitionRecord:
@@ -74,7 +89,6 @@ class TransitionRecord:
     replanned: bool
     replan_reason: str | None
     env_info: dict | None = None
-
 
 @dataclass
 class RouteRecord:

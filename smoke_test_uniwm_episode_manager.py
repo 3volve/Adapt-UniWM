@@ -17,6 +17,7 @@ def main() -> None:
 
     assert engine.model.reset_memory_calls == 1
     assert engine.model.reset_global_memory_calls == 1
+    print(f"len(engine_predict_route_calls) = {len(engine.predict_route_calls)}")
     assert len(engine.predict_route_calls) == 2
     assert episode_log["steps_executed"] == 3
     assert episode_log["termination_reason"] == "adapter_done"

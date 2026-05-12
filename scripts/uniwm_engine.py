@@ -6,7 +6,7 @@ from typing import Any
 import torch
 from PIL import Image
 
-from scripts.habitat_uniwm_schemas import UniWMInputBundle
+from scripts.habitat_uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
 from scripts.load_model import load_model
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.action_utils import get_action_ranges
@@ -19,8 +19,6 @@ from scripts.uniwm_utils import (
     is_stop_action,
     load_config,
     validate_config,
-    StepPrediction,
-    RoutePrediction
 )
 
 REQUIRED_FIELDS: dict[str, dict | list] = {
@@ -61,7 +59,7 @@ class UniWMEngine:
         max_steps: int | None = None,
         output_dir: str | None = None,
     ) -> RoutePrediction:
-        start_observation, goal_observation, current_observation, start_pose_str = bundle.unpack()
+        start_observation, goal_observation, current_observation, start_pose_str, _ = bundle.unpack()
 
         limit = int(max_steps) if max_steps is not None else int(self.config["route"]["max_steps"])
         current = current_observation
@@ -69,7 +67,7 @@ class UniWMEngine:
 
         for step_index in range(limit):
             save_path = step_image_output_path(output_dir, step_index)
-            step = self._predict_step(
+            step_action, step_viz = self._predict_step(
                 start_observation=start_observation,
                 goal_observation=goal_observation,
                 current_observation=current,
@@ -77,12 +75,12 @@ class UniWMEngine:
                 save_path=save_path,
             )
 
-            steps.append(step)
-            if is_stop_action(step.action_text):
+            steps.append(StepPrediction(step_action, step_viz))
+            if is_stop_action(step_action):
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
-            if step.visualization is None:
+            if step_viz is None:
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
-            current = step.visualization
+            current = step_viz
 
         return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
 
@@ -91,19 +89,27 @@ class UniWMEngine:
             bundle: UniWMInputBundle,
             save_path: str | None = None,
     ) -> StepPrediction:
-        start_observation, goal_observation, current_observation, start_pose_str = bundle.unpack()
-        action, viz = self._predict_step(save_path=save_path, start_observation=start_observation, goal_observation=goal_observation, current_observation=current_observation, start_pose_str=start_pose_str)
-        return StepPrediction(action_text=action, visualization=viz)
+        start_observation, goal_observation, current_observation, start_pose_str, action_text = bundle.unpack()
+        action, viz = self._predict_step(
+            start_observation=start_observation,
+            goal_observation=goal_observation,
+            current_observation=current_observation,
+            start_pose_str=start_pose_str,
+            action_text=action_text,
+            save_path=save_path
+        )
+        return StepPrediction(action, viz)
 
     def _predict_step(
         self,
         *,
-        start_observation: Any,
-        goal_observation: Any,
-        current_observation: Any,
+        start_observation: Image.Image,
+        goal_observation: Image.Image,
+        current_observation: Image.Image,
         start_pose_str: str,
+        action_text: str | None,
         save_path: str | None,
-    ) -> StepPrediction:
+    ) -> tuple[str, Image.Image | None]:
         if start_observation is None or goal_observation is None:
             raise AssertionError("start_observation and goal_observation are required.")
         if not start_pose_str:
@@ -111,19 +117,20 @@ class UniWMEngine:
 
         current_observation = start_observation if current_observation is None else current_observation
 
-        action_inputs = processor_inputs_from_prompt(
-            self.processor,
-            input_text=build_action_prompt(
-                start_pose_str=start_pose_str,
-                dxy_range=self.action_ranges["dxy"],
-                dyaw_range=self.action_ranges["dyaw"],
-                prompt_style_idx=self.config.get("prompt_style_idx", 0),
-            ),
-            input_images=[start_observation, goal_observation, current_observation],
-            device=self.device,
-        )
+        if action_text is None:
+            action_inputs = processor_inputs_from_prompt(
+                self.processor,
+                input_text=build_action_prompt(
+                    start_pose_str=start_pose_str,
+                    dxy_range=self.action_ranges["dxy"],
+                    dyaw_range=self.action_ranges["dyaw"],
+                    prompt_style_idx=self.config.get("prompt_style_idx", 0),
+                ),
+                input_images=[start_observation, goal_observation, current_observation],
+                device=self.device,
+            )
 
-        action_text = self._predict_action(action_inputs)
+            action_text = self._predict_action(action_inputs)
 
         visualization = None
         if not is_stop_action(action_text):

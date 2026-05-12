@@ -4,29 +4,14 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Mapping
-from dataclasses import dataclass
 
 import numpy as np
 import torch
 import yaml
 from PIL import Image
 
+from scripts.postprocess_logits_utils import split_token_sequence
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
-
-
-@dataclass(frozen=True)
-class StepPrediction:
-    action_text: str
-    visualization: Image.Image | None
-
-@dataclass(frozen=True)
-class RoutePrediction:
-    steps: list[StepPrediction]
-    stopped: bool
-    stop_reason: str
-
-    def __len__(self):
-        return len(self.steps)
 
 def image_to_array(observation: Image.Image) -> np.ndarray:
     array = np.asarray(observation, dtype=np.float32)
@@ -79,35 +64,43 @@ def decode_generated_image(
     outputs: Any,
     save_path: str | None = None,
 ) -> Image.Image | None:
-    tokens = extract_generated_tokens(outputs)
-    if tokens.dim() == 1:
-        tokens_for_split = tokens.unsqueeze(0)
-    elif tokens.dim() == 2:
-        tokens_for_split = tokens[:1]
-    else:
-        raise ValueError(f"Unsupported generated token shape for visualization: {tuple(tokens.shape)}")
+    r_ids = extract_generated_tokens(outputs)
 
-    predicted_image_tokens = _first_image_segment(
-        tokens=tokens_for_split[0],
+    if r_ids.dim() == 2:
+        r_ids = r_ids[0]
+
+    generated_results = split_token_sequence(
+        tokens=r_ids.unsqueeze(0).to(model.device),
         image_seq_length=model.image_token_num,
         boi=model.config.boi_token_id,
         eoi=model.config.eoi_token_id,
+        max_length=r_ids.shape[-1],
+        pad_token_id=model.config.pad_token_id
     )
-    if predicted_image_tokens is None:
+
+    if generated_results["images"]:
+        generated_imgs = torch.cat(generated_results["images"], dim=0).to(model.device)
+        generated_imgs = model.decode_image_tokens(generated_imgs)
+        generated_imgs = processor.postprocess_pixel_values(generated_imgs)
+    else:
+        print(f"  Generated failed visualization tokens: {r_ids}")
         return None
 
-    with torch.no_grad():
-        decoded_img = model.decode_image_tokens(predicted_image_tokens)
+    tensor_img = generated_imgs[0, :, :, :]
+    print(f"[DEBUG] tensor_img.shape: {tensor_img.shape}")
 
-    processed_img = processor.postprocess_pixel_values(decoded_img)[0]
-    np_img = processed_img.cpu().numpy().transpose(1, 2, 0)
-    image = Image.fromarray(np_img.astype(np.uint8))
+    np_img = tensor_img.cpu().detach().to(torch.uint8).numpy()
+    np_img = np.transpose(np_img, (1, 2, 0))
+    print(f"[DEBUG] np_img.shape: {np_img.shape}")
+
+    img = Image.fromarray(np_img.astype(np.uint8))
+    print(f"[DEBUG] PIL image size: {img.size}")
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        image.save(save_path)
+        img.save(save_path)
 
-    return image
+    return img
 
 def _first_image_segment(
     *,
