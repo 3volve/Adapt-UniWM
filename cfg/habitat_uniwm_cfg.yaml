@@ -1,34 +1,35 @@
-load_model_args:
-  model: anole
-  model_ckpt: null
-  image_seq_length: 784
-  device: cuda
-  do_train: false
-  do_single_step_eval: false
-  do_task_level_eval: true
-  do_rollout_eval: false
-  use_memory_bank_inference: false
+engine:
+  load_model_args:
+    model: anole
+    model_ckpt: null
+    image_seq_length: 784
+    device: cuda
+    do_train: false
+    do_single_step_eval: false
+    do_task_level_eval: true
+    do_rollout_eval: false
+    use_memory_bank_inference: false
 
-action_token_generation:
-  range_profile: habitat
-  bin_step: 0.01
+  action_token_generation:
+    range_profile: habitat
+    bin_step: 0.01
 
-prompt_style_idx: 0
+  generation:
+    prompt_style_idx: 0
+    action:
+      max_new_tokens: 64
+      multimodal_generation_mode: text-only
+      current_substep: action
+    visualization:
+      num_beams: 1
+      temperature: 0.7
+      top_p: 0.9
+      multimodal_generation_mode: interleaved-text-image
+      current_substep: visualization
 
-generation:
-  action:
-    max_new_tokens: 64
-    multimodal_generation_mode: text-only
-    current_substep: action
-  visualization:
-    num_beams: 1
-    temperature: 0.7
-    top_p: 0.9
-    multimodal_generation_mode: interleaved-text-image
-    current_substep: visualization
+  route:
+    max_steps: 10
 
-route:
-  max_steps: 10
 
 wrapper:
   max_route_steps: null
@@ -45,9 +46,14 @@ runner:
   log_every_step: true
   adapter_file_name: "habitat_episode_adapter"
 
-adapter:
-  observation_levels: [32, 255]
-  episode_id: manager_smoke
+  adapter_params:
+    observation_levels: [32, 255]
+    episode_id: manager_smoke
+
+  converter_params:
+    linear_deadband_m: float = 0.02
+    angular_deadband_rad: float = 0.02
+    image_size: tuple[int, int] = (256, 256)
 
 loss:
   include_action_loss: true

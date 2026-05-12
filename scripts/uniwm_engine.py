@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, List, Optional
+from typing import Any
 
 import torch
 from PIL import Image
@@ -10,7 +10,7 @@ from scripts.habitat_uniwm_schemas import UniWMInputBundle
 from scripts.load_model import load_model
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.action_utils import get_action_ranges
-from scripts.uniwm_inference_utils import (
+from scripts.uniwm_utils import (
     configure_action_tokenizer,
     decode_generated_image,
     decode_generated_text,
@@ -23,12 +23,13 @@ from scripts.uniwm_inference_utils import (
     RoutePrediction
 )
 
-REQUIRED_FIELDS = {
+REQUIRED_FIELDS: dict[str, dict | list] = {
     "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference"],
     "action_token_generation": ["range_profile", "bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
-        "visualization": ["multimodal_generation_mode", "current_substep"]
+        "visualization": ["multimodal_generation_mode", "current_substep"],
+        "generation" : []
     },
     "route": ["max_steps"],
 }
@@ -37,7 +38,7 @@ class UniWMEngine:
     """Persistent online UniWM inference engine."""
 
     def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id = "habitat"):
-        self.config = load_config(config_path)
+        self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
@@ -57,14 +58,14 @@ class UniWMEngine:
     def predict_route(
         self,
         bundle: UniWMInputBundle,
-        max_steps: Optional[int] = None,
-        output_dir: Optional[str] = None,
+        max_steps: int | None = None,
+        output_dir: str | None = None,
     ) -> RoutePrediction:
         start_observation, goal_observation, current_observation, start_pose_str = bundle.unpack()
 
         limit = int(max_steps) if max_steps is not None else int(self.config["route"]["max_steps"])
         current = current_observation
-        steps: List[StepPrediction] = []
+        steps: list[StepPrediction] = []
 
         for step_index in range(limit):
             save_path = step_image_output_path(output_dir, step_index)
@@ -75,6 +76,7 @@ class UniWMEngine:
                 start_pose_str=start_pose_str,
                 save_path=save_path,
             )
+
             steps.append(step)
             if is_stop_action(step.action_text):
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
@@ -87,9 +89,11 @@ class UniWMEngine:
     def predict_step(
             self,
             bundle: UniWMInputBundle,
-            save_path: Optional[str] = None,
+            save_path: str | None = None,
     ) -> StepPrediction:
-        return self._predict_step(save_path=save_path, **(bundle.unpack()))
+        start_observation, goal_observation, current_observation, start_pose_str = bundle.unpack()
+        action, viz = self._predict_step(save_path=save_path, start_observation=start_observation, goal_observation=goal_observation, current_observation=current_observation, start_pose_str=start_pose_str)
+        return StepPrediction(action_text=action, visualization=viz)
 
     def _predict_step(
         self,
@@ -98,7 +102,7 @@ class UniWMEngine:
         goal_observation: Any,
         current_observation: Any,
         start_pose_str: str,
-        save_path: Optional[str],
+        save_path: str | None,
     ) -> StepPrediction:
         if start_observation is None or goal_observation is None:
             raise AssertionError("start_observation and goal_observation are required.")
@@ -136,7 +140,7 @@ class UniWMEngine:
 
             visualization = self._predict_visualization(visualization_inputs, save_path=save_path)
 
-        return StepPrediction(action_text=action_text, visualization=visualization)
+        return action_text, visualization
 
     def _predict_action(self, processor_inputs: Any) -> str:
         kwargs = dict(self.config["generation"]["action"])
@@ -148,7 +152,7 @@ class UniWMEngine:
             outputs = self.model.generate(**processor_inputs, **kwargs)
         return decode_generated_text(self.processor, outputs)
 
-    def _predict_visualization(self, processor_inputs: Any, save_path: Optional[str]) -> Optional[Image.Image]:
+    def _predict_visualization(self, processor_inputs: Any, save_path: str | None) -> Image.Image | None:
         kwargs = dict(self.config["generation"]["visualization"])
         kwargs["max_new_tokens"] = self.model.image_token_num + 20
 

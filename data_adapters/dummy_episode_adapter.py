@@ -1,27 +1,27 @@
 from __future__ import annotations
 
-from typing import Optional, Sequence, Tuple, Any
+from typing import Sequence, Any
 
 import numpy as np
 from PIL import Image
 
-from uniwm_episode_runner import EpisodeAdapter
+from uniwm_episode_runner import SourceAdapter
 from scripts.habitat_uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_inference_utils import is_stop_action
+from scripts.uniwm_utils import is_stop_action
 
 
-class DummyEpisodeAdapter(EpisodeAdapter):
+class DummySourceAdapter(SourceAdapter):
     """Minimal adapter for smoke-testing the closed-loop manager without Habitat."""
 
     source_mode = "dummy"
 
     def __init__(
         self,
-        observation_levels: Optional[Sequence[int]] = None,
+        observation_levels: Sequence[int] | None = None,
         *,
         start_level: int = 0,
         goal_level: int = 255,
-        image_size: Tuple[int, int] = (32, 32),
+        image_size: tuple[int, int] = (32, 32),
         episode_id: str = "dummy_episode",
         start_pose_str: str = "Starting Point Coordinate: x=0.000, y=0.000, yaw=0.000\n",
     ) -> None:
@@ -33,7 +33,7 @@ class DummyEpisodeAdapter(EpisodeAdapter):
         self.start_pose_str = start_pose_str
         self._current_level = self.start_level
         self._adapter_step_idx = 0
-        self._last_action_text: Optional[str] = None
+        self._last_action_text: str | None = None
 
     def reset(self) -> UniWMInputBundle:
         self._current_level = self.start_level
@@ -64,7 +64,7 @@ class DummyEpisodeAdapter(EpisodeAdapter):
             "done": done
         })
 
-    def _bundle(self, current_level: int, action_text: Optional[str] = None, info: dict[str, Any] = None) -> UniWMInputBundle:
+    def _bundle(self, current_level: int, action_text: str | None = None, info: dict[str, Any] = None) -> UniWMInputBundle:
         return UniWMInputBundle(
             start_observation=self._solid_image(self.start_level),
             goal_observation=self._solid_image(self.goal_level),

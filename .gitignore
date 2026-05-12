@@ -9,6 +9,8 @@ models
 zero/
 models/
 cross.zip
+data/
+*_step_frames/
 
 * copy.py
 * copy.sh

@@ -1,64 +1,41 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict
+from typing import Any
 
 import numpy as np
 from PIL import Image
 
 from scripts.uniwm_engine import UniWMEngine
-from scripts.habitat_uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_inference_utils import (
+from scripts.habitat_uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord
+from scripts.uniwm_utils import (
     RoutePrediction,
     StepPrediction,
     image_to_array,
     is_stop_action,
-    load_config,
+    load_config, validate_config,
 )
 
 
-DEFAULT_WRAPPER_CONFIG: Dict[str, Any] = {
-    "max_route_steps": None,
-    "full_replan_threshold": 0.12,
-    "divergence_metric": "mean_absolute_error",
-    "replan_on_route_exhausted": True,
-    "memory_mode": "off",
-    "log_predicted_observations": True,
-    "log_real_observations": True,
-}
-
-
-@dataclass
-class TransitionRecord:
-    step_idx: int
-    action: Any
-    predicted_obs: Image.Image
-    real_obs: Image.Image
-    divergence: float
-    replanned: bool
-    replan_reason: Optional[str]
-    env_info: Optional[dict] = None
-
-
-@dataclass
-class RouteRecord:
-    route_generation: int
-    reason: str
-    stopped: bool
-    stop_reason: str
-    step_count: int
-    action_outputs: List[str]
-    predicted_observations: List[Any] = field(default_factory=list)
-
+REQUIRED_FIELDS: list[str] = [
+    "max_route_steps",
+    "full_replan_threshold",
+    "divergence_metric",
+    "replan_on_route_exhausted",
+    "memory_mode",
+    "log_predicted_observations",
+    "log_real_observations"
+]
 
 class UniWMWrapper:
     def __init__(self, engine: UniWMEngine, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
         self.engine = engine
-        self.config = load_config(config_path).get("wrapper", DEFAULT_WRAPPER_CONFIG)
-        self._validate_config()
+        self.config = load_config(config_path).get("wrapper", {})
+        validate_config(self.config, REQUIRED_FIELDS)
         self._reset_wrapper_state()
+        self.ready_to_act = False
 
-    def reset_episode(self, initial_bundle: UniWMInputBundle) -> Dict[str, Any]:
+    def reset_episode(self, initial_bundle: UniWMInputBundle) -> dict[str, Any]:
         self._reset_wrapper_state()
         self._reset_episode_memory()
         self.latest_bundle = initial_bundle
@@ -66,7 +43,7 @@ class UniWMWrapper:
         return self.get_state_snapshot()
 
     def get_next_action(self) -> str:
-        if self.pending_step is not None:
+        if not self.ready_to_act:
             raise AssertionError("observe_transition(...) must be called before requesting another action.")
 
         if not self.current_route or self.route_index >= len(self.current_route):
@@ -79,6 +56,7 @@ class UniWMWrapper:
             return "stop"
 
         step = self.current_route.steps[self.route_index]
+        self.ready_to_act = True
         self.pending_step = step
         self.pending_step_idx = self.route_index
         self.last_planned_action = step.action_text
@@ -90,7 +68,7 @@ class UniWMWrapper:
         self,
         observed_bundle: UniWMInputBundle
     ) -> TransitionRecord:
-        if self.pending_step is None or self.pending_step_idx is None:
+        if self.ready_to_act:
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
 
         pending_step = self.pending_step
@@ -120,8 +98,10 @@ class UniWMWrapper:
             replan_reason=replan_reason,
             env_info=observed_bundle.metadata,
         )
+
         self.transition_log.append(record)
         self.last_divergence = divergence
+        self.ready_to_act = False
         self.pending_step = None
         self.pending_step_idx = None
         return record
@@ -146,13 +126,13 @@ class UniWMWrapper:
 
         raise AssertionError(f"Unsupported divergence_metric '{metric}'")
 
-    def get_episode_log(self) -> Dict[str, Any]:
+    def get_episode_log(self) -> dict[str, Any]:
         return {
             "route_history": [asdict(record) for record in self.route_history],
             "transitions": [asdict(record) for record in self.transition_log],
         }
 
-    def get_state_snapshot(self) -> Dict[str, Any]:
+    def get_state_snapshot(self) -> dict[str, Any]:
         return {
             "route_generation": self.route_generation,
             "route_index": self.route_index,
@@ -164,26 +144,18 @@ class UniWMWrapper:
             "route_stop_reason": self.route_history[-1].stop_reason if self.route_history else None,
         }
 
-    def _validate_config(self) -> None:
-        if float(self.config["full_replan_threshold"]) < 0.0:
-            raise AssertionError(f"wrapper.full_replan_threshold must be non-negative. Instead found: {self.config['full_replan_threshold']}")
-        if self.config["divergence_metric"] != "mean_absolute_error":
-            raise AssertionError(f"wrapper.divergence_metric must currently be 'mean_absolute_error'. Instead found: {self.config['divergence_metric']}")
-        if self.config["memory_mode"] not in {"off", "real_only", "real_plus_plan_weighted"}:
-            raise AssertionError(f"wrapper.memory_mode must be one of: off, real_only, real_plus_plan_weighted. Instead found: {self.config['memory_mode']}")
-
     def _reset_wrapper_state(self) -> None:
         self.current_route: RoutePrediction = RoutePrediction([], False, "")
         self.route_index = 0
         self.route_generation = 0
-        self.route_history: List[RouteRecord] = []
-        self.transition_log: List[TransitionRecord] = []
-        self.pending_step: Optional[StepPrediction] = None
-        self.pending_step_idx: Optional[int] = None
+        self.route_history: list[RouteRecord] = []
+        self.transition_log: list[TransitionRecord] = []
+        self.pending_step: StepPrediction | None = None
+        self.pending_step_idx: int | None = None
         self.last_planned_action: Any = None
         self.last_predicted_observation: Any = None
-        self.last_divergence: Optional[float] = None
-        self.latest_bundle: Optional[UniWMInputBundle] = None
+        self.last_divergence: float | None = None
+        self.latest_bundle: UniWMInputBundle | None = None
 
     def _reset_episode_memory(self) -> None:
         model = getattr(self.engine, "model", None)
@@ -201,6 +173,8 @@ class UniWMWrapper:
         )
         self.route_index = 0
         self.route_generation += 1
+        aggregated_obs = [self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps]
+
         self.route_history.append(
             RouteRecord(
                 route_generation=self.route_generation,
@@ -209,9 +183,7 @@ class UniWMWrapper:
                 stop_reason=str(self.current_route.stop_reason),
                 step_count=len(self.current_route),
                 action_outputs=[str(step.action_text) for step in self.current_route.steps],
-                predicted_observations=[
-                    self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps
-                ],
+                predicted_observations=aggregated_obs,
             )
         )
 
@@ -220,6 +192,6 @@ class UniWMWrapper:
         if self.config["memory_mode"] != "off":
             pass
 
-    def _logged_observation(self, observation: Any, *, predicted: bool) -> Any:
+    def _logged_observation(self, observation: Image.Image | None, *, predicted: bool) -> Image.Image | None:
         key = "log_predicted_observations" if predicted else "log_real_observations"
         return observation if self.config[key] else None

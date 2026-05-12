@@ -1,6 +1,5 @@
 import math
 import re
-from typing import Dict, Optional
 
 # ===================================================================
 # 1. Action Range Constants
@@ -32,13 +31,13 @@ ACTION_RANGES = {
     },
     "habitat": {
         "dxy": [-0.25, 0.25],
-        "dyaw": [-0.1745, 0.1745]
+        "dyaw": [-0.5236, 0.5236]
     }
 }
 DEFAULT_ACTION_RANGE_PROFILE = "go_stanford"
 
 
-def get_action_ranges(range_profile: Optional[str]) -> Dict[str, list]:
+def get_action_ranges(range_profile: str | None) -> dict[str, list]:
     if range_profile is None:
         return {
             "dxy": list(ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dxy"]),
@@ -75,11 +74,11 @@ class ActionCfg:
     bin_step: float
 
     def __init__(self,
-        min_dxy: Optional[float] = None,
-        max_dxy: Optional[float] = None,
-        min_dyaw: Optional[float] = None,
-        max_dyaw: Optional[float] = None,
-        bin_step: Optional[float] = None
+        min_dxy: float | None = None,
+        max_dxy: float | None = None,
+        min_dyaw: float | None = None,
+        max_dyaw: float | None = None,
+        bin_step: float | None = None
     ):
         default_ranges = get_action_ranges(DEFAULT_ACTION_RANGE_PROFILE)
 
@@ -132,13 +131,15 @@ def generate_bin_tokens(prefix, vmin, vmax, step):
         
     return tokens
 
-def extract_bin_values(token_str, prefix, step_val):
+def extract_bin_values(token_str: str, prefix: str, step_val: float) -> float:
     pos_match = re.search(f"<{prefix}_pos_bin_(\d+)>", token_str)
     neg_match = re.search(f"<{prefix}_neg_bin_(\d+)>", token_str)
     
     if pos_match:
-        return round(int(pos_match.group(1)) * step_val, 4)
+        bin_val = float(pos_match.group(1))
+        return float(round(bin_val * step_val, 4))
     elif neg_match:
-        return round(-int(neg_match.group(1)) * step_val, 4)
+        bin_val = -float(neg_match.group(1))
+        return float(round(bin_val * step_val, 4))
     else:
         return 0.0
