@@ -4,9 +4,10 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-from scripts.habitat_uniwm_schemas import SourceAdapter, SourceFormatter, OutputBundle, UniWMInputBundle
+from scripts.datasource_schemas import SourceAdapter, SourceFormatter, OutputBundle
+from scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from scripts.uniwm_utils import is_stop_action, load_config, resolve_config_path_from_id, validate_config
-from scripts.uniwm_wrapper import UniWMWrapper, TransitionRecord
+from scripts.uniwm_wrapper import UniWMWrapper
 from scripts.uniwm_engine import UniWMEngine
 
 

@@ -15,11 +15,8 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 
 from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
-from scripts.habitat_uniwm_schemas import (
-    UniWMInputBundle,
-    SourceFormatter,
-    HabitatOutputBundle,
-)
+from scripts.uniwm_schemas import UniWMInputBundle
+from scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",

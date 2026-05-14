@@ -27,6 +27,9 @@ engine:
       multimodal_generation_mode: image-only
       current_substep: visualization
 
+  training:
+    initial_lr: 2e-5
+
   route:
     max_steps: 10
 

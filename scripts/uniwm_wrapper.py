@@ -7,10 +7,8 @@ import numpy as np
 from PIL import Image
 
 from scripts.uniwm_engine import UniWMEngine
-from scripts.habitat_uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord
+from scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord, RoutePrediction, StepPrediction
 from scripts.uniwm_utils import (
-    RoutePrediction,
-    StepPrediction,
     image_to_array,
     is_stop_action,
     load_config, validate_config,

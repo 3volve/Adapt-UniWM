@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import yaml
 from PIL import Image
+from transformers import PreTrainedTokenizerFast
 
 from scripts.postprocess_logits_utils import split_token_sequence
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
@@ -155,7 +156,7 @@ def _resize_model_embeddings(model: Any, processor: Any) -> None:
         inner_resize(tokenizer_size)
 
 def processor_inputs_from_prompt(
-    processor: Any,
+    processor: PreTrainedTokenizerFast,
     *,
     input_text: str,
     input_images: list[Image.Image],
@@ -173,6 +174,12 @@ def processor_inputs_from_prompt(
         return inputs.to(device)
     return inputs
 
+def detach_processor_inputs(inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {
+        key: value.detach().cpu().clone() if torch.is_tensor(value) else value
+        for key, value in inputs.items()
+    }
+
 def extract_generated_tokens(outputs: Any) -> torch.Tensor:
     if torch.is_tensor(outputs):
         return outputs
@@ -183,13 +190,15 @@ def extract_generated_tokens(outputs: Any) -> torch.Tensor:
         return sequences
     raise TypeError(f"Unsupported UniWM generate output type: {type(outputs)}")
 
-def decode_generated_text(processor: Any, outputs: Any) -> str:
+def decode_generated_text(processor: Any, outputs: Any) -> tuple[str, str]:
     tokens = extract_generated_tokens(outputs)
-    decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
-    is_stop = decoded.lower() == "stop"
+    raw_decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
+    if raw_decoded.lower() == "stop":
+        return "stop"
+
     pattern = r'(<d[^>]+>)+(<d[^>]+>)'
-    decoded = re.sub(pattern, r'\2', decoded)
-    return decoded
+    decoded = re.sub(pattern, r'\2', raw_decoded)
+    return decoded, raw_decoded
 
 def configure_action_tokenizer(model: Any, processor: Any, config: Mapping[str, Any]) -> None:
     token_cfg = dict(config.get("action_token_generation", {}))

@@ -41,6 +41,7 @@ from scripts.action_utils import (
     action_to_text,
     get_action_ranges,
     DEFAULT_ACTION_RANGE_PROFILE,
+    ActionCfg,
 )
 from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
@@ -377,15 +378,12 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         }
 
         if action_cfg:
-            self.action_cfg = action_cfg
+            self.action_range_profile = action_cfg["range_profile"]
+            self.action_cfg = ActionCfg.from_dict(action_cfg)
         else:
             print("[WARNING] action_cfg not provided to Trainer. Using default values for loss calculation.")
-            self.action_cfg = {
-                'min_dxy': -2.46, 'max_dxy': 2.46,
-                'min_dyaw': -2.82, 'max_dyaw': 2.82,
-                'bin_step': 0.01,
-                'range_profile': DEFAULT_ACTION_RANGE_PROFILE,
-            }
+            self.action_range_profile = DEFAULT_ACTION_RANGE_PROFILE
+            self.action_cfg = ActionCfg(-2.46, 2.46, -2.82, 2.82, 0.01)
     
     def evaluate(
             self,
@@ -729,7 +727,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 tokenizer=self.tokenizer,
                 loss_config=loss_config,
                 label_smoother=self.label_smoother,
-                action_ranges=self.action_cfg,
+                action_config=self.action_cfg,
             )
 
             if self.state.global_step == self._globalstep_last_logged and self.state.global_step != 0:
@@ -1147,11 +1145,21 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         all_actions = []
         all_decoded = []
 
-        range_profile = raw_item.get('range_profile') or self.action_cfg.get('range_profile') or DEFAULT_ACTION_RANGE_PROFILE
+        if raw_item.get('range_profile'):
+            ranges = get_action_ranges(raw_item.get('range_profile'))
+            dxy_range, dyaw_range = ranges['dxy'], ranges['dyaw']
+            bin_step = raw_item.get('bin_step')
+        else:
+            if not self.action_cfg:
+                self.action_cfg = ActionCfg() # Create a default ActionCfg if None were set
+            dxy_range = (self.action_cfg.min_dxy, self.action_cfg.max_dxy)
+            dyaw_range = (self.action_cfg.min_dyaw, self.action_cfg.max_dyaw)
+            bin_step = self.action_cfg.bin_step
+
+
+        range_profile = self.action_range_profile('range_profile')
         ranges = get_action_ranges(range_profile)
         print(f"  Using range profile '{range_profile}' with ranges {ranges}")
-        dxy_range, dyaw_range = ranges['dxy'], ranges['dyaw']
-        
 
         for step in range(max_steps):
             step_log = {"step": step + 1}
@@ -1178,7 +1186,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             
             dx, dy, dyaw = 0.0, 0.0, 0.0
             if not is_stop:
-                bin_step = self.action_cfg['bin_step']
+                bin_step = bin_step
                 dx = extract_bin_values(decoded, "dx", bin_step)
                 dy = extract_bin_values(decoded, "dy", bin_step)
                 dyaw = extract_bin_values(decoded, "dyaw", bin_step)

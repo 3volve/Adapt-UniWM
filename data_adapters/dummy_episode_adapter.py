@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 
 from uniwm_episode_runner import SourceAdapter
-from scripts.habitat_uniwm_schemas import UniWMInputBundle
+from scripts.uniwm_schemas import UniWMInputBundle
 from scripts.uniwm_utils import is_stop_action
 
 
