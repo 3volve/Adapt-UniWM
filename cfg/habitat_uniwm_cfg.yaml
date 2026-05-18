@@ -8,7 +8,7 @@ engine:
     do_single_step_eval: false
     do_task_level_eval: true
     do_rollout_eval: false
-    use_memory_bank_inference: false
+    use_memory_bank_inference: true
 
   action_token_generation:
     range_profile: habitat
@@ -21,6 +21,7 @@ engine:
       multimodal_generation_mode: text-only
       current_substep: action
     visualization:
+      max_new_tokens: 800
       num_beams: 1
       temperature: 0.7
       top_p: 0.9
@@ -47,7 +48,7 @@ runner:
   max_episode_steps: 100
   stop_on_wrapper_done: true
   log_every_step: true
-  adapter_file_name: "habitat_episode_adapter"
+  source_file_name: "habitat_source_tools"
 
   adapter_params:
     observation_levels: [32, 255]

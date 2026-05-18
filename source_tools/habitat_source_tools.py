@@ -15,8 +15,8 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 
 from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
-from scripts.uniwm_schemas import UniWMInputBundle
-from scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
+from runtime_scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
@@ -125,9 +125,9 @@ class HabitatEpisodeAdapter:
             raise AssertionError("Expected habitat.Env.current_episode to be set after reset/step.")
 
         step = HabitatOutputBundle(
+            done=done,
             start_obs=self.start_obs,
             current_obs=obs,
-            done=done,
             metrics=self.metrics,
             episode=episode,
             step_index=self.step_index,

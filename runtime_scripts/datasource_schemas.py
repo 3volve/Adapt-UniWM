@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
 from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisode
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
 
 
 #------------ Abstract Classes ------------#
@@ -15,7 +16,7 @@ class SourceAdapter:
     source_mode = "unknown"
 
     @classmethod
-    def reset(cls) -> OutputBundle:
+    def reset(cls, episode_id: str) -> OutputBundle:
         pass
 
     @classmethod
@@ -41,6 +42,7 @@ class SourceFormatter:
 
 @dataclass(frozen=True)
 class OutputBundle:
+    done: bool
     source_mode = "unknown"
 
 
@@ -48,10 +50,10 @@ class OutputBundle:
 @dataclass(frozen=True)
 class HabitatOutputBundle(OutputBundle):
     super.source_mode = "habitat"
+    super.done = False
 
     start_obs: Observations
     current_obs: Observations
-    done: bool
     metrics: Mapping[str, object]
     episode: InstanceImageGoalNavEpisode | Episode
     step_index: int

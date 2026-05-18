@@ -6,9 +6,9 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 
-from scripts.uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_wrapper import UniWMWrapper
-from scripts.uniwm_utils import load_config
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
+from runtime_scripts.uniwm_wrapper import UniWMWrapper
+from runtime_scripts.runtime_utils import load_config
 
 
 @dataclass(frozen=True)

@@ -8,12 +8,12 @@ from PIL import Image
 from peft import PeftModel, PeftMixedModel
 from transformers import PreTrainedTokenizerFast
 
-from scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
+from runtime_scripts.runtime_memory_manager import RuntimeMemoryBankManager
+from runtime_scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
 from scripts.load_model import load_model
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.action_utils import get_action_config, ActionCfg
-from scripts.uniwm_losses import compute_supervised_uniwm_loss
-from scripts.uniwm_utils import (
+from runtime_scripts.runtime_utils import (
     configure_action_tokenizer,
     decode_generated_image,
     decode_generated_text,
@@ -67,10 +67,14 @@ class UniWMEngine:
             weight_decay=0.0,
         )
 
+        self.memory_manager = RuntimeMemoryBankManager(self.model, self.config["use_memory_bank_inference"])
         configure_action_tokenizer(self.model, self.processor, self.config)
 
         if hasattr(self.model, "eval"):
             self.model.eval()
+
+    def reset_memory(self, episode_id: str | None):
+        self.memory_manager.setup_for_episode(episode_id=episode_id)
 
     def predict_step(
             self,
@@ -108,6 +112,7 @@ class UniWMEngine:
                 current_observation=current,
                 start_pose_str=start_pose_str,
                 save_path=save_path,
+                is_real_obs=(step_index == 0)
             )
 
             steps.append(StepPrediction(step_action, step_raw_text, step_viz))
@@ -119,7 +124,7 @@ class UniWMEngine:
 
         return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
 
-    def train_batch(
+    def train_actions_batch(
         self,
         *,
         current_input: UniWMInputBundle,
@@ -130,8 +135,19 @@ class UniWMEngine:
         loss_weights: dict | None = None,
         max_grad_norm: float | None = None,
     ) -> dict[str, float | str | bool]:
+        return NotImplemented
 
-        # This is likely the main thread of what I'll be using
+    def train_viz_step(
+        self,
+        *,
+        current_input: UniWMInputBundle,
+        predicted: str | Image.Image,
+        actual: str | Image.Image,
+        gate: float = 1.0,
+        lr_scale: float = 1.0,
+        loss_weights: dict | None = None,
+        max_grad_norm: float | None = None,
+    ) -> dict[str, float | str | bool]:
         return NotImplemented
 
     def apply_model_update(
@@ -213,8 +229,6 @@ class UniWMEngine:
         #     **components,
         # }
 
-
-
     def _predict_step(
         self,
         *,
@@ -222,6 +236,7 @@ class UniWMEngine:
         goal_observation: Image.Image,
         current_observation: Image.Image,
         start_pose_str: str,
+        is_real_obs: bool = True,
         action_text: str | None = None,
         save_path: str | None = None,
     ) -> tuple[str, str, Image.Image | None]:
@@ -229,6 +244,9 @@ class UniWMEngine:
             raise AssertionError("start_observation and goal_observation are required.")
         if not start_pose_str:
             raise AssertionError("start_pose_str is required.")
+
+        if is_real_obs:
+            self.memory_manager.start_new_step()
 
         current_observation = start_observation if current_observation is None else current_observation
 
@@ -245,7 +263,7 @@ class UniWMEngine:
                 device=self.device,
             )
 
-            action_text, raw_text = self._predict_action(action_inputs)
+            action_text, raw_text = self._predict_action(action_inputs, is_real_obs)
         else:
             raw_text = action_text
 
@@ -262,32 +280,36 @@ class UniWMEngine:
                 device=self.device,
             )
 
-            visualization = self._predict_visualization(visualization_inputs, save_path=save_path)
+            visualization = self._predict_visualization(visualization_inputs, is_real_obs, save_path)
+
+        if is_real_obs:
+            self.memory_manager.store_step_memory()
 
         return action_text, raw_text, visualization
 
-    def _predict_action(self, processor_inputs: Any) -> tuple[str, str]:
-        kwargs = dict(self.config["generation"]["action"])
+    def _predict_action(self, processor_inputs: Any, is_real_obs: bool) -> tuple[str, str]:
+        with torch.no_grad():
+            kwargs = self.memory_manager.get_action_kwargs(
+                action_inputs=processor_inputs,
+                action_gen_kwargs=dict(self.config["generation"]["action"]),
+                is_real_obs=is_real_obs
+            )
 
-        if not self.config["load_model_args"]["use_memory_bank_inference"]:
-            kwargs.pop("current_substep", None)
-
-        with torch.no_grad(), torch.amp.autocast(device_type=self.device, dtype=getattr(self.model, "dtype", None)):
             outputs = self.model.generate(**processor_inputs, **kwargs)
         return decode_generated_text(self.processor, outputs)
 
-    def _predict_visualization(self, processor_inputs: Any, save_path: str | None) -> Image.Image | None:
-        kwargs = dict(self.config["generation"]["visualization"])
-        kwargs["max_new_tokens"] = self.model.image_token_num + 20
+    def _predict_visualization(self, processor_inputs: Any, is_real_obs: bool, save_path: str | None) -> Image.Image | None:
+        with torch.no_grad():
+            kwargs = self.memory_manager.get_action_kwargs(
+                action_inputs=processor_inputs,
+                action_gen_kwargs=dict(self.config["generation"]["visualization"]),
+                is_real_obs=is_real_obs
+            )
 
-        if not self.config["load_model_args"]["use_memory_bank_inference"]:
-            kwargs.pop("current_substep", None)
-
-        with torch.no_grad(), torch.amp.autocast(device_type=self.device, dtype=getattr(self.model, "dtype", None)):
             outputs = self.model.generate(**processor_inputs, **kwargs)
         return decode_generated_image(self.model, self.processor, outputs, save_path=save_path)
 
-    def _build_update_batch(self, predicted, actual, prompt: str):
+    def _build_action_batch(self, predicted, actual, prompt: str):
 
         # This is also an LLM-stubbed method that I'm still in the middle of adjusting.
         #   It's a decent start, but I've gotta replace a bunch of self.___ values with config values,

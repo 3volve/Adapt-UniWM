@@ -6,9 +6,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from scripts.uniwm_engine import UniWMEngine
-from scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord, RoutePrediction, StepPrediction
-from scripts.uniwm_utils import (
+from runtime_scripts.runtime_engine import UniWMEngine
+from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord, RoutePrediction, StepPrediction
+from runtime_scripts.runtime_utils import (
     image_to_array,
     is_stop_action,
     load_config, validate_config,
@@ -33,10 +33,11 @@ class UniWMWrapper:
         self._reset_wrapper_state()
         self.ready_to_act = False
 
-    def reset_episode(self, initial_bundle: UniWMInputBundle) -> dict[str, Any]:
+    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None) -> dict[str, Any]:
         self._reset_wrapper_state()
         self._reset_episode_memory()
         self.latest_bundle = initial_bundle
+        self.engine.reset_memory(episode_id)
         self._plan_route(initial_bundle, reason="episode_reset")
         return self.get_state_snapshot()
 

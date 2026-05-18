@@ -1,38 +1,23 @@
 import os
 import json
 import pickle
-import torch
 import importlib.metadata
 import re
 
-from evo.core.trajectory import PoseTrajectory3D
-from evo.core import sync
-from evo.core import metrics
-import evo.main_ape as main_ape
-import evo.main_rpe as main_rpe
-from evo.core.metrics import PoseRelation
+from transformers import Seq2SeqTrainer
 
-from transformers import Trainer, Seq2SeqTrainer
-
-from transformers.utils import is_peft_available
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union, NamedTuple
 from collections import defaultdict
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 from packaging import version
 from torch import nn
 
 from PIL import Image
 
 from transformers.deepspeed import is_deepspeed_zero3_enabled
-from transformers.file_utils import is_datasets_available
-
-from transformers.trainer_utils import EvalPrediction
-
-from transformers.trainer_utils import PredictionOutput, speed_metrics
 
 from scripts.training_arguments import WrappedSeq2SeqTrainingArguments
 from scripts.postprocess_logits_utils import split_token_sequence
@@ -43,7 +28,6 @@ from scripts.action_utils import (
     DEFAULT_ACTION_RANGE_PROFILE,
     ActionCfg,
 )
-from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.metrics import coords_to_evo_traj, eval_ate_rpe, ImageMetricsCalculator
 from scripts.uniwm_losses import compute_supervised_uniwm_loss
