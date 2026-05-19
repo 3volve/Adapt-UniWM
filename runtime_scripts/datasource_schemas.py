@@ -40,19 +40,17 @@ class SourceFormatter:
     def convert_observation(cls, output: OutputBundle) -> UniWMInputBundle:
         pass
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class OutputBundle:
-    done: bool
-    episode_id: str
-    source_mode = "unknown"
+    source_mode: str = "unknown"
+    done: bool = False
+    episode_id: str = "-1"
 
 
 #------------ Datasource-Specific Classes ------------#
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class HabitatOutputBundle(OutputBundle):
-    super.source_mode = "habitat"
-    super.episode_id = -1
-    super.done = False
+    source_mode: str = "habitat"
 
     start_obs: Observations
     current_obs: Observations

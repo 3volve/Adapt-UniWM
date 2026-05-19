@@ -16,7 +16,7 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
-from runtime_scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle
+from runtime_scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle, SourceAdapter
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
@@ -26,7 +26,7 @@ EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
 }
 
 
-class HabitatEpisodeAdapter:
+class HabitatEpisodeAdapter(SourceAdapter):
     """Thin Habitat environment adapter.
 
     Responsibilities:
@@ -36,7 +36,7 @@ class HabitatEpisodeAdapter:
     - return HabitatOutputBundle
     """
 
-    source_mode = "habitat"
+    super.source_mode = "habitat"
 
     def __init__(
         self,
