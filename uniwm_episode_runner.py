@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from pathlib import Path
 from typing import Any
 
-from scripts.habitat_uniwm_schemas import SourceAdapter, SourceFormatter, OutputBundle, UniWMInputBundle
-from scripts.uniwm_utils import is_stop_action, load_config, resolve_config_path_from_id, validate_config
-from scripts.uniwm_wrapper import UniWMWrapper, TransitionRecord
-from scripts.uniwm_engine import UniWMEngine
+from runtime_scripts.datasource_schemas import SourceAdapter, SourceFormatter, OutputBundle
+from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
+from runtime_scripts.runtime_utils import is_stop_action, load_config, resolve_config_path_from_id, validate_config
+from runtime_scripts.uniwm_wrapper import UniWMWrapper
+from runtime_scripts.runtime_engine import UniWMEngine
 
 
 REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",
     "stop_on_wrapper_done",
     "log_every_step",
-    "adapter_file_name",
+    "source_file_name",
     "adapter_params"
 ]
 
@@ -24,13 +26,14 @@ class UniWMEpisodeRunner:
     def __init__(
         self,
         data_id: str,
+        seed: str = "",
         config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
         if config_path is None:
             config_path = resolve_config_path_from_id(data_id)
 
-        self.config = load_config(config_path).get("runner", {})
+        self.config: dict[str, Any] = load_config(config_path).get("runner", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         engine = UniWMEngine(config_path, data_id) if engine is None else engine
@@ -50,7 +53,7 @@ class UniWMEpisodeRunner:
         converted_reset = self.converter.convert_observation(reset_result)
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state = self.wrapper.reset_episode(converted_reset)
+        wrapper_reset_state = self.wrapper.reset_episode(converted_reset, reset_result.episode_id)
 
         episode_index = len(self._episode_logs)
         step_logs: list[dict[str, Any]] = []
@@ -66,7 +69,7 @@ class UniWMEpisodeRunner:
             converted_actions: list[str] = self.converter.convert_action(planned_action)
 
             # Pass new actions one at a time to the source adapter
-            step_result = OutputBundle()
+            step_result = OutputBundle(episode_id="", done=False)
             for action in converted_actions:
                 step_result: OutputBundle = self.adapter.step(action)
 
@@ -103,6 +106,7 @@ class UniWMEpisodeRunner:
 
         episode_log = {
             "episode_index": episode_index,
+            "episode_id": reset_result.episode_id,
             "adapter_source_mode": self.adapter.source_mode,
             "max_episode_steps": self.config["max_episode_steps"],
             "steps_executed": steps_executed,
@@ -118,31 +122,56 @@ class UniWMEpisodeRunner:
         return episode_log
 
     def run_episodes(self, num_episodes: int) -> list[dict[str, Any]]:
-        return [self.run_episode() for _ in range(int(num_episodes))]
+        # TODO: Fix run_episodes to intelligently target the number of episodes for a specific target data source type somehow and run all available episodes if passed a -1 for num_episodes
+        return [self.run_episode() for _ in range(num_episodes)]
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
 
-    # TODO: Adjust this to actually retrieve both the adapter and the formatter.
     def _load_source_classes(self, data_id: str) -> tuple[SourceAdapter, SourceFormatter]:
-        adapter_file_name = self.config["adapter_file_name"]
-        adapter_path = Path(__file__).resolve().parent / "data_adapters" / f"{adapter_file_name}.py"
-        if not adapter_path.is_file():
-            raise FileNotFoundError(f"Unable to find adapter file from environment config path '{adapter_path}'")
+        source_tools_name = self.config.get("source_file_name")
 
-        module_name = f"data_adapters.{adapter_file_name}"
-        spec = importlib.util.spec_from_file_location(module_name, adapter_path)
+        # Source-tools file default naming should be an allowed simplification
+        if source_tools_name is None:
+            source_tools_name = f"{data_id.lower()}_source_tools"
+
+        file_path = Path(__file__).resolve().parent / "source_tools" / f"{source_tools_name}.py"
+        if not file_path.is_file():
+            raise FileNotFoundError(f"Unable to find adapter file from environment config path '{file_path}'")
+
+        module_name = f"source_tools.{source_tools_name}"
+        spec = importlib.util.spec_from_file_location(module_name, file_path)
 
         if spec is None or spec.loader is None:
-            raise AssertionError(f"Unable to load adapter module from {adapter_path}")
+            raise AssertionError(f"Unable to load adapter module from {file_path}")
 
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        class_name = f"{data_id.capitalize()}EpisodeAdapter"
-        adapter_cls = getattr(module, class_name, None)
+        adapter_class_name = f"{data_id.capitalize()}EpisodeAdapter"
+        adapter_cls = getattr(module, adapter_class_name, None)
 
         if adapter_cls is None:
-            raise AssertionError(f"Unable to find expected adapter class {class_name} from environment config path '{adapter_path}'")
+            raise AssertionError(f"Unable to find expected adapter class {adapter_class_name} from environment config path '{file_path}'")
 
-        return adapter_cls(**self.config["adapter_params"])
+        formatter_class_name = f"{data_id.capitalize()}UniWMFormatter"
+        formatter_cls = getattr(module, formatter_class_name, None)
+
+        if formatter_cls is None:
+            raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
+
+        return (
+            adapter_cls(**self.config["adapter_params"]),
+            # TODO: I need to somehow get the habitat config or the relevant info from it to the formatter
+            formatter_cls(**self.config["formatter_params"])
+        )
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_id", type=str, default="habitat")
+    parser.add_argument("--num_episodes", type=int, default=-1)
+    parser.add_argument("--episodes_seed", type=str, default="hab0")
+    args = parser.parse_args()
+
+    runner = UniWMEpisodeRunner(data_id=args.data_id, seed=args.episodes_seed)
+    runner.run_episodes(num_episodes=args.num_episodes)

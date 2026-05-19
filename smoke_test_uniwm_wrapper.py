@@ -6,9 +6,9 @@ from typing import List, Optional
 import numpy as np
 from PIL import Image
 
-from scripts.habitat_uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_wrapper import UniWMWrapper
-from scripts.uniwm_inference_utils import load_config
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
+from runtime_scripts.uniwm_wrapper import UniWMWrapper
+from runtime_scripts.runtime_utils import load_config
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,10 @@ class StubEngine:
         self.config = load_config(config_path)
         self.model = StubModel()
         self.predict_route_calls = []
+        self.reset_memory_calls = []
+
+    def reset_memory(self, episode_id: str | None) -> None:
+        self.reset_memory_calls.append(episode_id)
 
     def predict_route(self, bundle, max_steps=None, output_dir=None):
         del max_steps, output_dir
@@ -101,6 +105,7 @@ def main() -> None:
     assert snapshot["route_length"] == 2
     assert engine.model.reset_memory_calls == 1
     assert engine.model.reset_global_memory_calls == 1
+    assert engine.reset_memory_calls == [None]
 
     action_1 = wrapper.get_next_action()
     assert action_1 == "Move by dx: <dx_pos_bin_25>, dy: <dy_pos_bin_00>, dyaw: <dyaw_pos_bin_00>"

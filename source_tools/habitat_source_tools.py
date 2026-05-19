@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math, torch
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from PIL import Image
@@ -15,11 +15,8 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 
 from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
-from scripts.habitat_uniwm_schemas import (
-    UniWMInputBundle,
-    SourceFormatter,
-    HabitatOutputBundle,
-)
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
+from runtime_scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle, SourceAdapter
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
@@ -29,7 +26,7 @@ EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
 }
 
 
-class HabitatEpisodeAdapter:
+class HabitatEpisodeAdapter(SourceAdapter):
     """Thin Habitat environment adapter.
 
     Responsibilities:
@@ -44,14 +41,13 @@ class HabitatEpisodeAdapter:
     def __init__(
         self,
         config_path: str = "benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml",
-        split: str = "val_mini",
-        data_path: str = (
-            "data/datasets/instance_imagenav/hm3d/"
-            "instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz"
-        ),
+        split: Literal["val_mini", "train", "test"] = "val_mini",
+        data_path_root: str = "data/datasets/instance_imagenav/hm3d/",
+        data_path_target: str = "instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz",
         scenes_dir: str = "data/scene_datasets",
         max_episode_steps: int = 500,
-        extra_overrides: list[str] | None | None = None,
+        seed: str = "",
+        extra_overrides: list[str] = [],
     ):
         self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
         self.step_index: int = 0
@@ -63,7 +59,7 @@ class HabitatEpisodeAdapter:
             config_path=config_path,
             overrides=[
                 f"habitat.dataset.split={split}",
-                f"habitat.dataset.data_path={data_path}",
+                f"habitat.dataset.data_path={(data_path_root, data_path_target)}",
                 f"habitat.dataset.scenes_dir={scenes_dir}",
                 f"habitat.environment.max_episode_steps={max_episode_steps}",
                 *extra_overrides,
@@ -93,7 +89,7 @@ class HabitatEpisodeAdapter:
         return self._pack_step(
             obs=obs,
             done=bool(self.env.episode_over),
-            action_taken=habitat_action,
+            action_taken=habitat_action
         )
 
     @property
@@ -128,9 +124,10 @@ class HabitatEpisodeAdapter:
             raise AssertionError("Expected habitat.Env.current_episode to be set after reset/step.")
 
         step = HabitatOutputBundle(
+            episode_id=episode.episode_id,
+            done=done,
             start_obs=self.start_obs,
             current_obs=obs,
-            done=done,
             metrics=self.metrics,
             episode=episode,
             step_index=self.step_index,
@@ -152,24 +149,24 @@ class HabitatUniWMFormatter(SourceFormatter):
     START_POS_IDX: tuple[int, int] = (0, 2)
     START_POSE_TEMPLATE: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
-    def __init__(self, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_size: tuple[int, int] = (256, 256), cfg: Any | None = None):
-        self.bin_step: float = bin_step
-        self.linear_deadband: float = linear_deadband
-        self.angular_deadband: float = angular_deadband
-        self.image_size: tuple[int, int] = image_size
+    def __init__(self, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_h: int = 256, image_w: int = 256, habitat_cfg: Any | None = None):
+        self.bin_step: float = float(bin_step)
+        self.linear_deadband: float = float(linear_deadband)
+        self.angular_deadband: float = float(angular_deadband)
+        self.image_size: tuple[int, int] = (int(image_w), int(image_h))
 
-        if cfg is not None:
-            turn_step_size: float = cfg.habitat.simulator.turn_angle
+        if habitat_cfg is not None:
+            turn_step_size: float = habitat_cfg.habitat.simulator.turn_angle
             self.right_angle_turn_repeats = round(90 / turn_step_size)
-            self.forward_step_size: float = cfg.habitat.simulator.forward_step_size
+            self.forward_step_size: float = habitat_cfg.habitat.simulator.forward_step_size
 
     def convert_action(self, action_text: str) -> list[str]:
         dx, dy, dyaw, action_text = 0.0, 0.0, 0.0, action_text.strip()
         is_stop = action_text.lower() == "stop"
 
-        dx: float = extract_bin_values(action_text, "dx", self.bin_step),
-        dy: float = extract_bin_values(action_text, "dy", self.bin_step),
-        dyaw: float = extract_bin_values(action_text, "dyaw", self.bin_step),
+        dx: float = extract_bin_values(action_text, "dx", self.bin_step)
+        dy: float = extract_bin_values(action_text, "dy", self.bin_step)
+        dyaw: float = extract_bin_values(action_text, "dyaw", self.bin_step)
 
         if is_stop:
             return [EXPECTED_HABITAT_ACTIONS["stop"]]
@@ -222,7 +219,6 @@ class HabitatUniWMFormatter(SourceFormatter):
 
     def convert_observation(
         self,
-        *,
         output: HabitatOutputBundle
     ) -> UniWMInputBundle:
         start_rgb = output.start_obs[self.RGB_KEY]

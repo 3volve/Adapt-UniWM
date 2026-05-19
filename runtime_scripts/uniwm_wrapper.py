@@ -6,11 +6,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from scripts.uniwm_engine import UniWMEngine
-from scripts.habitat_uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord
-from scripts.uniwm_utils import (
-    RoutePrediction,
-    StepPrediction,
+from runtime_scripts.runtime_engine import UniWMEngine
+from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord, RoutePrediction, StepPrediction
+from runtime_scripts.runtime_utils import (
     image_to_array,
     is_stop_action,
     load_config, validate_config,
@@ -35,16 +33,18 @@ class UniWMWrapper:
         self._reset_wrapper_state()
         self.ready_to_act = False
 
-    def reset_episode(self, initial_bundle: UniWMInputBundle) -> dict[str, Any]:
+    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None) -> dict[str, Any]:
         self._reset_wrapper_state()
         self._reset_episode_memory()
         self.latest_bundle = initial_bundle
+        self.engine.reset_memory(episode_id)
         self._plan_route(initial_bundle, reason="episode_reset")
         return self.get_state_snapshot()
 
     def get_next_action(self) -> str:
         if not self.ready_to_act:
             raise AssertionError("observe_transition(...) must be called before requesting another action.")
+        self.ready_to_act = False
 
         if not self.current_route or self.route_index >= len(self.current_route):
             if self.config["replan_on_route_exhausted"] and self.latest_bundle is not None:
@@ -56,7 +56,6 @@ class UniWMWrapper:
             return "stop"
 
         step = self.current_route.steps[self.route_index]
-        self.ready_to_act = True
         self.pending_step = step
         self.pending_step_idx = self.route_index
         self.last_planned_action = step.action_text
@@ -101,7 +100,7 @@ class UniWMWrapper:
 
         self.transition_log.append(record)
         self.last_divergence = divergence
-        self.ready_to_act = False
+        self.ready_to_act = True
         self.pending_step = None
         self.pending_step_idx = None
         return record
@@ -174,6 +173,7 @@ class UniWMWrapper:
         self.route_index = 0
         self.route_generation += 1
         aggregated_obs = [self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps]
+        self.ready_to_act = True
 
         self.route_history.append(
             RouteRecord(

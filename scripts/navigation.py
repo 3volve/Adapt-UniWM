@@ -143,11 +143,6 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         return ["input_img"] + numeric_actions
     
 
-    def _get_action_ranges(self):
-        """Use the explicit action range profile selected for this dataset build."""
-        return get_action_ranges(self.config.action_range_profile)
-    
-
 ####Key 1
     def _prepare_visualization_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
         start_img = all_images[0]
@@ -266,7 +261,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             if not traj_data:
                 continue
             range_profile = self.config.action_range_profile or DEFAULT_ACTION_RANGE_PROFILE
-            trajectory_ranges = self._get_action_ranges()
+            trajectory_ranges = get_action_ranges(self.config.action_range_profile)
 
             # 2. Prepare the definitive list of actions for this trajectory
             actions = self._prepare_actions(

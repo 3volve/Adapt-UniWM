@@ -3,10 +3,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import torch
+import torch, importlib
+from peft import PeftModel
 from torch import Tensor
 import torch.nn.functional as F
+
+from packaging import version
+from transformers.utils import is_peft_available
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
+
 
 from scripts.action_utils import generate_bin_tokens, ActionCfg
 
@@ -22,7 +27,6 @@ def detach_loss_value(value: Tensor | float | int) -> float:
         return float(value.detach().cpu())
     return float(value)
 
-
 def compute_base_model_loss(
     outputs: Any,
     labels: Tensor,
@@ -33,8 +37,6 @@ def compute_base_model_loss(
 ) -> Tensor:
     """
     Compute the base UniWM/HF modeling loss from model outputs and labels.
-
-    Preserve current CustomizeSeq2SeqTrainer.compute_loss behavior as closely as possible.
     """
     if label_smoother is not None:
         model_name = _get_model_name(model)
@@ -57,7 +59,6 @@ def compute_base_model_loss(
     flat_labels = labels.contiguous().view(-1)
     return F.cross_entropy(flat_logits, flat_labels, ignore_index=ignore_index)
 
-
 def compute_action_token_loss(
     logits: Tensor,
     labels: Tensor,
@@ -67,8 +68,7 @@ def compute_action_token_loss(
     action_config: ActionCfg,
 ) -> Tensor:
     """
-    Compute the action-token cross entropy currently embedded in
-    CustomizeSeq2SeqTrainer.compute_loss.
+    Compute the action-token cross entropy
     """
     hf_tokenizer = _get_hf_tokenizer(tokenizer)
 
@@ -106,7 +106,6 @@ def compute_action_token_loss(
         return sum(loss_components) / len(loss_components)
     return shifted_logits.new_zeros(())
 
-
 def compute_image_codebook_discrepancy_loss(
     *,
     model: Any,
@@ -116,8 +115,7 @@ def compute_image_codebook_discrepancy_loss(
     ignore_index: int,
 ) -> Tensor:
     """
-    Compute the image/codebook discrepancy loss currently embedded in
-    CustomizeSeq2SeqTrainer.compute_loss.
+    Compute the image/codebook discrepancy loss
     """
     del tokenizer
     del ignore_index
@@ -144,7 +142,6 @@ def compute_image_codebook_discrepancy_loss(
         model.model.codebook_sim_matrix,
     )
     return torch.mean(torch.sum(label_sim_matrix * image_probs.to(torch.bfloat16), dim=-1))
-
 
 def compute_supervised_uniwm_loss(
     *,
@@ -203,29 +200,29 @@ def compute_supervised_uniwm_loss(
 
     return total_loss, components
 
-
 def _get_output_value(outputs: Any, key: str) -> Any:
     if isinstance(outputs, Mapping):
         return outputs.get(key)
     return getattr(outputs, key, None)
 
-
 def _get_model_name(model) -> str:
     if model is None:
         return ""
 
-    if (
-        hasattr(model, "base_model")
-        and hasattr(model.base_model, "model")
-        and hasattr(model.base_model.model, "_get_name")
-    ):
+    if _is_peft_model(model):
         return model.base_model.model._get_name()
-
-    if hasattr(model, "_get_name"):
+    else:
         return model._get_name()
 
-    return type(model).__name__
+def _is_peft_model(model):
+    if is_peft_available():
+        classes_to_check = (PeftModel,) if is_peft_available() else ()
+        if version.parse(importlib.metadata.version("peft")) >= version.parse("0.7.0"):
+            from peft import PeftMixedModel
 
+            classes_to_check = (*classes_to_check, PeftMixedModel)
+        return isinstance(model, classes_to_check)
+    return False
 
 def _get_hf_tokenizer(tokenizer: Any) -> Any:
     if hasattr(tokenizer, "tokenizer"):

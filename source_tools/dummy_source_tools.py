@@ -6,8 +6,8 @@ import numpy as np
 from PIL import Image
 
 from uniwm_episode_runner import SourceAdapter
-from scripts.habitat_uniwm_schemas import UniWMInputBundle
-from scripts.uniwm_utils import is_stop_action
+from runtime_scripts.uniwm_schemas import UniWMInputBundle
+from runtime_scripts.runtime_utils import is_stop_action
 
 
 class DummySourceAdapter(SourceAdapter):
