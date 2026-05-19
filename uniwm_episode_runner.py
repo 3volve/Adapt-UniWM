@@ -11,6 +11,8 @@ from runtime_scripts.runtime_utils import is_stop_action, load_config, resolve_c
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
 from runtime_scripts.runtime_engine import UniWMEngine
 
+from runtime_scripts.test_runtime_metrics import save_runner_logs
+
 
 REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",
@@ -121,9 +123,9 @@ class UniWMEpisodeRunner:
         self._episode_logs.append(episode_log)
         return episode_log
 
-    def run_episodes(self, num_episodes: int) -> list[dict[str, Any]]:
+    def run_episodes(self, num_episodes: int):
         # TODO: Fix run_episodes to intelligently target the number of episodes for a specific target data source type somehow and run all available episodes if passed a -1 for num_episodes
-        return [self.run_episode() for _ in range(num_episodes)]
+        [self.run_episode() for _ in range(num_episodes)]
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
@@ -167,9 +169,12 @@ class UniWMEpisodeRunner:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_id", type=str, default="habitat")
+    parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
     parser.add_argument("--episodes_seed", type=str, default="hab0")
     args = parser.parse_args()
 
     runner = UniWMEpisodeRunner(data_id=args.data_id, seed=args.episodes_seed)
     runner.run_episodes(num_episodes=args.num_episodes)
+
+    save_runner_logs(runner.get_logs(), args.output_dir, args.data_id)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math, torch
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -41,9 +41,8 @@ class HabitatEpisodeAdapter(SourceAdapter):
     def __init__(
         self,
         config_path: str = "benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml",
-        split: Literal["val_mini", "train", "test"] = "val_mini",
-        data_path_root: str = "data/datasets/instance_imagenav/hm3d/",
-        data_path_target: str = "instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz",
+        split: str = "val_mini",
+        data_path: str = "data/datasets/instance_imagenav/hm3d/",
         scenes_dir: str = "data/scene_datasets",
         max_episode_steps: int = 500,
         seed: str = "",
@@ -59,7 +58,7 @@ class HabitatEpisodeAdapter(SourceAdapter):
             config_path=config_path,
             overrides=[
                 f"habitat.dataset.split={split}",
-                f"habitat.dataset.data_path={(data_path_root, data_path_target)}",
+                f"habitat.dataset.data_path={data_path}",
                 f"habitat.dataset.scenes_dir={scenes_dir}",
                 f"habitat.environment.max_episode_steps={max_episode_steps}",
                 *extra_overrides,
@@ -149,13 +148,14 @@ class HabitatUniWMFormatter(SourceFormatter):
     START_POS_IDX: tuple[int, int] = (0, 2)
     START_POSE_TEMPLATE: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
+    # TODO: bin_step should be set dynamically based on a universal config, not just a default which happens to match up to everything else.
     def __init__(self, adapter: HabitatEpisodeAdapter, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_h: int = 256, image_w: int = 256):
         self.bin_step: float = float(bin_step)
         self.linear_deadband: float = float(linear_deadband)
         self.angular_deadband: float = float(angular_deadband)
         self.image_size: tuple[int, int] = (int(image_w), int(image_h))
 
-        hab_cfg = adapter.habitat_config()
+        hab_cfg = adapter.habitat_config
         if hab_cfg is not None:
             turn_step_size: float = hab_cfg.habitat.simulator.turn_angle
             self.right_angle_turn_repeats = round(90 / turn_step_size)

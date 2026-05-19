@@ -40,7 +40,7 @@ wrapper:
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
-  memory_mode: "off"
+  memory_mode: off
   log_predicted_observations: true
   log_real_observations: true
 
@@ -53,16 +53,15 @@ runner:
   adapter_params:
     config_path: benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml
     split: val_mini
-    data_path_root: data/datasets/instance_imagenav/hm3d/
-    data_path_target: instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
+    data_path: data/datasets/instance_imagenav/hm3d/instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
     scenes_dir: data/scene_datasets
     max_episode_steps: 500
 
   formatter_params:
     linear_deadband: 0.02
     angular_deadband: 0.02
-    image_w: 256
-    image_h: 256
+    image_w: 448
+    image_h: 448
 
 loss:
   include_action_loss: true
