@@ -59,3 +59,15 @@ class HabitatOutputBundle(OutputBundle):
     step_index: int
     action_taken: str | None
     metadata: Mapping[str, object] = field(default_factory=dict)
+
+@dataclass(frozen=True, kw_only=True)
+class ReplayOutputBundle(OutputBundle):
+    source_mode: str = "replay"
+
+    # start_obs: Observations
+    # current_obs: Observations
+    # metrics: Mapping[str, object]
+    # episode: Any
+    # step_index: int
+    # action_taken: str | None
+    # metadata: Mapping[str, object] = field(default_factory=dict)

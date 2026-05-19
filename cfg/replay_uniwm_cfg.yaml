@@ -11,7 +11,7 @@ engine:
     use_memory_bank_inference: true
 
   action_token_generation:
-    range_profile: habitat
+    range_profile: unknown
     bin_step: 0.01
 
   generation:
@@ -48,15 +48,10 @@ runner:
   max_episode_steps: 100
   stop_on_wrapper_done: true
   log_every_step: true
-  source_file_name: habitat_source_tools
+  source_file_name: replay_source_tools
 
   adapter_params:
-    config_path: benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml
-    split: val_mini
-    data_path_root: data/datasets/instance_imagenav/hm3d/
-    data_path_target: instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
-    scenes_dir: data/scene_datasets
-    max_episode_steps: 500
+    placeholder: ""
 
   formatter_params:
     linear_deadband: 0.02

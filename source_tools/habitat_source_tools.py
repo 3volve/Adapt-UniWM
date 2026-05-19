@@ -47,7 +47,7 @@ class HabitatEpisodeAdapter(SourceAdapter):
         scenes_dir: str = "data/scene_datasets",
         max_episode_steps: int = 500,
         seed: str = "",
-        extra_overrides: list[str] | None = None,
+        extra_overrides: list[str] = [],
     ):
         self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
         self.step_index: int = 0
@@ -219,7 +219,6 @@ class HabitatUniWMFormatter(SourceFormatter):
 
     def convert_observation(
         self,
-        *,
         output: HabitatOutputBundle
     ) -> UniWMInputBundle:
         start_rgb = output.start_obs[self.RGB_KEY]

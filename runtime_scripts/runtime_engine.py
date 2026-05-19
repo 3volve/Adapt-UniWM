@@ -95,7 +95,7 @@ class UniWMEngine:
             action_text=action_text,
             save_path=save_path
         )
-        return StepPrediction(action, raw, viz)
+        return StepPrediction(bundle, action, raw, viz)
 
     def predict_route(
         self,
@@ -120,7 +120,16 @@ class UniWMEngine:
                 is_real_obs=(step_index == 0)
             )
 
-            steps.append(StepPrediction(step_action, step_raw_text, step_viz))
+            new_bundle = bundle if step_index == 0 else UniWMInputBundle(
+                start_observation,
+                goal_observation,
+                current,
+                start_pose_str,
+                step_action,
+                bundle.metadata
+            )
+
+            steps.append(StepPrediction(new_bundle, step_action, step_raw_text, step_viz))
             if is_stop_action(step_action):
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             if step_viz is None:

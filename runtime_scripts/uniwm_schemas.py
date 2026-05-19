@@ -29,9 +29,9 @@ class StepPrediction:
     action_text: str
     raw_act: str
     visualization: Image.Image | None
-    viz_token_ids: torch.LongTensor | None
+    viz_token_ids: torch.LongTensor | None = None
 
-    real_viz_token_ids: torch.LongTensor | None
+    real_viz_token_ids: torch.LongTensor | None = None
 
 @dataclass(frozen=True)
 class RoutePrediction:
