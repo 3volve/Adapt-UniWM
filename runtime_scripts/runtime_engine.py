@@ -38,22 +38,28 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
     _action_cfg: ActionCfg = ActionCfg
+    _data_id: str = "unknown"
+
+    @property
+    def data_id(self):
+        return self._data_id
+
+    @data_id.setter
+    def data_id(self, new_data_id: str) -> None:
+        # NOTE: There might be a better way of setting the action_cfg than this, but this seemed clean enough to me for now
+        self._data_id = "habitat" if new_data_id == "dummy" else new_data_id
+        self._action_cfg = get_action_config(self._data_id)
 
     @property
     def action_cfg(self):
         return self._action_cfg
-
-    @action_cfg.setter
-    def action_cfg(self, new_data_id: str) -> None:
-        data_id = "habitat" if new_data_id == "dummy" else new_data_id
-        self._action_cfg = get_action_config(data_id)
 
     def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id = "habitat"):
         self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
-        self.action_cfg = get_action_config(data_id)
+        self.data_id = data_id
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), None)
         self.model: PeftModel | PeftMixedModel = loaded["model"]
@@ -66,7 +72,7 @@ class UniWMEngine:
             weight_decay=0.0,
         )
 
-        self.memory_manager = RuntimeMemoryBankManager(self.model, self.config["use_memory_bank_inference"])
+        self.memory_manager = RuntimeMemoryBankManager(self.model, self.config["load_model_args"]["use_memory_bank_inference"])
         configure_action_tokenizer(self.model, self.processor, self.config)
 
         if hasattr(self.model, "eval"):

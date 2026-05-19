@@ -48,16 +48,21 @@ runner:
   max_episode_steps: 100
   stop_on_wrapper_done: true
   log_every_step: true
-  source_file_name: "habitat_source_tools"
+  source_file_name: habitat_source_tools
 
   adapter_params:
-    observation_levels: [32, 255]
-    episode_id: manager_smoke
+    config_path: benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml
+    split: val_mini
+    data_path_root: data/datasets/instance_imagenav/hm3d/
+    data_path_target: instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
+    scenes_dir: data/scene_datasets
+    max_episode_steps: 500
 
-  converter_params:
-    linear_deadband_m: float = 0.02
-    angular_deadband_rad: float = 0.02
-    image_size: tuple[int, int] = (256, 256)
+  formatter_params:
+    linear_deadband_m: 0.02
+    angular_deadband_rad: 0.02
+    image_w: 256
+    image_h: 256
 
 loss:
   include_action_loss: true

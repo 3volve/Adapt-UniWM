@@ -16,7 +16,7 @@ REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",
     "stop_on_wrapper_done",
     "log_every_step",
-    "adapter_file_name",
+    "source_file_name",
     "adapter_params"
 ]
 
@@ -162,7 +162,8 @@ class UniWMEpisodeRunner:
 
         return (
             adapter_cls(**self.config["adapter_params"]),
-            formatter_cls(**self.config["converter_params"])
+            # TODO: I need to somehow get the habitat config or the relevant info from it to the formatter
+            formatter_cls(**self.config["formatter_params"])
         )
 
 if __name__ == '__main__':
