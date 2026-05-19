@@ -67,6 +67,9 @@ class RuntimeMemoryBankManager:
                 print(f"  Step {self.current_step}: intra memory bank reset for action prediction")
 
     def get_action_kwargs(self, action_inputs, action_gen_kwargs, is_real_obs=True):
+        """
+        Note: Needs to be within a nested torch.amp.autocast(device_type='cuda', dtype=self.model.dtype) context
+        """
         if not self.is_enabled or not is_real_obs:
             action_gen_kwargs.pop("current_step", None)
             action_gen_kwargs.pop("current_substep", None)
@@ -148,50 +151,52 @@ class RuntimeMemoryBankManager:
                                 print(
                                     f"    - Layer {layer_idx}: Using stored V shape: {layer.self_attn.stored_values.shape}")
 
-        with torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
-            # Two-phase action generation with memory bank
-            action_gen_kwargs_with_memory = action_gen_kwargs.copy()
-            # Remove any existing memory bank parameters to avoid conflicts
-            action_gen_kwargs_with_memory.pop('use_memory_bank', None)
-            action_gen_kwargs_with_memory.pop('is_memory_bank_init', None)
-            action_gen_kwargs_with_memory.pop('current_step', None)
-            action_gen_kwargs_with_memory.pop('current_substep', None)
-            action_gen_kwargs_with_memory.pop('use_global_memory_bank', None)
+        # Two-phase action generation with memory bank
+        action_gen_kwargs_with_memory = action_gen_kwargs.copy()
+        # Remove any existing memory bank parameters to avoid conflicts
+        action_gen_kwargs_with_memory.pop('use_memory_bank', None)
+        action_gen_kwargs_with_memory.pop('is_memory_bank_init', None)
+        action_gen_kwargs_with_memory.pop('current_step', None)
+        action_gen_kwargs_with_memory.pop('current_substep', None)
+        action_gen_kwargs_with_memory.pop('use_global_memory_bank', None)
 
-            # Use global memory bank if we have previous steps (current_step > 1)
-            use_global_mb = self.current_step > 1
+        # Use global memory bank if we have previous steps (current_step > 1)
+        use_global_mb = self.current_step > 1
 
-            # Phase 1: Initialize memory bank (dummy generation to extract K,V)
-            init_kwargs = action_gen_kwargs_with_memory.copy()
-            init_kwargs.update({
-                'use_memory_bank': True,
-                'is_memory_bank_init': True,  # Initialize memory bank
-                'current_step': self.current_step,
-                'current_substep': 'action',
-                'use_global_memory_bank': False,  # Don't use global during init
-                'max_new_tokens': 1  # Minimal generation for initialization
-            })
+        # Phase 1: Initialize memory bank (dummy generation to extract K,V)
+        init_kwargs = action_gen_kwargs_with_memory.copy()
+        init_kwargs.update({
+            'use_memory_bank': True,
+            'is_memory_bank_init': True,  # Initialize memory bank
+            'current_step': self.current_step,
+            'current_substep': 'action',
+            'use_global_memory_bank': False,  # Don't use global during init
+            'max_new_tokens': 1  # Minimal generation for initialization
+        })
 
-            if self.verbose:
-                print(f"  Step {step + 1}: Memory bank initialization phase")
+        if self.verbose:
+            print(f"  Step {step + 1}: Memory bank initialization phase")
 
-            _ = self.model.generate(**action_inputs, **init_kwargs)
+        _ = self.model.generate(**action_inputs, **init_kwargs)
 
-            # Phase 2: Actual action generation using initialized memory bank
-            gen_kwargs = action_gen_kwargs_with_memory.copy()
-            gen_kwargs.update({
-                'use_memory_bank': True,
-                'is_memory_bank_init': False,  # Use existing memory bank
-                'current_step': self.current_step,
-                'current_substep': 'action',
-                'use_global_memory_bank': use_global_mb
-            })
+        # Phase 2: Actual action generation using initialized memory bank
+        gen_kwargs = action_gen_kwargs_with_memory.copy()
+        gen_kwargs.update({
+            'use_memory_bank': True,
+            'is_memory_bank_init': False,  # Use existing memory bank
+            'current_step': self.current_step,
+            'current_substep': 'action',
+            'use_global_memory_bank': use_global_mb
+        })
 
-            if self.verbose:
-                print(f"  Step {step + 1}: Action generation using memory bank (global: {use_global_mb})")
-            return gen_kwargs
+        if self.verbose:
+            print(f"  Step {step + 1}: Action generation using memory bank (global: {use_global_mb})")
+        return gen_kwargs
 
     def get_viz_kwargs(self, viz_gen_kwargs, is_real_obs=True):
+        """
+        Note: Needs to be within a nested torch.amp.autocast(device_type='cuda', dtype=self.model.dtype) context
+        """
         if not self.is_enabled or not is_real_obs:
             viz_gen_kwargs.pop("current_step", None)
             viz_gen_kwargs.pop("current_substep", None)
@@ -200,19 +205,18 @@ class RuntimeMemoryBankManager:
         if self.verbose:
             print(f"\n=== Step {self.current_step} Visualization Substep ===")
 
-        with torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
-            # Enable memory bank for visualization generation
-            viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
-            # Use global memory bank for visualization (always available since we're in step >= 1)
-            use_global_mb_viz = self.current_step >= 1
-            viz_gen_kwargs_with_memory.update({
-                'use_memory_bank': True,
-                'is_memory_bank_init': False,  # Use existing memory bank for visualization
-                'current_step': self.current_step,
-                'current_substep': 'visualization',
-                'use_global_memory_bank': use_global_mb_viz
-            })
-            return viz_gen_kwargs_with_memory
+        # Enable memory bank for visualization generation
+        viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
+        # Use global memory bank for visualization (always available since we're in step >= 1)
+        use_global_mb_viz = self.current_step >= 1
+        viz_gen_kwargs_with_memory.update({
+            'use_memory_bank': True,
+            'is_memory_bank_init': False,  # Use existing memory bank for visualization
+            'current_step': self.current_step,
+            'current_substep': 'visualization',
+            'use_global_memory_bank': use_global_mb_viz
+        })
+        return viz_gen_kwargs_with_memory
 
     def store_step_memory(self):
         """Stores the current step's K,V pairs into the global memory bank."""

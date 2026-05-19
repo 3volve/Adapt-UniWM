@@ -29,8 +29,7 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
     "action_token_generation": ["range_profile", "bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
-        "visualization": ["multimodal_generation_mode", "current_substep"],
-        "generation" : []
+        "visualization": ["multimodal_generation_mode", "current_substep"]
     },
     "training": ["initial_lr"],
     "route": ["max_steps"],
@@ -63,7 +62,7 @@ class UniWMEngine:
         self.trainable_params = self._online_update_parameters(include_lm_head=False)
         self.optimizer = torch.optim.AdamW(
             self.trainable_params,
-            lr=self.config["training"]["initial_lr"],
+            lr=float(self.config["training"]["initial_lr"]),
             weight_decay=0.0,
         )
 
@@ -288,7 +287,7 @@ class UniWMEngine:
         return action_text, raw_text, visualization
 
     def _predict_action(self, processor_inputs: Any, is_real_obs: bool) -> tuple[str, str]:
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
             kwargs = self.memory_manager.get_action_kwargs(
                 action_inputs=processor_inputs,
                 action_gen_kwargs=dict(self.config["generation"]["action"]),
@@ -299,10 +298,9 @@ class UniWMEngine:
         return decode_generated_text(self.processor, outputs)
 
     def _predict_visualization(self, processor_inputs: Any, is_real_obs: bool, save_path: str | None) -> Image.Image | None:
-        with torch.no_grad():
-            kwargs = self.memory_manager.get_action_kwargs(
-                action_inputs=processor_inputs,
-                action_gen_kwargs=dict(self.config["generation"]["visualization"]),
+        with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
+            kwargs = self.memory_manager.get_viz_kwargs(
+                viz_gen_kwargs=dict(self.config["generation"]["visualization"]),
                 is_real_obs=is_real_obs
             )
 

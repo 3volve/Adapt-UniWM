@@ -44,6 +44,7 @@ class UniWMWrapper:
     def get_next_action(self) -> str:
         if not self.ready_to_act:
             raise AssertionError("observe_transition(...) must be called before requesting another action.")
+        self.ready_to_act = False
 
         if not self.current_route or self.route_index >= len(self.current_route):
             if self.config["replan_on_route_exhausted"] and self.latest_bundle is not None:
@@ -55,7 +56,6 @@ class UniWMWrapper:
             return "stop"
 
         step = self.current_route.steps[self.route_index]
-        self.ready_to_act = True
         self.pending_step = step
         self.pending_step_idx = self.route_index
         self.last_planned_action = step.action_text
@@ -100,7 +100,7 @@ class UniWMWrapper:
 
         self.transition_log.append(record)
         self.last_divergence = divergence
-        self.ready_to_act = False
+        self.ready_to_act = True
         self.pending_step = None
         self.pending_step_idx = None
         return record
@@ -173,6 +173,7 @@ class UniWMWrapper:
         self.route_index = 0
         self.route_generation += 1
         aggregated_obs = [self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps]
+        self.ready_to_act = True
 
         self.route_history.append(
             RouteRecord(

@@ -6,12 +6,11 @@ from pathlib import Path
 
 import torch
 
-from scripts.action_utils import ActionCfg
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.action_utils import ActionCfg
 from scripts.uniwm_losses import (
     compute_action_token_loss,
     compute_image_codebook_discrepancy_loss,
@@ -34,7 +33,9 @@ class FakeTokenizer:
 
     def convert_tokens_to_ids(self, tokens):
         if isinstance(tokens, list):
-            return [self.vocab[token] for token in tokens]
+            return [self.convert_tokens_to_ids(token) for token in tokens]
+        if tokens not in self.vocab:
+            self.vocab[tokens] = len(self.vocab)
         return self.vocab[tokens]
 
 

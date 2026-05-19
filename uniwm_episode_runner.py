@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ class UniWMEpisodeRunner:
     def __init__(
         self,
         data_id: str,
+        seed: str = "",
         config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
@@ -43,15 +45,15 @@ class UniWMEpisodeRunner:
 
         self._episode_logs: list[dict[str, Any]] = []
 
-    def run_episode(self, episode_id: str) -> dict[str, Any]:
+    def run_episode(self) -> dict[str, Any]:
         # Generate new observation when resetting episode
-        reset_result = self.adapter.reset(episode_id)
+        reset_result = self.adapter.reset()
 
         # convert new observation to UniWMInputBundle
         converted_reset = self.converter.convert_observation(reset_result)
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state = self.wrapper.reset_episode(converted_reset, episode_id)
+        wrapper_reset_state = self.wrapper.reset_episode(converted_reset, reset_result.episode_id)
 
         episode_index = len(self._episode_logs)
         step_logs: list[dict[str, Any]] = []
@@ -67,7 +69,7 @@ class UniWMEpisodeRunner:
             converted_actions: list[str] = self.converter.convert_action(planned_action)
 
             # Pass new actions one at a time to the source adapter
-            step_result = OutputBundle()
+            step_result = OutputBundle(episode_id="", done=False)
             for action in converted_actions:
                 step_result: OutputBundle = self.adapter.step(action)
 
@@ -104,6 +106,7 @@ class UniWMEpisodeRunner:
 
         episode_log = {
             "episode_index": episode_index,
+            "episode_id": reset_result.episode_id,
             "adapter_source_mode": self.adapter.source_mode,
             "max_episode_steps": self.config["max_episode_steps"],
             "steps_executed": steps_executed,
@@ -119,7 +122,8 @@ class UniWMEpisodeRunner:
         return episode_log
 
     def run_episodes(self, num_episodes: int) -> list[dict[str, Any]]:
-        return [self.run_episode() for _ in range(int(num_episodes))]
+        # TODO: Fix run_episodes to intelligently target the number of episodes for a specific target data source type somehow and run all available episodes if passed a -1 for num_episodes
+        return [self.run_episode() for _ in range(num_episodes)]
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
@@ -160,3 +164,13 @@ class UniWMEpisodeRunner:
             adapter_cls(**self.config["adapter_params"]),
             formatter_cls(**self.config["converter_params"])
         )
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_id", type=str, default="habitat")
+    parser.add_argument("--num_episodes", type=int, default=-1)
+    parser.add_argument("--episodes_seed", type=str, default="hab0")
+    args = parser.parse_args()
+
+    runner = UniWMEpisodeRunner(data_id=args.data_id, seed=args.episodes_seed)
+    runner.run_episodes(num_episodes=args.num_episodes)

@@ -48,7 +48,8 @@ class HabitatEpisodeAdapter:
         ),
         scenes_dir: str = "data/scene_datasets",
         max_episode_steps: int = 500,
-        extra_overrides: list[str] | None | None = None,
+        seed: str = "",
+        extra_overrides: list[str] | None = None,
     ):
         self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
         self.step_index: int = 0
@@ -90,7 +91,7 @@ class HabitatEpisodeAdapter:
         return self._pack_step(
             obs=obs,
             done=bool(self.env.episode_over),
-            action_taken=habitat_action,
+            action_taken=habitat_action
         )
 
     @property
@@ -125,6 +126,7 @@ class HabitatEpisodeAdapter:
             raise AssertionError("Expected habitat.Env.current_episode to be set after reset/step.")
 
         step = HabitatOutputBundle(
+            episode_id=episode.episode_id,
             done=done,
             start_obs=self.start_obs,
             current_obs=obs,

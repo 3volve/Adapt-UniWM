@@ -16,7 +16,7 @@ class SourceAdapter:
     source_mode = "unknown"
 
     @classmethod
-    def reset(cls, episode_id: str) -> OutputBundle:
+    def reset(cls) -> OutputBundle:
         pass
 
     @classmethod
@@ -43,6 +43,7 @@ class SourceFormatter:
 @dataclass(frozen=True)
 class OutputBundle:
     done: bool
+    episode_id: str
     source_mode = "unknown"
 
 
@@ -50,6 +51,7 @@ class OutputBundle:
 @dataclass(frozen=True)
 class HabitatOutputBundle(OutputBundle):
     super.source_mode = "habitat"
+    super.episode_id = -1
     super.done = False
 
     start_obs: Observations
