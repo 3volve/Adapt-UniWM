@@ -149,16 +149,17 @@ class HabitatUniWMFormatter(SourceFormatter):
     START_POS_IDX: tuple[int, int] = (0, 2)
     START_POSE_TEMPLATE: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
-    def __init__(self, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_h: int = 256, image_w: int = 256, habitat_cfg: Any | None = None):
+    def __init__(self, adapter: HabitatEpisodeAdapter, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_h: int = 256, image_w: int = 256):
         self.bin_step: float = float(bin_step)
         self.linear_deadband: float = float(linear_deadband)
         self.angular_deadband: float = float(angular_deadband)
         self.image_size: tuple[int, int] = (int(image_w), int(image_h))
 
-        if habitat_cfg is not None:
-            turn_step_size: float = habitat_cfg.habitat.simulator.turn_angle
+        hab_cfg = adapter.habitat_config()
+        if hab_cfg is not None:
+            turn_step_size: float = hab_cfg.habitat.simulator.turn_angle
             self.right_angle_turn_repeats = round(90 / turn_step_size)
-            self.forward_step_size: float = habitat_cfg.habitat.simulator.forward_step_size
+            self.forward_step_size: float = hab_cfg.habitat.simulator.forward_step_size
 
     def convert_action(self, action_text: str) -> list[str]:
         dx, dy, dyaw, action_text = 0.0, 0.0, 0.0, action_text.strip()
@@ -170,17 +171,6 @@ class HabitatUniWMFormatter(SourceFormatter):
 
         if is_stop:
             return [EXPECTED_HABITAT_ACTIONS["stop"]]
-
-        if abs(dy) >= self.linear_deadband:
-            raise AssertionError(
-                "UniWM action requests lateral movement, but the current Habitat InstanceImageNav "
-                f"action space does not support strafing: {action_text!r}"
-            )
-        if dx <= -self.linear_deadband:
-            raise AssertionError(
-                "UniWM action requests backward movement, but the current Habitat InstanceImageNav "
-                f"action space does not support it: {action_text!r}"
-            )
 
         all_actions: list[str] = []
         # Add a forward movement

@@ -160,11 +160,9 @@ class UniWMEpisodeRunner:
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
-        return (
-            adapter_cls(**self.config["adapter_params"]),
-            # TODO: I need to somehow get the habitat config or the relevant info from it to the formatter
-            formatter_cls(**self.config["formatter_params"])
-        )
+        adapter: SourceAdapter = adapter_cls(**self.config["adapter_params"])
+        formatter: SourceFormatter = formatter_cls(adapter, **self.config["formatter_params"])
+        return adapter, formatter
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
