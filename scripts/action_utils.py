@@ -68,8 +68,8 @@ class ActionCfg:
         self.bin_step = bin_step or 0.01
 
     @staticmethod
-    def from_dict(cls, d: dict[str, float]):
-        return cls(d["min_dxy"], d["max_dxy"], d["min_dyaw"], d["max_dyaw"], d["bin_step"])
+    def from_dict(d: dict[str, float]):
+        return ActionCfg(d["min_dxy"], d["max_dxy"], d["min_dyaw"], d["max_dyaw"], d["bin_step"])
 
     def get_dxy_tok_params(self) -> tuple[float, float, float]:
         return self.min_dxy, self.max_dxy, self.bin_step
