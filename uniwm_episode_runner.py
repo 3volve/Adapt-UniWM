@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic
 
-from runtime_scripts.datasource_schemas import SourceAdapter, SourceFormatter, OutputBundle
+from runtime_scripts.datasource_schemas import SourceAdapter, SourceFormatter, T_OutputBundle, T_Adapter, T_Formatter
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from runtime_scripts.runtime_utils import is_stop_action, load_config, resolve_config_path_from_id, validate_config
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
@@ -22,13 +22,12 @@ REQUIRED_FIELDS: list[str] = [
     "adapter_params"
 ]
 
-class UniWMEpisodeRunner:
+class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
     """Closed-loop episode coordinator between a wrapper and an adapter."""
 
     def __init__(
         self,
         data_id: str,
-        seed: str = "",
         config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
@@ -42,20 +41,22 @@ class UniWMEpisodeRunner:
         self.wrapper = UniWMWrapper(engine, config_path)
 
         source_classes = self._load_source_classes(data_id)
-        self.adapter: SourceAdapter = source_classes[0]
-        self.converter: SourceFormatter = source_classes[1]
+        self.adapter: T_Adapter = source_classes[0]
+        self.formatter: T_Formatter = source_classes[1]
 
         self._episode_logs: list[dict[str, Any]] = []
 
     def run_episode(self) -> dict[str, Any]:
+        print("[RUNNER]: Starting New Episode")
         # Generate new observation when resetting episode
-        reset_result = self.adapter.reset()
+        step_result: T_OutputBundle = self.adapter.reset()
 
         # convert new observation to UniWMInputBundle
-        converted_reset = self.converter.convert_observation(reset_result)
+        converted_obs: UniWMInputBundle = self.formatter.convert_observation(step_result)
+        conv_info = converted_obs.metadata
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state = self.wrapper.reset_episode(converted_reset, reset_result.episode_id)
+        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_result.episode_id)
 
         episode_index = len(self._episode_logs)
         step_logs: list[dict[str, Any]] = []
@@ -64,19 +65,21 @@ class UniWMEpisodeRunner:
 
         # Start running through steps with the returned UniWM Action str to start the loop
         for step_idx in range(self.config["max_episode_steps"]):
+            print(f"[RUNNER]: Starting New Step #[{step_idx}]")
             # Retrieve the predicted next action from wrapper
             planned_action: str = self.wrapper.get_next_action()
 
             # Convert returned actions list[str] to source-friendly version
-            converted_actions: list[str] = self.converter.convert_action(planned_action)
+            converted_actions: list[str] = self.formatter.convert_action(planned_action)
 
-            # Pass new actions one at a time to the source adapter
-            step_result = OutputBundle(episode_id="", done=False)
-            for action in converted_actions:
-                step_result: OutputBundle = self.adapter.step(action)
+            # Assuming there are any valid actions returned...
+            if len(converted_actions) > 0:
+                # Pass new actions one at a time to the source adapter
+                for action in converted_actions:
+                    step_result: T_OutputBundle = self.adapter.step(action)
 
-            # Convert adapter output obs to UniWMInputBundle
-            converted_obs: UniWMInputBundle = self.converter.convert_observation(step_result)
+                # Convert adapter output obs to UniWMInputBundle
+                converted_obs = self.formatter.convert_observation(step_result)
 
             # Give new obs state to wrapper to update its state
             transition: TransitionRecord = self.wrapper.observe_transition(converted_obs)
@@ -108,12 +111,12 @@ class UniWMEpisodeRunner:
 
         episode_log = {
             "episode_index": episode_index,
-            "episode_id": reset_result.episode_id,
+            "episode_id": step_result.episode_id,
             "adapter_source_mode": self.adapter.source_mode,
             "max_episode_steps": self.config["max_episode_steps"],
             "steps_executed": steps_executed,
             "termination_reason": termination_reason,
-            "reset_info": converted_reset.metadata,
+            "reset_info": conv_info,
             "wrapper_reset_state": wrapper_reset_state,
             "steps": step_logs,
             "final_wrapper_state": self.wrapper.get_state_snapshot(),
@@ -130,7 +133,7 @@ class UniWMEpisodeRunner:
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
 
-    def _load_source_classes(self, data_id: str) -> tuple[SourceAdapter, SourceFormatter]:
+    def _load_source_classes(self, data_id: str) -> tuple[T_Adapter, T_Formatter]:
         source_tools_name = self.config.get("source_file_name")
 
         # Source-tools file default naming should be an allowed simplification
@@ -162,8 +165,8 @@ class UniWMEpisodeRunner:
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
-        adapter: SourceAdapter = adapter_cls(**self.config["adapter_params"])
-        formatter: SourceFormatter = formatter_cls(adapter, **self.config["formatter_params"])
+        adapter: T_Adapter = adapter_cls(**self.config["adapter_params"])
+        formatter: T_Formatter = formatter_cls(adapter, **self.config["formatter_params"])
         return adapter, formatter
 
 if __name__ == '__main__':
@@ -171,10 +174,9 @@ if __name__ == '__main__':
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
-    parser.add_argument("--episodes_seed", type=str, default="hab0")
     args = parser.parse_args()
 
-    runner = UniWMEpisodeRunner(data_id=args.data_id, seed=args.episodes_seed)
+    runner = UniWMEpisodeRunner(data_id=args.data_id)
     runner.run_episodes(num_episodes=args.num_episodes)
 
     save_runner_logs(runner.get_logs(), args.output_dir, args.data_id)

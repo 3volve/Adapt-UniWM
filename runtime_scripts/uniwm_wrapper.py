@@ -67,15 +67,16 @@ class UniWMWrapper:
         self,
         observed_bundle: UniWMInputBundle
     ) -> TransitionRecord:
-        if self.ready_to_act:
+        if self.ready_to_act or not self.pending_step or (self.pending_step_idx < 0):
+            print(f"Failing with values: ({self.ready_to_act}, {'exists' if self.pending_step else 'none'}, {self.pending_step_idx})")
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
 
         pending_step = self.pending_step
         pending_step_idx = self.pending_step_idx
         real_obs = observed_bundle.current_observation
-        if is_stop_action(self.pending_step.action_text):
-            divergence = 0
-        else:
+        divergence = 0
+        
+        if pending_step and not is_stop_action(pending_step.action_text):
             divergence = self.compute_divergence(pending_step.visualization, real_obs)
 
         replan_reason = None
@@ -102,13 +103,14 @@ class UniWMWrapper:
         self.last_divergence = divergence
         self.ready_to_act = True
         self.pending_step = None
-        self.pending_step_idx = None
+        self.pending_step_idx = -1
         return record
 
     def replan_route(self, current_bundle: UniWMInputBundle, reason: str) -> None:
+        print("[WRAPPER]: Replanning Route")
         self.latest_bundle = current_bundle
         self.pending_step = None
-        self.pending_step_idx = None
+        self.pending_step_idx = 0
         self._plan_route(current_bundle, reason=reason)
 
     def compute_divergence(self, predicted_img: Any, real_img: Any) -> float:
@@ -150,7 +152,7 @@ class UniWMWrapper:
         self.route_history: list[RouteRecord] = []
         self.transition_log: list[TransitionRecord] = []
         self.pending_step: StepPrediction | None = None
-        self.pending_step_idx: int | None = None
+        self.pending_step_idx: int = -1
         self.last_planned_action: Any = None
         self.last_predicted_observation: Any = None
         self.last_divergence: float | None = None

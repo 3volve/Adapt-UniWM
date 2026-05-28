@@ -1,8 +1,9 @@
 from __future__ import annotations
+from typing import cast
 
 from scripts.action_utils import extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
-from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, ReplayOutputBundle
+from runtime_scripts.datasource_schemas import OutputBundle, SourceFormatter, SourceAdapter, ReplayOutputBundle
 
 
 class ReplayTrajectoryAdapter(SourceAdapter):
@@ -25,7 +26,7 @@ class ReplayTrajectoryAdapter(SourceAdapter):
     def reset(self) -> ReplayOutputBundle:
         return NotImplemented
 
-    def step(self, habitat_action: str) -> ReplayOutputBundle:
+    def step(self, action: str) -> ReplayOutputBundle:
 
         return NotImplemented
 
@@ -52,8 +53,8 @@ class ReplayUniWMFormatter(SourceFormatter):
         self.angular_deadband: float = float(angular_deadband)
         self.image_size: tuple[int, int] = (int(image_w), int(image_h))
 
-    def convert_action(self, action_text: str) -> list[str]:
-        dx, dy, dyaw, action_text = 0.0, 0.0, 0.0, action_text.strip()
+    def convert_action(self, action: str) -> list[str]:
+        dx, dy, dyaw, action_text = 0.0, 0.0, 0.0, action.strip()
         is_stop = action_text.lower() == "stop"
 
         dx: float = extract_bin_values(action_text, "dx", self.bin_step)
@@ -65,8 +66,9 @@ class ReplayUniWMFormatter(SourceFormatter):
 
     def convert_observation(
         self,
-        output: ReplayOutputBundle
+        output: OutputBundle
     ) -> UniWMInputBundle:
+        hab_output = cast(ReplayOutputBundle, output)
         # start_rgb = output.start_obs[self.RGB_KEY]
         # goal_image = output.start_obs[self.GOAL_KEY]
         # current_rgb = output.current_obs[self.RGB_KEY]
@@ -80,10 +82,11 @@ class ReplayUniWMFormatter(SourceFormatter):
         #     "metrics": dict(output.metrics)
         # })
 
-        return UniWMInputBundle(
+        return NotImplemented
+    #UniWMInputBundle(
             # start_observation=self._to_pil_image(start_rgb),
             # goal_observation=self._to_pil_image(goal_image),
             # current_observation=self._to_pil_image(current_rgb),
             # start_pose_str=self.extract_start_pose(output.episode),
             # metadata=bundle_metadata,
-        )
+        #)

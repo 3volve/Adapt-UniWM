@@ -14,6 +14,8 @@ from transformers import PreTrainedTokenizerFast
 from scripts.postprocess_logits_utils import split_token_sequence
 from scripts.action_utils import generate_bin_tokens, get_action_ranges
 
+VERBOSE_UTILS = False
+
 def image_to_array(observation: Image.Image) -> np.ndarray:
     array = np.asarray(observation, dtype=np.float32)
     return array / 255.0
@@ -71,7 +73,7 @@ def decode_generated_image(
         r_ids = r_ids[0]
 
     generated_results = split_token_sequence(
-        tokens=r_ids.unsqueeze(0).to(model.device),
+        tokens=r_ids.unsqueeze(0).to(model.device), # type: ignore
         image_seq_length=model.image_token_num,
         boi=model.config.boi_token_id,
         eoi=model.config.eoi_token_id,
@@ -80,7 +82,12 @@ def decode_generated_image(
     )
 
     if generated_results["images"]:
-        generated_imgs = torch.cat(generated_results["images"], dim=0).to(model.device)
+        raw_imgs = generated_results["images"]
+        
+        generated_imgs = torch.cat(
+            [raw_imgs] if isinstance(raw_imgs, torch.Tensor) else raw_imgs,
+            dim=0
+        ).to(model.device)
         generated_imgs = model.decode_image_tokens(generated_imgs)
         generated_imgs = processor.postprocess_pixel_values(generated_imgs)
     else:
@@ -88,14 +95,17 @@ def decode_generated_image(
         return None
 
     tensor_img = generated_imgs[0, :, :, :]
-    print(f"[DEBUG] tensor_img.shape: {tensor_img.shape}")
+    if VERBOSE_UTILS:
+        print(f"[DEBUG] tensor_img.shape: {tensor_img.shape}")
 
     np_img = tensor_img.cpu().detach().to(torch.uint8).numpy()
     np_img = np.transpose(np_img, (1, 2, 0))
-    print(f"[DEBUG] np_img.shape: {np_img.shape}")
+    if VERBOSE_UTILS:
+        print(f"[DEBUG] np_img.shape: {np_img.shape}")
 
     img = Image.fromarray(np_img.astype(np.uint8))
-    print(f"[DEBUG] PIL image size: {img.size}")
+    if VERBOSE_UTILS:
+        print(f"[DEBUG] PIL image size: {img.size}")
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -187,14 +197,14 @@ def extract_generated_tokens(outputs: Any) -> torch.Tensor:
         return outputs[0]
     sequences = getattr(outputs, "sequences", None)
     if torch.is_tensor(sequences):
-        return sequences
+        return sequences # type: ignore
     raise TypeError(f"Unsupported UniWM generate output type: {type(outputs)}")
 
 def decode_generated_text(processor: Any, outputs: Any) -> tuple[str, str]:
     tokens = extract_generated_tokens(outputs)
     raw_decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
     if raw_decoded.lower() == "stop":
-        return "stop"
+        return "stop", raw_decoded
 
     pattern = r'(<d[^>]+>)+(<d[^>]+>)'
     decoded = re.sub(pattern, r'\2', raw_decoded)

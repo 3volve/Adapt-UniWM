@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import math, torch
-from typing import Any
+import math, torch, os
+from typing import Any, cast
 
 import numpy as np
 from PIL import Image
 from collections.abc import Mapping
+
+
+# Disable some habitat-based warnings that pollute logs
+os.environ.setdefault("MAGNUM_LOG", "quiet")
+os.environ.setdefault("HABITAT_SIM_LOG", "quiet")
 
 import habitat
 from habitat.config.default import get_config
@@ -16,7 +21,7 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
-from runtime_scripts.datasource_schemas import SourceFormatter, HabitatOutputBundle, SourceAdapter
+from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, HabitatOutputBundle, OutputBundle
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
@@ -26,26 +31,19 @@ EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
 }
 
 
-class HabitatEpisodeAdapter(SourceAdapter):
-    """Thin Habitat environment adapter.
-
-    Responsibilities:
-    - build/close Habitat env
-    - reset Habitat env
-    - step Habitat env with already-mapped Habitat actions
-    - return HabitatOutputBundle
-    """
+class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
+    """Thin Habitat environment adapter."""
 
     source_mode = "habitat"
 
     def __init__(
         self,
-        config_path: str = "benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml",
-        split: str = "val_mini",
-        data_path: str = "data/datasets/instance_imagenav/hm3d/",
-        scenes_dir: str = "data/scene_datasets",
-        max_episode_steps: int = 500,
-        seed: str = "",
+        config_path: str,
+        split: str,
+        data_path: str,
+        scenes_dir: str,
+        max_episode_steps: int,
+        seed: int,
         extra_overrides: list[str] = [],
     ):
         self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
@@ -57,10 +55,11 @@ class HabitatEpisodeAdapter(SourceAdapter):
         self.config = get_config(
             config_path=config_path,
             overrides=[
+                f"habitat.seed={int(seed)}",
                 f"habitat.dataset.split={split}",
                 f"habitat.dataset.data_path={data_path}",
                 f"habitat.dataset.scenes_dir={scenes_dir}",
-                f"habitat.environment.max_episode_steps={max_episode_steps}",
+                f"habitat.environment.max_episode_steps={int(max_episode_steps)}",
                 *extra_overrides,
             ],
         )
@@ -80,15 +79,15 @@ class HabitatEpisodeAdapter(SourceAdapter):
             action_taken=None,
         )
 
-    def step(self, habitat_action: str) -> HabitatOutputBundle:
-        obs = self.env.step(habitat_action)
+    def step(self, action: str) -> HabitatOutputBundle:
+        obs = self.env.step(action)
         self.current_episode = self.env.current_episode
         self.step_index += 1
 
         return self._pack_step(
             obs=obs,
             done=bool(self.env.episode_over),
-            action_taken=habitat_action
+            action_taken=action
         )
 
     @property
@@ -137,7 +136,7 @@ class HabitatEpisodeAdapter(SourceAdapter):
         return step
 
 
-class HabitatUniWMFormatter(SourceFormatter):
+class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
     """Strict converter between Habitat output bundles and UniWM input bundles."""
 
     source_mode = "habitat"
@@ -161,13 +160,13 @@ class HabitatUniWMFormatter(SourceFormatter):
             self.right_angle_turn_repeats = round(90 / turn_step_size)
             self.forward_step_size: float = hab_cfg.habitat.simulator.forward_step_size
 
-    def convert_action(self, action_text: str) -> list[str]:
-        dx, dy, dyaw, action_text = 0.0, 0.0, 0.0, action_text.strip()
-        is_stop = action_text.lower() == "stop"
+    def convert_action(self, action: str) -> list[str]:
+        dx, dy, dyaw, action = 0.0, 0.0, 0.0, action.strip()
+        is_stop = action.lower() == "stop"
 
-        dx: float = extract_bin_values(action_text, "dx", self.bin_step)
-        dy: float = extract_bin_values(action_text, "dy", self.bin_step)
-        dyaw: float = extract_bin_values(action_text, "dyaw", self.bin_step)
+        dx: float = extract_bin_values(action, "dx", self.bin_step)
+        dy: float = extract_bin_values(action, "dy", self.bin_step)
+        dyaw: float = extract_bin_values(action, "dyaw", self.bin_step)
 
         if is_stop:
             return [EXPECTED_HABITAT_ACTIONS["stop"]]

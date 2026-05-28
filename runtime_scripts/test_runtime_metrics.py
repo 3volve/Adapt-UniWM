@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import csv
 import json
+import numpy as np
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from PIL import Image
 
 # This isn't intended as the final metric collection, this is only a temporary demonstration file to start seeing some outputs.
 
@@ -18,6 +20,28 @@ def save_runner_logs(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     def convert(value: Any, path_parts: tuple[str | int, ...]) -> Any:
+        # Skip / summarize any potentially large objects instead of serializing them:
+        if isinstance(value, Image.Image):
+            return {
+                "__omitted__": "PIL.Image",
+                "mode": value.mode,
+                "size": value.size,
+            }
+
+        if isinstance(value, np.ndarray):
+            return {
+                "__omitted__": "np.ndarray",
+                "shape": list(value.shape),
+                "dtype": str(value.dtype),
+            }
+
+        if isinstance(value, bytes):
+            return {
+                "__omitted__": "bytes",
+                "length": len(value),
+            }
+        
+        # Now start adding the normal objects
         if isinstance(value, dict):
             return {
                 key: convert(child, (*path_parts, key))
@@ -29,6 +53,7 @@ def save_runner_logs(
                 convert(child, (*path_parts, index))
                 for index, child in enumerate(value)
             ]
+        
         return value
 
     serialized_logs = convert(logs, ("logs",))

@@ -5,8 +5,9 @@ from typing import Any
 
 import torch
 from PIL import Image
-from peft import PeftModel, PeftMixedModel
-from transformers import PreTrainedTokenizerFast
+from peft.peft_model import PeftModel
+from peft.mixed_model import PeftMixedModel
+from transformers import AdamW, PreTrainedTokenizerFast
 
 from runtime_scripts.runtime_memory_manager import RuntimeMemoryBankManager
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
@@ -31,13 +32,12 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
         "visualization": ["multimodal_generation_mode", "current_substep"]
     },
-    "training": ["initial_lr"],
-    "route": ["max_steps"],
+    "training": ["initial_lr"]
 }
 
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
-    _action_cfg: ActionCfg = ActionCfg
+    _action_cfg: ActionCfg
     _data_id: str = "unknown"
 
     @property
@@ -66,7 +66,7 @@ class UniWMEngine:
         self.processor: PreTrainedTokenizerFast = loaded["processor"]
 
         self.trainable_params = self._online_update_parameters(include_lm_head=False)
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = AdamW(
             self.trainable_params,
             lr=float(self.config["training"]["initial_lr"]),
             weight_decay=0.0,
@@ -100,12 +100,12 @@ class UniWMEngine:
     def predict_route(
         self,
         bundle: UniWMInputBundle,
-        max_steps: int | None = None,
+        max_steps: int,
         output_dir: str | None = None,
     ) -> RoutePrediction:
         start_observation, goal_observation, current_observation, start_pose_str, _ = bundle.unpack()
 
-        limit = int(max_steps) if max_steps is not None else int(self.config["route"]["max_steps"])
+        limit = int(max_steps)
         current = current_observation
         steps: list[StepPrediction] = []
 
@@ -302,7 +302,7 @@ class UniWMEngine:
         return action_text, raw_text, visualization
 
     def _predict_action(self, processor_inputs: Any, is_real_obs: bool) -> tuple[str, str]:
-        with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
             kwargs = self.memory_manager.get_action_kwargs(
                 action_inputs=processor_inputs,
                 action_gen_kwargs=dict(self.config["generation"]["action"]),
@@ -313,7 +313,7 @@ class UniWMEngine:
         return decode_generated_text(self.processor, outputs)
 
     def _predict_visualization(self, processor_inputs: Any, is_real_obs: bool, save_path: str | None) -> Image.Image | None:
-        with torch.no_grad(), torch.amp.autocast(device_type='cuda', dtype=self.model.dtype):
+        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
             kwargs = self.memory_manager.get_viz_kwargs(
                 viz_gen_kwargs=dict(self.config["generation"]["visualization"]),
                 is_real_obs=is_real_obs

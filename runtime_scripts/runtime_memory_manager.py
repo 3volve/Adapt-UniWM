@@ -10,7 +10,7 @@ class RuntimeMemoryBankManager:
         self.current_step = 0
         self.verbose = verbose
 
-    def setup_for_episode(self, episode_id: str = None):
+    def setup_for_episode(self, episode_id: str | None = None):
         """Prepares the memory bank for a new episode."""
         if not self.is_enabled:
             return
@@ -22,7 +22,7 @@ class RuntimeMemoryBankManager:
                 print(f"  Intra-step memory bank reset for episode {episode_id}")
         elif hasattr(self.model, 'memory_bank_initialized'):
             # Fallback: manually reset memory bank state
-            self.model.memory_bank_initialized = False
+            self.model.memory_bank_initialized = False # type: ignore
             if hasattr(self.model, 'model') and hasattr(self.model.model, 'model') and hasattr(self.model.model.model,
                                                                                                'layers'):
                 for layer in self.model.model.model.layers:

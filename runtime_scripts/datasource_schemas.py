@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Generic, TypeVar
 
 from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
@@ -10,41 +12,44 @@ from runtime_scripts.uniwm_schemas import UniWMInputBundle
 
 
 #------------ Abstract Classes ------------#
-class SourceAdapter:
-    """Small environment/replay adapter interface for the episode manager."""
-
-    source_mode = "unknown"
-
-    @classmethod
-    def reset(cls) -> OutputBundle:
-        pass
-
-    @classmethod
-    def step(cls, action_text: str) -> OutputBundle:
-        pass
-
-    @classmethod
-    def close(cls) -> None:
-        pass
-
-class SourceFormatter:
-    """Small environment/replay converter interface for the episode manager."""
-
-    source_mode = "unknown"
-
-    @classmethod
-    def convert_action(cls, action: str) -> list[str]:
-        pass
-
-    @classmethod
-    def convert_observation(cls, output: OutputBundle) -> UniWMInputBundle:
-        pass
-
 @dataclass(frozen=True, kw_only=True)
 class OutputBundle:
     source_mode: str = "unknown"
     done: bool = False
     episode_id: str = "-1"
+T_OutputBundle = TypeVar("T_OutputBundle", bound=OutputBundle)
+
+class SourceAdapter(ABC, Generic[T_OutputBundle]):
+    """Small environment/replay adapter interface for the episode manager."""
+
+    source_mode = "unknown"
+
+    @abstractmethod
+    def reset(self) -> T_OutputBundle:
+        pass 
+
+    @abstractmethod
+    def step(self, action: str) -> T_OutputBundle:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        pass
+T_Adapter = TypeVar("T_Adapter", bound=SourceAdapter)
+
+class SourceFormatter(ABC, Generic[T_OutputBundle]):
+    """Small environment/replay converter interface for the episode manager."""
+
+    source_mode = "unknown"
+
+    @abstractmethod
+    def convert_action(self, action: str) -> list[str]:
+        pass
+    
+    @abstractmethod
+    def convert_observation(self, output: T_OutputBundle) -> UniWMInputBundle:
+        pass
+T_Formatter = TypeVar("T_Formatter", bound=SourceFormatter)
 
 
 #------------ Datasource-Specific Classes ------------#
