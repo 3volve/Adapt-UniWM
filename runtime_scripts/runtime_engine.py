@@ -37,29 +37,22 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
 
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
-    _action_cfg: ActionCfg
-    _data_id: str = "unknown"
-
-    @property
-    def data_id(self):
-        return self._data_id
-
-    @data_id.setter
-    def data_id(self, new_data_id: str) -> None:
-        # NOTE: There might be a better way of setting the action_cfg than this, but this seemed clean enough to me for now
-        self._data_id = "habitat" if new_data_id == "dummy" else new_data_id
-        self._action_cfg = get_action_config(self._data_id)
-
+    _action_cfg: ActionCfg = ActionCfg()
+    
     @property
     def action_cfg(self):
         return self._action_cfg
+    
+    @action_cfg.setter
+    def action_cfg(self, new_cfg_target: str) -> None:
+        self._action_cfg = get_action_config(new_cfg_target)
+        
 
-    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml", data_id = "habitat"):
+    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
         self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
-        self.data_id = data_id
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), None)
         self.model: PeftModel | PeftMixedModel = loaded["model"]

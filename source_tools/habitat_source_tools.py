@@ -46,11 +46,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         seed: int,
         extra_overrides: list[str] = [],
     ):
-        self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
-        self.step_index: int = 0
-        self.last_step: HabitatOutputBundle | None = None
-        self.start_obs: Observations = Observations({})
-        self.goal_image: np.ndarray
+        self.reset_src()
 
         self.config = get_config(
             config_path=config_path,
@@ -67,7 +63,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.env = habitat.Env(config=self.config)
         assert self.env is not None
 
-    def reset(self) -> HabitatOutputBundle:
+    def reset_ep(self) -> HabitatOutputBundle:
         obs: Observations = self.env.reset()
         self.current_episode = self.env.current_episode
         self.step_index = 0
@@ -78,7 +74,18 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             done=bool(self.env.episode_over),
             action_taken=None,
         )
-
+        
+    def reset_src(self, data_id: str = "habitat") -> None:
+        # TODO: Not high prio, but would like to have this start the episodes from the beginning again.
+        self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
+        self.step_index: int = 0
+        self.last_step: HabitatOutputBundle | None = None
+        self.start_obs: Observations = Observations({})
+        self.goal_image: np.ndarray
+        
+        # TODO: The main thing left here is to find the function habitat uses to fully reset the env rather than step the episode.
+        # self.current_episode = self.env.
+        
     def step(self, action: str) -> HabitatOutputBundle:
         obs = self.env.step(action)
         self.current_episode = self.env.current_episode

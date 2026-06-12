@@ -33,7 +33,8 @@ class UniWMWrapper:
         self._reset_wrapper_state()
         self.ready_to_act = False
 
-    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None) -> dict[str, Any]:
+    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None, episode_data_target: str = "unknown") -> dict[str, Any]:
+        self.engine.action_cfg = episode_data_target
         self._reset_wrapper_state()
         self._reset_episode_memory()
         self.latest_bundle = initial_bundle

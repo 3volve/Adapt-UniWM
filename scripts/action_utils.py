@@ -133,7 +133,7 @@ def calculate_action_delta(current_pos_yaw, next_pos_yaw):
 # ===================================================================
 # 3. Action Tokenization Toolkit (Encoder, Decoder, Generator)
 # ===================================================================
-def action_to_text(action, bin_width=0.01, epsilon=1e-5):
+def action_to_text(action: list[float] | str, bin_width=0.01, epsilon=1e-5):
     """Encodes a numerical action vector [dx, dy, dyaw] into a token string."""
     if isinstance(action, str):
         return action

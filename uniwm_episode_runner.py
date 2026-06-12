@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any, Generic
 
@@ -27,38 +28,39 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
     def __init__(
         self,
-        data_id: str,
+        data_type: str,
         config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
         if config_path is None:
-            config_path = resolve_config_path_from_id(data_id)
+            config_path = resolve_config_path_from_id(data_type)
 
         self.config: dict[str, Any] = load_config(config_path).get("runner", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
-        engine = UniWMEngine(config_path, data_id) if engine is None else engine
-        self.wrapper = UniWMWrapper(engine, config_path)
+        self.wrapper = UniWMWrapper(
+            UniWMEngine(config_path) if engine is None else engine,
+            config_path
+        )
 
-        source_classes = self._load_source_classes(data_id)
+        source_classes = self._load_source_classes(data_type)
         self.adapter: T_Adapter = source_classes[0]
         self.formatter: T_Formatter = source_classes[1]
 
         self._episode_logs: list[dict[str, Any]] = []
 
-    def run_episode(self) -> dict[str, Any]:
+    def run_episode(self, data_id: str) -> dict[str, Any]:
         print("[RUNNER]: Starting New Episode")
         # Generate new observation when resetting episode
-        step_result: T_OutputBundle = self.adapter.reset()
+        step_result: T_OutputBundle = self.adapter.reset_ep()
 
         # convert new observation to UniWMInputBundle
         converted_obs: UniWMInputBundle = self.formatter.convert_observation(step_result)
-        conv_info = converted_obs.metadata
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_result.episode_id)
+        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_result.episode_id, data_id)
 
-        episode_index = len(self._episode_logs)
+        conv_info = converted_obs.metadata
         step_logs: list[dict[str, Any]] = []
         termination_reason = "max_episode_steps"
         steps_executed = 0
@@ -90,7 +92,6 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             if self.config["log_every_step"]:
                 step_logs.append(
                     {
-                        "episode_index": episode_index,
                         "step_idx": step_idx,
                         "action_text": planned_action,
                         "wrapper_requested_stop": wrapper_requested_stop,
@@ -110,7 +111,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
                 break
 
         episode_log = {
-            "episode_index": episode_index,
+            "episode_index": len(self._episode_logs),
             "episode_id": step_result.episode_id,
             "adapter_source_mode": self.adapter.source_mode,
             "max_episode_steps": self.config["max_episode_steps"],
@@ -126,19 +127,27 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self._episode_logs.append(episode_log)
         return episode_log
 
-    def run_episodes(self, num_episodes: int):
-        # TODO: Fix run_episodes to intelligently target the number of episodes for a specific target data source type somehow and run all available episodes if passed a -1 for num_episodes
-        [self.run_episode() for _ in range(num_episodes)]
+    def run_episodes(self, num_episodes: int, data_id: str):
+        if num_episodes == -1:
+            num_episodes = self.config["source_max_episodes"]
+        
+        data_ids = [data_id]
+        if ',' in data_id:
+            data_ids = [id.strip() for id in data_id.split(',')]
+            
+        for id in data_ids:
+            self.adapter.reset_src(id)
+            [self.run_episode(id) for _ in range(num_episodes)]
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
 
-    def _load_source_classes(self, data_id: str) -> tuple[T_Adapter, T_Formatter]:
+    def _load_source_classes(self, data_type: str) -> tuple[T_Adapter, T_Formatter]:
         source_tools_name = self.config.get("source_file_name")
 
         # Source-tools file default naming should be an allowed simplification
         if source_tools_name is None:
-            source_tools_name = f"{data_id.lower()}_source_tools"
+            source_tools_name = f"{data_type.lower()}_source_tools"
 
         file_path = Path(__file__).resolve().parent / "source_tools" / f"{source_tools_name}.py"
         if not file_path.is_file():
@@ -153,15 +162,14 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        adapter_class_name = f"{data_id.capitalize()}EpisodeAdapter"
+        adapter_class_name = f"{data_type.capitalize()}EpisodeAdapter"
         adapter_cls = getattr(module, adapter_class_name, None)
 
         if adapter_cls is None:
             raise AssertionError(f"Unable to find expected adapter class {adapter_class_name} from environment config path '{file_path}'")
 
-        formatter_class_name = f"{data_id.capitalize()}UniWMFormatter"
+        formatter_class_name = f"{data_type.capitalize()}UniWMFormatter"
         formatter_cls = getattr(module, formatter_class_name, None)
-
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
@@ -171,12 +179,13 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument("--data_type", type=str, default="habitat")
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
     args = parser.parse_args()
 
-    runner = UniWMEpisodeRunner(data_id=args.data_id)
-    runner.run_episodes(num_episodes=args.num_episodes)
+    runner = UniWMEpisodeRunner(args.data_type)
+    runner.run_episodes(args.num_episodes, args.data_id)
 
     save_runner_logs(runner.get_logs(), args.output_dir, args.data_id)

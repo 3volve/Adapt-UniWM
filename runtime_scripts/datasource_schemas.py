@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
+from PIL import Image
 from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
 from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisode
@@ -25,7 +26,11 @@ class SourceAdapter(ABC, Generic[T_OutputBundle]):
     source_mode = "unknown"
 
     @abstractmethod
-    def reset(self) -> T_OutputBundle:
+    def reset_ep(self) -> T_OutputBundle:
+        pass 
+    
+    @abstractmethod
+    def reset_src(self, data_id: str) -> None:
         pass 
 
     @abstractmethod
@@ -69,10 +74,10 @@ class HabitatOutputBundle(OutputBundle):
 class ReplayOutputBundle(OutputBundle):
     source_mode: str = "replay"
 
-    # start_obs: Observations
-    # current_obs: Observations
-    # metrics: Mapping[str, object]
-    # episode: Any
-    # step_index: int
-    # action_taken: str | None
-    # metadata: Mapping[str, object] = field(default_factory=dict)
+    start_observation: Image.Image
+    goal_observation: Image.Image
+    current_observation: Image.Image
+    start_pose: list[float]
+    step_index: int
+    action_taken: list[float] | None
+    metadata: Mapping[str, object] = field(default_factory=dict)

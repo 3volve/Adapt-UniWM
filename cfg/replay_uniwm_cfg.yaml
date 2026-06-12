@@ -49,9 +49,11 @@ runner:
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: replay_source_tools
+  source_max_episodes: 64
 
   adapter_params:
-    placeholder: ""
+    data_root: eval_data
+    manifest_path: cfg/eval_dataset_manifest.json
 
   formatter_params:
     linear_deadband: 0.02
