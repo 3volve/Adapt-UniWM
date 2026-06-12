@@ -6,10 +6,12 @@
 # in/output
 output/
 models
+checkpoints/
 zero/
 models/
 cross.zip
 data/
+eval_data/
 *_step_frames/
 
 * copy.py

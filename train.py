@@ -186,6 +186,7 @@ if __name__ == '__main__':
 
     # model argument
     parser.add_argument('--model_ckpt', type=str, default=None, help='path of the checkpoint')
+    parser.add_argument('--init_lora_ckpt', type=str, default=None, help='Initialize trainable LoRA weights from this checkpoint without resuming Trainer state.')
     parser.add_argument('--load_last_checkpoint', action='store_true')
     parser.add_argument('--action_range_profile', type=str, default=None, help='Optional explicit action-range profile to use instead of the dataset default.')
 

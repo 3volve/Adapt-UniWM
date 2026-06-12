@@ -1,9 +1,9 @@
-import requests
 import torch
-import math
+from peft import LoraConfig
+from peft.mapping import get_peft_model
+from peft.peft_model import PeftModel
 
-from transformers import AutoProcessor, AutoModelForVision2Seq
-from transformers.image_utils import load_image
+from transformers import AutoProcessor
 
 def load_model(args, training_cfg):
     print("image_seq_length received:", args.image_seq_length)
@@ -35,14 +35,28 @@ def load_model(args, training_cfg):
                 codebook_sim="mse"
             )
 
-        # NEW: Conditionally load processor from ckpt in inference to match extended vocab size
-        is_inference_only = (args.do_single_step_eval or args.do_task_level_eval or args.do_rollout_eval) and not args.do_train and model_ckpt_path
-        if is_inference_only:
-            print("Loading processor from checkpoint for inference (to match vocab size).")
-            processor = AutoProcessor.from_pretrained(model_ckpt_path, image_seq_length=image_token_num)
+        # Conditionally load processor from ckpt in inference to match extended vocab size
+        # NEW: Now also conditionally load just the lora weights for training whether inference or not
+        init_lora_ckpt_path = getattr(args, "init_lora_ckpt", None)
+
+        is_inference_only = (
+            args.do_single_step_eval or args.do_task_level_eval or args.do_rollout_eval
+        ) and not args.do_train and model_ckpt_path
+
+        processor_ckpt_path = init_lora_ckpt_path or (model_ckpt_path if is_inference_only else None)
+
+        if processor_ckpt_path:
+            print(f"Loading processor from checkpoint: {processor_ckpt_path}")
+            processor = AutoProcessor.from_pretrained(
+                processor_ckpt_path,
+                image_seq_length=image_token_num,
+            )
         else:
-            print("Loading processor from base for training.")
-            processor = AutoProcessor.from_pretrained("leloy/Anole-7b-v0.1-hf", image_seq_length=image_token_num)
+            print("Loading processor from base.")
+            processor = AutoProcessor.from_pretrained(
+                "leloy/Anole-7b-v0.1-hf",
+                image_seq_length=image_token_num,
+            )
 
         # NEW: Always resize base model if tokenizer size doesn't match (handles inference case)
         tokenizer_size = len(processor.tokenizer)
@@ -84,9 +98,6 @@ def load_model(args, training_cfg):
 
         model.get_vis_codebook_sim()
 
-        from peft import LoraConfig, get_peft_model
-        from peft.peft_model import PeftModel
-
         config = LoraConfig(
             r=8,
             lora_alpha=16,
@@ -95,10 +106,22 @@ def load_model(args, training_cfg):
             bias="none",
             modules_to_save=["lm_head"],
         )
-        lora_model = get_peft_model(model, config)
-
-        if is_inference_only:
-            lora_model = PeftModel.from_pretrained(model, model_ckpt_path, is_trainable=False)
+        
+        if init_lora_ckpt_path:
+            print(f"Initializing trainable LoRA from checkpoint: {init_lora_ckpt_path}")
+            lora_model = PeftModel.from_pretrained(
+                model,
+                init_lora_ckpt_path,
+                is_trainable=True,
+            )
+        elif is_inference_only:
+            lora_model = PeftModel.from_pretrained(
+                model,
+                model_ckpt_path,
+                is_trainable=False,
+            )
+        else:
+            lora_model = get_peft_model(model, config)
 
         return {
             'processor': processor,
