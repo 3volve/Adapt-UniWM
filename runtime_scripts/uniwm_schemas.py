@@ -23,15 +23,21 @@ class UniWMInputBundle:
             self.action_text
         )
 
+@dataclass(frozen=True)
+class MemorySnapshot:
+    current_step: int
+    stored_keys: tuple[torch.Tensor | None, ...]
+    stored_values: tuple[torch.Tensor | None, ...]
+
 @dataclass()
 class StepPrediction:
     input_bundle: UniWMInputBundle
-    action_text: str
-    raw_act: str
-    visualization: Image.Image | None
-    viz_token_ids: torch.LongTensor | None = None
 
-    real_viz_token_ids: torch.LongTensor | None = None
+    action_text: str
+    visualization: Image.Image | None
+
+    real_input_obs: Image.Image | None = None
+    real_next_obs: Image.Image | None = None
 
 @dataclass(frozen=True)
 class RoutePrediction:

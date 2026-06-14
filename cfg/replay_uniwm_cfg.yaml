@@ -29,20 +29,34 @@ engine:
       current_substep: visualization
 
   training:
-    initial_lr: 2e-5
+    hyper_params:
+      initial_lr: 2e-5
+
+    visualization:
+      use_cache: false
+
+    loss:
+      include_action_loss: true
+      include_image_loss: true
+      action_loss_weight: 1.0
+      image_loss_weight: 1.0
+      ignore_index: -100
+      log_prefix: "replay_loss_"
 
   route:
     max_steps: 10
 
 
 wrapper:
-  max_route_steps: null
+  max_route_steps: 8
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
   memory_mode: "off"
   log_predicted_observations: true
   log_real_observations: true
+  add_global_memories: false
+  training_enabled: false
 
 runner:
   max_episode_steps: 100
@@ -60,11 +74,3 @@ runner:
     angular_deadband: 0.02
     image_w: 256
     image_h: 256
-
-loss:
-  include_action_loss: true
-  include_image_loss: true
-  action_loss_weight: 1.0
-  image_loss_weight: 1.0
-  ignore_index: -100
-  log_prefix: ""

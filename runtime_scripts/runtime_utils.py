@@ -67,7 +67,7 @@ def decode_generated_image(
     outputs: Any,
     save_path: str | None = None,
 ) -> Image.Image | None:
-    r_ids = extract_generated_tokens(outputs)
+    r_ids: torch.Tensor = extract_generated_tokens(outputs)
 
     if r_ids.dim() == 2:
         r_ids = r_ids[0]
@@ -165,25 +165,6 @@ def _resize_model_embeddings(model: Any, processor: Any) -> None:
     if callable(inner_resize):
         inner_resize(tokenizer_size)
 
-def processor_inputs_from_prompt(
-    processor: PreTrainedTokenizerFast,
-    *,
-    input_text: str,
-    input_images: list[Image.Image],
-    device: str | None = None,
-) -> Any:
-    if not isinstance(input_images[0], Image.Image) or not isinstance(input_images, list):
-        raise AssertionError(f"Input images given for processor inputs must be a list of Image.Image types.  Instead found: {type(input_images)}[{type(input_images[0])}]")
-
-    inputs = processor(
-        text=[input_text],
-        images=input_images,
-        return_tensors="pt",
-    )
-    if device and hasattr(inputs, "to"):
-        return inputs.to(device)
-    return inputs
-
 def detach_processor_inputs(inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {
         key: value.detach().cpu().clone() if torch.is_tensor(value) else value
@@ -200,15 +181,15 @@ def extract_generated_tokens(outputs: Any) -> torch.Tensor:
         return sequences # type: ignore
     raise TypeError(f"Unsupported UniWM generate output type: {type(outputs)}")
 
-def decode_generated_text(processor: Any, outputs: Any) -> tuple[str, str]:
+def decode_generated_text(processor: Any, outputs: Any) -> str:
     tokens = extract_generated_tokens(outputs)
     raw_decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
     if raw_decoded.lower() == "stop":
-        return "stop", raw_decoded
+        return "stop"
 
     pattern = r'(<d[^>]+>)+(<d[^>]+>)'
     decoded = re.sub(pattern, r'\2', raw_decoded)
-    return decoded, raw_decoded
+    return decoded
 
 def configure_action_tokenizer(model: Any, processor: Any, config: Mapping[str, Any]) -> None:
     token_cfg = dict(config.get("action_token_generation", {}))

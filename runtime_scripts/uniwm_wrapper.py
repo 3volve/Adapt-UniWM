@@ -22,7 +22,9 @@ REQUIRED_FIELDS: list[str] = [
     "replan_on_route_exhausted",
     "memory_mode",
     "log_predicted_observations",
-    "log_real_observations"
+    "log_real_observations",
+    "add_global_memories",
+    "training_enabled"
 ]
 
 class UniWMWrapper:
@@ -36,9 +38,8 @@ class UniWMWrapper:
     def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None, episode_data_target: str = "unknown") -> dict[str, Any]:
         self.engine.action_cfg = episode_data_target
         self._reset_wrapper_state()
-        self._reset_episode_memory()
         self.latest_bundle = initial_bundle
-        self.engine.reset_memory(episode_id)
+        self.engine.reset_episode(episode_id, initial_bundle)
         self._plan_route(initial_bundle, reason="episode_reset")
         return self.get_state_snapshot()
 
@@ -50,19 +51,20 @@ class UniWMWrapper:
         if not self.current_route or self.route_index >= len(self.current_route):
             if self.config["replan_on_route_exhausted"] and self.latest_bundle is not None:
                 self.replan_route(self.latest_bundle, reason="route_exhausted")
+                self.ready_to_act = False
             else:
                 return "stop"
 
         if not self.current_route or self.route_index >= len(self.current_route):
             return "stop"
 
-        step = self.current_route.steps[self.route_index]
-        self.pending_step = step
+        current_step = self.current_route.steps[self.route_index]
+        self.pending_step = current_step
         self.pending_step_idx = self.route_index
-        self.last_planned_action = step.action_text
-        self.last_predicted_observation = step.visualization
+        self.last_planned_action = current_step.action_text
+        self.last_predicted_observation = current_step.visualization
         self.route_index += 1
-        return step.action_text
+        return current_step.action_text
 
     def observe_transition(
         self,
@@ -77,8 +79,21 @@ class UniWMWrapper:
         real_obs = observed_bundle.current_observation
         divergence = 0
         
+        
+        if len(self.current_route) > self.route_index:
+            next_step = self.current_route.steps[self.route_index]
+            next_step.real_input_obs = real_obs
+        pending_step.real_next_obs = real_obs
+        
+        
         if pending_step and not is_stop_action(pending_step.action_text):
             divergence = self.compute_divergence(pending_step.visualization, real_obs)
+            
+            # TODO: Decide logic for determining whether to train or not.
+            if self.config["training_enabled"]:
+                self.engine.train_viz_step(pending_step, 1)
+            
+            self.engine.init_working_memory(real_obs, observed_bundle.start_pose_str, self.config["add_global_memories"])
 
         replan_reason = None
         replanned = False
@@ -159,15 +174,6 @@ class UniWMWrapper:
         self.last_divergence: float | None = None
         self.latest_bundle: UniWMInputBundle | None = None
 
-    def _reset_episode_memory(self) -> None:
-        model = getattr(self.engine, "model", None)
-        if model is None:
-            return
-        if hasattr(model, "reset_memory_bank"):
-            model.reset_memory_bank()
-        if hasattr(model, "reset_global_memory_bank"):
-            model.reset_global_memory_bank()
-
     def _plan_route(self, bundle: UniWMInputBundle, *, reason: str) -> None:
         self.current_route = self.engine.predict_route(
             bundle,
@@ -175,9 +181,10 @@ class UniWMWrapper:
         )
         self.route_index = 0
         self.route_generation += 1
-        aggregated_obs = [self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps]
         self.ready_to_act = True
-
+        self.current_route.steps[0].real_input_obs = bundle.current_observation
+        aggregated_obs = [self._logged_observation(step.visualization, predicted=True) for step in self.current_route.steps]
+        
         self.route_history.append(
             RouteRecord(
                 route_generation=self.route_generation,

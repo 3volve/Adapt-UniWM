@@ -661,6 +661,82 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                     layer.self_attn.use_memory_bank = True
         print("Memory bank enabled for all custom attention layers")
     
+    def initialize_memory_bank_no_pixels(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
+        """
+        Initialize memory bank by extracting K,V from pre-tokenized images
+        
+        Args:
+            input_ids: Input token IDs containing special tokens or image tokens
+            attention_mask: Attention mask
+        """
+        print(f"Initializing memory bank with input shapes:")
+        print(f"  Input IDs: {input_ids.shape}")
+        print(f"  Attention mask: {attention_mask.shape}")
+        
+        # Check for special token pairs first
+        input_ids_list = input_ids.squeeze().tolist() if input_ids.dim() > 1 else input_ids.tolist()
+        pairs = []
+        i = 0
+        while i < len(input_ids_list):
+            if input_ids_list[i] == self.special_token_start:
+                for j in range(i + 1, len(input_ids_list)):
+                    if input_ids_list[j] == self.special_token_end:
+                        pairs.append((i, j))
+                        i = j
+                        break
+                else:
+                    break
+            i += 1
+        
+        use_special_tokens = len(pairs) >= 3
+        
+        if use_special_tokens:
+            print(f"Found {len(pairs)} special token pairs: {pairs}")
+            print(f"Using third pair: {pairs[2]}")
+        else:
+            print(f"Warning: Insufficient tokens for memory bank initialization")
+            return False
+        
+        # Ensure proper data types for initialization
+        target_dtype = self.config.torch_dtype if hasattr(self.config, 'torch_dtype') else torch.bfloat16
+        
+        
+        # Prepare inputs for forward pass (without memory bank parameters for base model)
+        model_inputs = {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask
+        }
+        
+        # Set memory bank parameters as instance variables for layers to access
+        self._temp_use_memory_bank = True
+        self._temp_is_memory_bank_init = True
+        self._temp_input_ids = input_ids
+        
+        # Run forward pass to initialize memory bank
+        with torch.no_grad():
+            try:
+                outputs = self.model(**model_inputs)
+                self.memory_bank_initialized = True
+                if hasattr(self.model, 'layers'):
+                    for layer in self.model.layers:
+                        if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
+                            print(f"Layer {layer.self_attn.layer_idx}: memory_bank_initialized = {layer.self_attn.memory_bank_initialized}")
+                            # print(f"Layer {layer.self_attn.layer_idx}: stored_keys = {layer.self_attn.stored_keys}")
+                            if layer.self_attn.stored_keys is not None:
+                                print(f"layer stored keys shape: {layer.self_attn.stored_keys.shape}")
+                            else:
+                                print(f"Layer {layer.self_attn.layer_idx}: stored_keys is None - initialization failed")
+                return True
+            except Exception as e:
+                print(f"Memory bank initialization failed: {e}")
+                print(f"Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}")
+                return False
+            finally:
+                # Clean up temporary variables
+                self._temp_use_memory_bank = False
+                self._temp_is_memory_bank_init = False
+                self._temp_input_ids = None
+    
     def initialize_memory_bank(self, input_ids: torch.Tensor, pixel_values: torch.Tensor, attention_mask: torch.Tensor):
         """
         Initialize memory bank by extracting K,V from special tokens or image tokens.

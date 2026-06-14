@@ -151,7 +151,7 @@ def compute_supervised_uniwm_loss(
     tokenizer: Any,
     loss_config: dict[str, Any],
     label_smoother: Any | None = None,
-    action_config: ActionCfg | None,
+    action_config: ActionCfg | None = None,
 ) -> tuple[Tensor, dict]:
     """
     Compute the combined UniWM supervised loss.

@@ -2,12 +2,17 @@
 import torch
 from torch import nn
 
+from runtime_scripts.uniwm_schemas import MemorySnapshot
+
 
 class RuntimeMemoryBankManager:
+    _cached_step_state: MemorySnapshot | None = None
+
     def __init__(self, model: nn.Module, use_memory_bank_inference: bool, verbose: bool = False):
         self.model = model
         self.is_enabled = use_memory_bank_inference
         self.current_step = 0
+        self._current_flashback_idx = self.current_step
         self.verbose = verbose
 
     def setup_for_episode(self, episode_id: str | None = None):
@@ -66,138 +71,81 @@ class RuntimeMemoryBankManager:
             if self.verbose:
                 print(f"  Step {self.current_step}: intra memory bank reset for action prediction")
 
-    def get_action_kwargs(self, action_inputs, action_gen_kwargs, is_real_obs=True):
-        """
-        Note: Needs to be within a nested torch.amp.autocast(device_type='cuda', dtype=self.model.dtype) context
-        """
-        if not self.is_enabled or not is_real_obs:
+    def load_cached_state(self) -> None:
+        if self._cached_step_state is None:
+            raise AssertionError("Attempted to load a cached memory state that hadn't been set.")
+
+        layers = [
+            self.model.model.model.layers[index]
+            for index in sorted(self.model.model.use_memory_bank_layers)
+        ]
+
+        for index, layer in enumerate(layers):
+            attention = layer.self_attn
+            attention.memory_bank_initialized = self._cached_step_state.stored_keys[index] is not None
+            attention.stored_keys = self._cached_step_state.stored_keys[index]
+            attention.stored_values = self._cached_step_state.stored_values[index]
+
+        self.current_step = self._cached_step_state.current_step
+
+        self._cached_step_state = None
+
+    def cache_step_state(self) -> None:
+        if self._cached_step_state is not None:
+            raise AssertionError("Attempted to cache a memory state while one was still cached.")
+
+        attentions = [
+            self.model.model.model.layers[index].self_attn
+            for index in sorted(self.model.model.use_memory_bank_layers)
+        ]
+
+        self._cached_step_state = MemorySnapshot(
+            current_step=self.current_step,
+            stored_keys=tuple(attention.stored_keys for attention in attentions),
+            stored_values=tuple(attention.stored_values for attention in attentions)
+        )
+
+    def reset_memory_state_to_step(self, target_step: int):
+        self.cache_step_state()
+
+        self.current_step = target_step
+        self._current_flashback_idx = target_step
+
+    def restore_memory_state_to_current(self):
+        self.load_cached_state()
+        self._current_flashback_idx = self.current_step
+
+    def initialize_step_memory(self, processor_inputs):
+        if not self.is_enabled or self.model.memory_bank_initialized:
+            return
+        
+        with torch.autocast(device_type='cuda', dtype=self.model.dtype):
+            self.model.initialize_memory_bank_no_pixels(
+                input_ids=processor_inputs['input_ids'],
+                attention_mask=processor_inputs['attention_mask']
+            )
+
+    def get_action_kwargs(self, action_gen_kwargs):
+        if not self.is_enabled:
             action_gen_kwargs.pop("current_step", None)
             action_gen_kwargs.pop("current_substep", None)
             return action_gen_kwargs
 
-        step = self.current_step - 1
-
-        # Check for memory bank initialization (third pair of 8197 and 8196 tokens)
-        input_ids_list = action_inputs['input_ids'][0].tolist()
-        # Always try to initialize memory bank for each step (intra-step memory bank)
-        if hasattr(self.model, 'initialize_memory_bank') and not getattr(self.model, 'memory_bank_initialized', False):
-
-            # Count pairs of 8197 and 8196 tokens
-            pairs_count = 0
-            i = 0
-            while i < len(input_ids_list) - 1:
-                if input_ids_list[i] == 8197:
-                    for j in range(i + 1, len(input_ids_list)):
-                        if input_ids_list[j] == 8196:
-                            pairs_count += 1
-                            i = j
-                            break
-                    else:
-                        break
-                i += 1
-
-            # Initialize memory bank if we have at least 3 pairs, or fallback to any image tokens
-            should_initialize = False
-            init_method = ""
-
-            if pairs_count >= 3:
-                should_initialize = True
-                init_method = f"special token pairs (found {pairs_count})"
-
-            if should_initialize:
-                if self.verbose:
-                    print(f"  Step {step + 1}: Initializing memory bank using {init_method}")
-
-                # try:
-                self.model.initialize_memory_bank(
-                    input_ids=action_inputs['input_ids'],
-                    pixel_values=action_inputs['pixel_values'],
-                    attention_mask=action_inputs['attention_mask']
-                )
-                if self.verbose:
-                    print(f"  Step {step + 1}: Memory bank initialization completed successfully")
-                    # Print memory bank storage details if available
-                    if hasattr(self.model, 'model') and hasattr(self.model.model, 'model') and hasattr(
-                            self.model.model.model, 'layers'):
-                        for layer_idx, layer in enumerate(self.model.model.model.layers):
-                            if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'stored_keys'):
-                                if layer.self_attn.stored_keys is not None:
-                                    print(
-                                        f"    - Layer {layer_idx}: Stored keys shape: {layer.self_attn.stored_keys.shape}")
-                                    print(
-                                        f"    - Layer {layer_idx}: Stored values shape: {layer.self_attn.stored_values.shape}")
-                                    print(
-                                        f"    - Layer {layer_idx}: Memory bank storage size: {layer.self_attn.stored_keys.numel() + layer.self_attn.stored_values.numel()} elements")
-                # except Exception as e:
-                #     if self.verbose:
-                #         print(f"  Warning: Memory bank initialization failed: {e}")
-            else:
-                if self.verbose:
-                    print(f"  Step {step + 1}: Warning - No suitable tokens found for memory bank initialization")
-
-        # Print memory bank usage details before generation
-        if hasattr(self.model, 'memory_bank_initialized') and self.model.memory_bank_initialized:
-            if self.verbose:
-                print(f"  Step {step + 1}: Using memory bank for action generation")
-
-                # Print stored K,V sizes if available
-                if hasattr(self.model, 'model') and hasattr(self.model.model, 'model') and hasattr(
-                        self.model.model.model, 'layers'):
-                    for layer_idx, layer in enumerate(self.model.model.model.layers):
-                        if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'stored_keys'):
-                            if layer.self_attn.stored_keys is not None:
-                                print(
-                                    f"    - Layer {layer_idx}: Using stored K shape: {layer.self_attn.stored_keys.shape}")
-                                print(
-                                    f"    - Layer {layer_idx}: Using stored V shape: {layer.self_attn.stored_values.shape}")
-
-        # Two-phase action generation with memory bank
         action_gen_kwargs_with_memory = action_gen_kwargs.copy()
-        # Remove any existing memory bank parameters to avoid conflicts
-        action_gen_kwargs_with_memory.pop('use_memory_bank', None)
-        action_gen_kwargs_with_memory.pop('is_memory_bank_init', None)
-        action_gen_kwargs_with_memory.pop('current_step', None)
-        action_gen_kwargs_with_memory.pop('current_substep', None)
-        action_gen_kwargs_with_memory.pop('use_global_memory_bank', None)
 
-        # Use global memory bank if we have previous steps (current_step > 1)
         use_global_mb = self.current_step > 1
-
-        # Phase 1: Initialize memory bank (dummy generation to extract K,V)
-        init_kwargs = action_gen_kwargs_with_memory.copy()
-        init_kwargs.update({
+        action_gen_kwargs_with_memory.update({
             'use_memory_bank': True,
-            'is_memory_bank_init': True,  # Initialize memory bank
-            'current_step': self.current_step,
-            'current_substep': 'action',
-            'use_global_memory_bank': False,  # Don't use global during init
-            'max_new_tokens': 1  # Minimal generation for initialization
-        })
-
-        if self.verbose:
-            print(f"  Step {step + 1}: Memory bank initialization phase")
-
-        _ = self.model.generate(**action_inputs, **init_kwargs)
-
-        # Phase 2: Actual action generation using initialized memory bank
-        gen_kwargs = action_gen_kwargs_with_memory.copy()
-        gen_kwargs.update({
-            'use_memory_bank': True,
-            'is_memory_bank_init': False,  # Use existing memory bank
+            'is_memory_bank_init': False,
             'current_step': self.current_step,
             'current_substep': 'action',
             'use_global_memory_bank': use_global_mb
         })
 
-        if self.verbose:
-            print(f"  Step {step + 1}: Action generation using memory bank (global: {use_global_mb})")
-        return gen_kwargs
+        return action_gen_kwargs_with_memory
 
-    def get_viz_kwargs(self, viz_gen_kwargs, is_real_obs=True):
-        """
-        Note: Needs to be within a nested torch.amp.autocast(device_type='cuda', dtype=self.model.dtype) context
-        """
-        if not self.is_enabled or not is_real_obs:
+    def get_viz_kwargs(self, viz_gen_kwargs):
+        if not self.is_enabled:
             viz_gen_kwargs.pop("current_step", None)
             viz_gen_kwargs.pop("current_substep", None)
             return viz_gen_kwargs
@@ -207,6 +155,7 @@ class RuntimeMemoryBankManager:
 
         # Enable memory bank for visualization generation
         viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
+        
         # Use global memory bank for visualization (always available since we're in step >= 1)
         use_global_mb_viz = self.current_step >= 1
         viz_gen_kwargs_with_memory.update({
@@ -220,7 +169,7 @@ class RuntimeMemoryBankManager:
 
     def store_step_memory(self):
         """Stores the current step's K,V pairs into the global memory bank."""
-        if not self.is_enabled:
+        if not self.is_enabled or not self.model.memory_bank_initialized:
             return
 
         # Store current step's intra-step K,V to global cross-step memory bank

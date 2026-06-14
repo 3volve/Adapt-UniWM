@@ -31,7 +31,19 @@ engine:
       current_substep: visualization
 
   training:
-    initial_lr: 2e-5
+    hyper_params:
+      initial_lr: 2e-5
+
+    visualization:
+      use_cache: false
+
+    loss:
+      include_action_loss: true
+      include_image_loss: true
+      action_loss_weight: 1.0
+      image_loss_weight: 1.0
+      ignore_index: -100
+      log_prefix: "habitat_loss_"
 
 
 wrapper:
@@ -42,6 +54,8 @@ wrapper:
   memory_mode: off
   log_predicted_observations: true
   log_real_observations: true
+  add_global_memories: true
+  training_enabled: true
 
 runner:
   max_episode_steps: 2
@@ -62,11 +76,3 @@ runner:
     angular_deadband: 0.01
     image_w: 448
     image_h: 448
-
-loss:
-  include_action_loss: true
-  include_image_loss: true
-  action_loss_weight: 1.0
-  image_loss_weight: 1.0
-  ignore_index: -100
-  log_prefix: ""
