@@ -1,22 +1,27 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from scripts.uniwm_losses import compute_supervised_uniwm_loss
 import torch
+from torch.optim.adamw import AdamW
 from PIL import Image
 from peft.peft_model import PeftModel
 from peft.mixed_model import PeftMixedModel
-from transformers import AdamW, PreTrainedTokenizerFast
+from transformers import ChameleonProcessor, PreTrainedTokenizerFast
 
 from runtime_scripts.runtime_memory_manager import RuntimeMemoryBankManager
-from runtime_scripts.uniwm_schemas import MemorySnapshot, UniWMInputBundle, StepPrediction, RoutePrediction
+from runtime_scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
 from scripts.load_model import load_model
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
-from scripts.action_utils import get_action_config, ActionCfg
+from scripts.action_utils import (
+    generate_bin_tokens,
+    get_action_ranges,
+    get_action_config,
+    ActionCfg
+)
 from runtime_scripts.runtime_utils import (
-    configure_action_tokenizer,
     decode_generated_image,
     decode_generated_text,
     step_image_output_path,
@@ -60,26 +65,30 @@ class UniWMEngine:
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), None)
         self.model: PeftModel | PeftMixedModel = loaded["model"]
-        self.processor: PreTrainedTokenizerFast = loaded["processor"]
+        raw_processor = loaded["processor"]
+        
+        self.processor = cast(ChameleonProcessor, raw_processor)
+        self.tokenizer = cast(PreTrainedTokenizerFast, raw_processor.tokenizer)
+        self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
+        self._configure_action_tokenizer()
 
-        self.trainable_params = self._online_update_parameters(include_lm_head=False)
-        self.optimizer = AdamW(
-            self.trainable_params,
+
+        self._trainable_params = self._online_update_parameters(include_lm_head=False)
+        self._optimizer = AdamW(
+            self._trainable_params,
             lr=float(self.config["training"]["hyper_params"]["initial_lr"]),
             weight_decay=0.0,
         )
 
-        self.memory_manager = RuntimeMemoryBankManager(self.model, self.config["load_model_args"]["use_memory_bank_inference"])
-        configure_action_tokenizer(self.model, self.processor, self.config)
-
+        self._memory_manager = RuntimeMemoryBankManager(self.model, self.config["load_model_args"]["use_memory_bank_inference"])
         if hasattr(self.model, "eval"):
             self.model.eval()
 
     def reset_episode(self, episode_id: str | None, bundle: UniWMInputBundle):
-        self.memory_manager.setup_for_episode(episode_id=episode_id)
-        self.start_tok_obs = self._image_to_vq_bpe_tokens(bundle.start_observation)
-        self.goal_tok_obs = self._image_to_vq_bpe_tokens(bundle.goal_observation)
-        self.current_tok_obs = self._image_to_vq_bpe_tokens(bundle.current_observation)
+        self._memory_manager.setup_for_episode(episode_id=episode_id)
+        self._start_tok_obs = self._image_to_vq_bpe_tokens(bundle.start_observation)
+        self._goal_tok_obs = self._image_to_vq_bpe_tokens(bundle.goal_observation)
+        self._current_tok_obs = self._image_to_vq_bpe_tokens(bundle.current_observation)
         
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
@@ -90,17 +99,17 @@ class UniWMEngine:
             ),
         )
         
-        self.memory_manager.start_new_step()
-        self.memory_manager.initialize_step_memory(action_inputs)
+        self._memory_manager.start_new_step()
+        self._memory_manager.initialize_step_memory(action_inputs)
         
     def init_working_memory(self, real_obs: Image.Image, start_pose_str: str, store_global_memory: bool = True):
-        if self.start_tok_obs is None or self.goal_tok_obs is None:
+        if self._start_tok_obs is None or self._goal_tok_obs is None:
             raise AssertionError("Attempted to store step memory before encoding the goal or start observations.")
         
         if store_global_memory:
-            self.memory_manager.store_step_memory()
+            self._memory_manager.store_step_memory()
         
-        self.current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
+        self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
         
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
@@ -111,8 +120,8 @@ class UniWMEngine:
             ),
         )
         
-        self.memory_manager.start_new_step()
-        self.memory_manager.initialize_step_memory(action_inputs)
+        self._memory_manager.start_new_step()
+        self._memory_manager.initialize_step_memory(action_inputs)
         
     def predict_step(
             self,
@@ -139,8 +148,8 @@ class UniWMEngine:
         current = current_observation
         steps: list[StepPrediction] = []
         
-        self.memory_manager.cache_step_state()
-        cached_current_tok_obs = self.current_tok_obs
+        self._memory_manager.cache_step_state()
+        cached_current_tok_obs = self._current_tok_obs
         
         for step_index in range(limit):
             save_path = step_image_output_path(output_dir, step_index)
@@ -161,20 +170,20 @@ class UniWMEngine:
 
             steps.append(StepPrediction(new_bundle, step_action, step_viz))
             if is_stop_action(step_action):
-                self.memory_manager.load_cached_state()
-                self.current_tok_obs = cached_current_tok_obs
+                self._memory_manager.load_cached_state()
+                self._current_tok_obs = cached_current_tok_obs
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             if step_viz is None:
-                self.memory_manager.load_cached_state()
-                self.current_tok_obs = cached_current_tok_obs
+                self._memory_manager.load_cached_state()
+                self._current_tok_obs = cached_current_tok_obs
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
             current = step_viz
             
             if step_index < limit - 1:
                 self.init_working_memory(current, start_pose_str, False)
             
-        self.memory_manager.load_cached_state()
-        self.current_tok_obs = cached_current_tok_obs
+        self._memory_manager.load_cached_state()
+        self._current_tok_obs = cached_current_tok_obs
         return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
 
     def train_actions_batch(
@@ -193,7 +202,9 @@ class UniWMEngine:
     def train_viz_step(
         self,
         prediction: StepPrediction,
-        lr_scaler: float
+        lr_scaler: float,
+        loss_scaler: float = 1.0,
+        max_grad_norm: float | None = None,
     ) -> dict[str, float]:
         """Note: Make sure you are calling the UniWMEngine.init_working_memory() when you want to store a prior step into global memory and update the observation in working KV memory used by the model."""
         
@@ -215,13 +226,13 @@ class UniWMEngine:
             target_viz_tokens=self._image_to_vq_bpe_tokens(prediction.real_next_obs)
         )
 
-        for group in self.optimizer.param_groups:
+        for group in self._optimizer.param_groups:
             group["lr"] = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
 
         self.model.train()
-        self.optimizer.zero_grad(set_to_none=True)
+        self._optimizer.zero_grad(set_to_none=True)
         
-        memory_kwargs = self.memory_manager.get_viz_kwargs(
+        memory_kwargs = self._memory_manager.get_viz_kwargs(
             viz_gen_kwargs=dict(self.config["training"]["visualization"])
         )
 
@@ -243,13 +254,13 @@ class UniWMEngine:
                 loss_config=loss_cfg
             )
 
-        loss.backward()
-        self.optimizer.step()
+        grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
         self.model.eval()
 
         return {
             **components,
-            "learning_rate": self.optimizer.param_groups[0]["lr"]
+            "learning_rate": self._optimizer.param_groups[0]["lr"],
+            "grad_norm_applied": grad_norm is not None,
         }
 
     def _predict_step(
@@ -290,7 +301,7 @@ class UniWMEngine:
         return action_text, viz
 
     def _predict_action(self, processor_inputs: Any) -> str:
-        kwargs = self.memory_manager.get_action_kwargs(
+        kwargs = self._memory_manager.get_action_kwargs(
             action_gen_kwargs=dict(self.config["generation"]["action"])
         )
         
@@ -300,7 +311,7 @@ class UniWMEngine:
         return decode_generated_text(self.processor, outputs)
 
     def _predict_visualization(self, processor_inputs: Any, save_path: str | None) -> Image.Image | None:
-        kwargs = self.memory_manager.get_viz_kwargs(
+        kwargs = self._memory_manager.get_viz_kwargs(
             viz_gen_kwargs=dict(self.config["generation"]["visualization"])
         )
             
@@ -316,11 +327,11 @@ class UniWMEngine:
         grad_norm = None
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.trainable_params,
+                self._trainable_params,
                 max_norm=max_grad_norm,
             )
 
-        self.optimizer.step()
+        self._optimizer.step()
 
         return grad_norm    
     
@@ -338,9 +349,9 @@ class UniWMEngine:
         goal_tok_obs: torch.LongTensor | None = None
     ) -> Any:
         tokenized_images = [
-            start_tok_obs if start_tok_obs is not None else self.start_tok_obs,
-            goal_tok_obs if goal_tok_obs is not None else self.goal_tok_obs,
-            current_tok_obs if current_tok_obs is not None else self.current_tok_obs
+            start_tok_obs if start_tok_obs is not None else self._start_tok_obs,
+            goal_tok_obs if goal_tok_obs is not None else self._goal_tok_obs,
+            current_tok_obs if current_tok_obs is not None else self._current_tok_obs
         ]
         
         inputs = self.processor(
@@ -348,7 +359,7 @@ class UniWMEngine:
             return_tensors="pt",
         )
         
-        image_mask = inputs["input_ids"] == self.processor.image_token_id
+        image_mask = inputs["input_ids"] == self._image_token_id
         image_tokens = torch.cat([tokens.reshape(-1) for tokens in tokenized_images])
         inputs["input_ids"].masked_scatter_(
             image_mask,
@@ -466,7 +477,7 @@ class UniWMEngine:
         target_viz_tokens: torch.LongTensor,
     ) -> Mapping[str, Any]:
         target_inputs = self.processor(text=["<image>"], return_tensors="pt")
-        target_mask = target_inputs["input_ids"] == self.processor.image_token_id
+        target_mask = target_inputs["input_ids"] == self._image_token_id
         target_inputs["input_ids"].masked_scatter_(
             target_mask,
             target_viz_tokens.reshape(-1).to(
@@ -479,10 +490,55 @@ class UniWMEngine:
         target_ids = target_inputs["input_ids"][:, 1:].to(viz_inputs["input_ids"].device)
         target_attention = target_inputs["attention_mask"][:, 1:].to(viz_inputs["attention_mask"].device)
         labels = torch.cat([torch.full_like(viz_inputs["input_ids"], ignore_idx), target_ids], dim=1)
-        labels[labels == self.processor.tokenizer.pad_token_id] = ignore_idx
+        labels[labels == self.tokenizer.pad_token_id] = ignore_idx
 
         return {
             "input_ids": torch.cat([viz_inputs["input_ids"], target_ids], dim=1),
             "attention_mask": torch.cat([viz_inputs["attention_mask"], target_attention], dim=1),
             "labels": labels,
         }
+
+    def _configure_action_tokenizer(self) -> None:
+        token_cfg = dict(self.config.get("action_token_generation", {}))
+        range_profile = token_cfg.get("range_profile", "habitat")
+        bin_step = float(token_cfg.get("bin_step", 0.01))
+        ranges = get_action_ranges(range_profile)
+
+        bin_tokens = []
+        bin_tokens.extend(generate_bin_tokens("dx", ranges["dxy"][0], ranges["dxy"][1], bin_step))
+        bin_tokens.extend(generate_bin_tokens("dy", ranges["dxy"][0], ranges["dxy"][1], bin_step))
+        bin_tokens.extend(generate_bin_tokens("dyaw", ranges["dyaw"][0], ranges["dyaw"][1], bin_step))
+
+        existing_vocab = set(self.tokenizer.get_vocab().keys())
+        new_tokens = [token for token in bin_tokens if token not in existing_vocab]
+        if not new_tokens:
+            return
+
+        self.tokenizer.add_tokens(new_tokens, special_tokens=True)
+        tokenizer_size = len(self.tokenizer)
+
+        if hasattr(self.model, "model") and hasattr(self.model.model, "lm_head"):
+            lm_head = self.model.model.lm_head
+            if hasattr(lm_head, "base_layer") or "ModulesToSaveWrapper" in str(type(lm_head)):
+                from peft.utils.other import ModulesToSaveWrapper
+
+                if hasattr(lm_head, "base_layer"):
+                    self.model.model.lm_head = lm_head.base_layer
+                elif hasattr(lm_head, "original_module"):
+                    self.model.model.lm_head = lm_head.original_module
+
+                self.model.model.resize_token_embeddings(tokenizer_size)
+                self.model.model.lm_head = ModulesToSaveWrapper(self.model.model.lm_head, "default")
+                return
+
+        resize = getattr(self.model, "resize_token_embeddings", None)
+        if callable(resize):
+            resize(tokenizer_size)
+            return
+
+        inner_resize = getattr(getattr(self.model, "model", None), "resize_token_embeddings", None)
+        if callable(inner_resize):
+            inner_resize(tokenizer_size)
+            return
+
+        raise AttributeError("Loaded model does not provide resize_token_embeddings().")
