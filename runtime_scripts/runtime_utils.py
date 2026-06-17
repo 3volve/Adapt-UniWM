@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
 import yaml
 from PIL import Image
 
+from transformers.generation.utils import GenerateDecoderOnlyOutput
 from scripts.postprocess_logits_utils import split_token_sequence
 
 VERBOSE_UTILS = False
@@ -59,23 +59,25 @@ def is_stop_action(action_text: str) -> bool:
 def step_image_output_path(output_dir: str | None, step_index: int) -> str | None:
     return None if not output_dir else str(Path(output_dir) / f"step_{step_index + 1}_observation.png")
 
-def decode_generated_image(
+def extract_generated_tokens(outputs: GenerateDecoderOnlyOutput, prompt_length: int, generated_tok_len: int) -> torch.Tensor:
+    return outputs.sequences[:, prompt_length:prompt_length + generated_tok_len]
+
+def decode_image(
     model: Any,
     processor: Any,
-    outputs: Any,
+    tokens: torch.Tensor ,
     save_path: str | None = None,
 ) -> Image.Image | None:
-    r_ids: torch.Tensor = extract_generated_tokens(outputs)
 
-    if r_ids.dim() == 2:
-        r_ids = r_ids[0]
+    if tokens.dim() == 2:
+        tokens = tokens[0]
 
     generated_results = split_token_sequence(
-        tokens=r_ids.unsqueeze(0).to(model.device), # type: ignore
+        tokens=tokens.unsqueeze(0).to(model.device), # type: ignore
         image_seq_length=model.image_token_num,
         boi=model.config.boi_token_id,
         eoi=model.config.eoi_token_id,
-        max_length=r_ids.shape[-1],
+        max_length=tokens.shape[-1],
         pad_token_id=model.config.pad_token_id
     )
 
@@ -89,7 +91,7 @@ def decode_generated_image(
         generated_imgs = model.decode_image_tokens(generated_imgs)
         generated_imgs = processor.postprocess_pixel_values(generated_imgs)
     else:
-        print(f"  Generated failed visualization tokens: {r_ids}")
+        print(f"  Generated failed visualization tokens: {tokens}")
         return None
 
     tensor_img = generated_imgs[0, :, :, :]
@@ -111,28 +113,45 @@ def decode_generated_image(
 
     return img
 
+def decode_action(
+    processor: Any,
+    tokens: torch.Tensor,
+    action_token_ids: list[list[int]],
+) -> tuple[str, list[tuple[int, list[int]]]]:
+    """Decode action text and locate selected generated action-bin token positions."""
+    decoded_text = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
+    if decoded_text.lower() == "stop":
+        return "stop", []
+        
+    if tokens.dim() == 2:
+        tokens = tokens[0]
+        
+    selected_token_positions: list[tuple[int, list[int]]] = []
+    decoded_tokens: list[str] = []
+
+    for ids in action_token_ids:
+        selected_token_id = ids[0]
+        
+        for position, token in enumerate(tokens.tolist()):
+            token_id = int(token)
+            if token_id in ids:
+                selected_token_id = token_id
+                selected_token_positions.append((position, ids))
+                break
+            
+        decoded_tokens.append(
+            processor.batch_decode(
+                torch.tensor([[selected_token_id]], device=tokens.device),
+                skip_special_tokens=False,
+            )[0].strip()
+        )
+        
+    decoded_text = f"Move by dx: {decoded_tokens[0]}, dy: {decoded_tokens[1]}, dyaw: {decoded_tokens[2]}"
+        
+    return decoded_text, selected_token_positions
+
 def detach_processor_inputs(inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {
         key: value.detach().cpu().clone() if torch.is_tensor(value) else value
         for key, value in inputs.items()
     }
-
-def extract_generated_tokens(outputs: Any) -> torch.Tensor:
-    if torch.is_tensor(outputs):
-        return outputs
-    if isinstance(outputs, tuple) and outputs and torch.is_tensor(outputs[0]):
-        return outputs[0]
-    sequences = getattr(outputs, "sequences", None)
-    if torch.is_tensor(sequences):
-        return sequences # type: ignore
-    raise TypeError(f"Unsupported UniWM generate output type: {type(outputs)}")
-
-def decode_generated_text(processor: Any, outputs: Any) -> str:
-    tokens = extract_generated_tokens(outputs)
-    raw_decoded = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
-    if raw_decoded.lower() == "stop":
-        return "stop"
-
-    pattern = r'(<d[^>]+>)+(<d[^>]+>)'
-    decoded = re.sub(pattern, r'\2', raw_decoded)
-    return decoded

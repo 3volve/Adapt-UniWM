@@ -7,7 +7,14 @@ import numpy as np
 from PIL import Image
 
 from runtime_scripts.runtime_engine import UniWMEngine
-from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord, RouteRecord, RoutePrediction, StepPrediction
+from runtime_scripts.modulator_system import ModulatorSystem
+from runtime_scripts.uniwm_schemas import (
+    UniWMInputBundle,
+    TransitionRecord,
+    RouteRecord,
+    RoutePrediction,
+    StepPrediction
+)
 from runtime_scripts.runtime_utils import (
     image_to_array,
     is_stop_action,
@@ -30,10 +37,15 @@ REQUIRED_FIELDS: list[str] = [
 class UniWMWrapper:
     def __init__(self, engine: UniWMEngine, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
         self.engine = engine
-        self.config = load_config(config_path).get("wrapper", {})
+        root_config = load_config(config_path)
+        self.config = root_config.get("wrapper", {})
         validate_config(self.config, REQUIRED_FIELDS)
+        self.modulators = ModulatorSystem(root_config["modulators"])
+        
         self._reset_wrapper_state()
         self.ready_to_act = False
+        
+        self.modulator_records: list[dict[str, Any]] = []
 
     def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str | None = None, episode_data_target: str = "unknown") -> dict[str, Any]:
         self.engine.action_cfg = episode_data_target
@@ -64,6 +76,9 @@ class UniWMWrapper:
         self.last_planned_action = current_step.action_text
         self.last_predicted_observation = current_step.visualization
         self.route_index += 1
+        
+        self.modulators.start_step()
+        self.modulators.on_action_uncertainty(current_step.act_entropy)
         return current_step.action_text
 
     def observe_transition(
@@ -77,23 +92,32 @@ class UniWMWrapper:
         pending_step = self.pending_step
         pending_step_idx = self.pending_step_idx
         real_obs = observed_bundle.current_observation
+        is_collision: bool = observed_bundle.metadata["metrics"]["collisions"]["is_collision"]
+        memory_novelty_score = 1.0 - pending_step.context_similarity
         divergence = 0
         
+        self.modulators.on_collision_or_unsafe(is_collision)
+        self.modulators.on_memory_novelty(memory_novelty_score)
         
         if len(self.current_route) > self.route_index:
             next_step = self.current_route.steps[self.route_index]
             next_step.real_input_obs = real_obs
         pending_step.real_next_obs = real_obs
         
-        
         if pending_step and not is_stop_action(pending_step.action_text):
             divergence = self.compute_divergence(pending_step.visualization, real_obs)
+            self.modulators.on_prediction_mismatch(divergence)
+            self.modulators.on_visual_uncertainty(pending_step.viz_entropy)
+            
+            self.modulators.ema_update_signals()
             
             # TODO: Decide logic for determining whether to train or not.
             if self.config["training_enabled"]:
-                self.engine.train_viz_step(pending_step, 1)
+                lr_scalar = self.modulators.compute_visualization_update_weight()
+                self.modulator_records.append(self.modulators.get_current_state())
+                self.engine.train_viz_step(pending_step, lr_scalar)
             
-            self.engine.init_working_memory(real_obs, observed_bundle.start_pose_str, self.config["add_global_memories"])
+            self.engine.store_and_update_working_memory(real_obs, observed_bundle.start_pose_str, self.config["add_global_memories"])
 
         replan_reason = None
         replanned = False
@@ -147,6 +171,7 @@ class UniWMWrapper:
         return {
             "route_history": [asdict(record) for record in self.route_history],
             "transitions": [asdict(record) for record in self.transition_log],
+            "modulators_record": self.modulator_records
         }
 
     def get_state_snapshot(self) -> dict[str, Any]:
@@ -173,6 +198,8 @@ class UniWMWrapper:
         self.last_predicted_observation: Any = None
         self.last_divergence: float | None = None
         self.latest_bundle: UniWMInputBundle | None = None
+        self.modulators.reset_episode()
+        self.modulator_records = []
 
     def _plan_route(self, bundle: UniWMInputBundle, *, reason: str) -> None:
         self.current_route = self.engine.predict_route(

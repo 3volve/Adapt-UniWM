@@ -74,3 +74,20 @@ runner:
     angular_deadband: 0.02
     image_w: 256
     image_h: 256
+
+modulators:
+  enable_modulators: False
+  max_visual_update_weight: 1.0
+
+  viz_ema_tau:
+    ach: 0.85
+    ne: 0.75
+
+  viz_learning_mods:
+    learner_preference: 0.5
+    ne_range: [0.5, 1.5]
+  
+  viz_scalers:
+    novelty: 0.25
+    act_entropy: 5.3471
+    viz_entropy: 9.0109

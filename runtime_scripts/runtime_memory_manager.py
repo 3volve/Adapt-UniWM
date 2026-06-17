@@ -105,15 +105,27 @@ class RuntimeMemoryBankManager:
             stored_values=tuple(attention.stored_values for attention in attentions)
         )
 
-    def reset_memory_state_to_step(self, target_step: int):
-        self.cache_step_state()
+    def compute_memory_similarity(self, k: int = 1) -> float:
+        if not self.is_enabled:
+            return 0.0
 
-        self.current_step = target_step
-        self._current_flashback_idx = target_step
+        top_similarities: list[float] = []
+        layers = self.model.model.model.layers
 
-    def restore_memory_state_to_current(self):
-        self.load_cached_state()
-        self._current_flashback_idx = self.current_step
+        for layer_index in sorted(self.model.model.use_memory_bank_layers):
+            attention = layers[layer_index].self_attn
+            _, similarities = attention.compute_similarity_and_select_topk(
+                attention.stored_keys,
+                k=k,
+            )
+
+            if similarities:
+                top_similarities.append(float(similarities[0]))
+
+        if not top_similarities:
+            return 0.0
+
+        return sum(top_similarities) / len(top_similarities)
 
     def initialize_step_memory(self, processor_inputs):
         if not self.is_enabled or self.model.memory_bank_initialized:

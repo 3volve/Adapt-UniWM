@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 from PIL import Image
@@ -12,7 +13,7 @@ class UniWMInputBundle:
     current_observation: Image.Image
     start_pose_str: str
     action_text: str | None = None
-    metadata: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | None]:
         return (
@@ -35,6 +36,10 @@ class StepPrediction:
 
     action_text: str
     visualization: Image.Image | None
+    
+    act_entropy: float
+    viz_entropy: float
+    context_similarity: float
 
     real_input_obs: Image.Image | None = None
     real_next_obs: Image.Image | None = None

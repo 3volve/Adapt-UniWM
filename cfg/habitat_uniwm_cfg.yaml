@@ -17,10 +17,12 @@ engine:
   generation:
     prompt_style_idx: 0
     action:
-      max_new_tokens: 64
+      max_new_tokens: 32
       pad_token_id: 2
       multimodal_generation_mode: text-only
       current_substep: action
+      return_dict_in_generate: True
+      output_scores: True
     visualization:
       max_new_tokens: 800
       num_beams: 1
@@ -29,6 +31,8 @@ engine:
       pad_token_id: 2
       multimodal_generation_mode: image-only
       current_substep: visualization
+      return_dict_in_generate: True
+      output_scores: True
 
   training:
     hyper_params:
@@ -76,3 +80,21 @@ runner:
     angular_deadband: 0.01
     image_w: 448
     image_h: 448
+
+modulators:
+  enable_modulators: True
+  max_visual_update_weight: 1.25
+
+  viz_ema_tau:
+    ach: 0.75
+    ne: 0.75
+
+  viz_learning_mods:
+    learner_preference: 0.4
+    ne_range: [0.25, 1.25]
+    ne_curve_width: 0.65
+  
+  viz_scalers:
+    novelty: 0.25
+    act_entropy: 5.3471
+    viz_entropy: 9.0109
