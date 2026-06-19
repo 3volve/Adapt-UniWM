@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import yaml
 from PIL import Image
+from datetime import datetime
 
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 from scripts.postprocess_logits_utils import split_token_sequence
@@ -18,15 +19,27 @@ def image_to_array(observation: Image.Image) -> np.ndarray:
     array = np.asarray(observation, dtype=np.float32)
     return array / 255.0
 
+def root_dir() -> Path:
+    return Path(__file__).resolve().parent.parent
+
 def resolve_config_path_from_id(data_id: str) -> str:
-    root_dir = Path(__file__).resolve().parent.parent
-    config_path = Path(root_dir / "cfg" / f"{data_id}_uniwm_cfg.yaml")
+    config_path = Path(root_dir() / "cfg" / f"{data_id}_uniwm_cfg.yaml")
 
     if not config_path.is_file():
         raise AssertionError(f"config_path must be file or data_id must identify a config file within the local cfg folder so this is a valid path: {config_path}")
 
     abs_path = str(config_path.resolve())
     return abs_path
+
+def make_runner_output_dir(
+    output_dir: str,
+    data_id: str
+) -> Path:
+    """ Make a unique directory based on data_id.  Passed-in output_dir is assumed to be relative to the repo-root. """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = root_dir() / output_dir / f"{data_id}_{timestamp}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
 
 def load_config(config_path: str) -> dict[str, Any]:
     if config_path is None:
@@ -50,23 +63,38 @@ def validate_config_recursive(config_node: dict | str, required_fields_at_node: 
 
             if isinstance(required_fields_at_node, dict):
                 validate_config_recursive(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
-
+                
+def build_img_paths(output_dir: str, episode_id: str, route_id: int, route_step: int) -> tuple[str, str]:
+    base_path = str(root_dir() / Path(output_dir) / f"episode_{episode_id}/route_{route_id}/step_{route_step}")
+    return f"{base_path}_real.png", f"{base_path}_pred.png"
+    
 def is_stop_action(action_text: str) -> bool:
     return action_text.strip().lower() == "stop"
 
+def clamp(n, smallest, largest):
+    return max(smallest, min(n, largest))
+
+def ema_decay(previous_value: float, added_value: float, decay: float) -> float:
+    """Helper to apply EMA smoothing of accumulating values."""
+    return decay * previous_value + added_value
+
+def ema_smoothing(previous_value: float, added_value: float, tau: float) -> float:
+    """Helper to apply EMA smoothing of accumulating values."""
+    return tau * previous_value + (1 - tau) * added_value
+
 
 #----------------- Direct Engine Helper Functions ------------------#
-def step_image_output_path(output_dir: str | None, step_index: int) -> str | None:
-    return None if not output_dir else str(Path(output_dir) / f"step_{step_index + 1}_observation.png")
-
 def extract_generated_tokens(outputs: GenerateDecoderOnlyOutput, prompt_length: int, generated_tok_len: int) -> torch.Tensor:
     return outputs.sequences[:, prompt_length:prompt_length + generated_tok_len]
+
+def save_img(img: Image.Image, save_path: str):
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        img.save(save_path)
 
 def decode_image(
     model: Any,
     processor: Any,
     tokens: torch.Tensor ,
-    save_path: str | None = None,
 ) -> Image.Image | None:
 
     if tokens.dim() == 2:
@@ -106,10 +134,6 @@ def decode_image(
     img = Image.fromarray(np_img.astype(np.uint8))
     if VERBOSE_UTILS:
         print(f"[DEBUG] PIL image size: {img.size}")
-
-    if save_path:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        img.save(save_path)
 
     return img
 

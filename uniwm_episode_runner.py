@@ -7,9 +7,15 @@ from typing import Any, Generic
 
 from runtime_scripts.datasource_schemas import T_OutputBundle, T_Adapter, T_Formatter
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
-from runtime_scripts.runtime_utils import is_stop_action, load_config, resolve_config_path_from_id, validate_config
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
 from runtime_scripts.runtime_engine import UniWMEngine
+from runtime_scripts.runtime_utils import (
+    is_stop_action,
+    load_config,
+    resolve_config_path_from_id,
+    validate_config,
+    make_runner_output_dir
+)
 
 from runtime_scripts.test_runtime_metrics import save_runner_logs
 
@@ -28,6 +34,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
     def __init__(
         self,
         data_type: str,
+        full_output_path: Path,
+        *,
         config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
@@ -39,7 +47,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
         self.wrapper = UniWMWrapper(
             UniWMEngine(config_path) if engine is None else engine,
-            config_path
+            config_path,
+            str(full_output_path)
         )
 
         source_classes = self._load_source_classes(data_type)
@@ -92,13 +101,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
                 step_logs.append(
                     {
                         "step_idx": step_idx,
-                        "action_text": planned_action,
+                        **transition.to_log(),
                         "wrapper_requested_stop": wrapper_requested_stop,
-                        "divergence": transition.divergence,
-                        "replanned": transition.replanned,
-                        "replan_reason": transition.replan_reason,
-                        "route_generation": self.wrapper.get_state_snapshot()["route_generation"],
-                        "adapter_info": dict(converted_obs.metadata),
                     }
                 )
 
@@ -118,9 +122,9 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             "termination_reason": termination_reason,
             "reset_info": conv_info,
             "wrapper_reset_state": wrapper_reset_state,
+            "routes": self.wrapper.get_routes_log_for_episode(),
             "steps": step_logs,
             "final_wrapper_state": self.wrapper.get_state_snapshot(),
-            "wrapper_log": self.wrapper.get_episode_log(),
         }
 
         self._episode_logs.append(episode_log)
@@ -183,8 +187,10 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
     args = parser.parse_args()
+    
+    run_dir = make_runner_output_dir(args.output_dir, args.data_id)
 
-    runner = UniWMEpisodeRunner(args.data_type)
+    runner = UniWMEpisodeRunner(args.data_type, run_dir)
     runner.run_episodes(args.num_episodes, args.data_id)
 
-    save_runner_logs(runner.get_logs(), args.output_dir, args.data_id)
+    save_runner_logs(runner.get_logs(), run_dir)

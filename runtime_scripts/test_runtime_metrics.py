@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import json
 import numpy as np
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from PIL import Image
@@ -12,13 +11,8 @@ from PIL import Image
 
 def save_runner_logs(
     logs: list[dict[str, Any]],
-    output_dir: str | Path,
-    data_id: str
-) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(output_dir) / f"{data_id}_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
+    output_dir: Path
+):
     def convert(value: Any, path_parts: tuple[str | int, ...]) -> Any:
         # Skip / summarize any potentially large objects instead of serializing them:
         if isinstance(value, Image.Image):
@@ -58,13 +52,11 @@ def save_runner_logs(
 
     serialized_logs = convert(logs, ("logs",))
 
-    with (run_dir / "episode_logs.json").open("w", encoding="utf-8") as handle:
+    with (output_dir / "episode_logs.json").open("w", encoding="utf-8") as handle:
         json.dump(serialized_logs, handle, indent=2)
 
-    _write_csv(run_dir / "episode_metrics.csv", _build_episode_metric_rows(logs))
-    _write_csv(run_dir / "step_metrics.csv", _build_step_metric_rows(logs))
-
-    return run_dir
+    _write_csv(output_dir / "episode_metrics.csv", _build_episode_metric_rows(logs))
+    _write_csv(output_dir / "step_metrics.csv", _build_step_metric_rows(logs))
 
 
 def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -93,14 +85,13 @@ def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any
         row["divergence_max"] = max(divergences) if divergences else 0.0
         row["divergence_last"] = divergences[-1] if divergences else 0.0
 
-        final_adapter_info = steps[-1]["adapter_info"] if steps else {}
-        final_metrics = final_adapter_info.get("metrics", {})
-        row.update(_flatten_numeric_fields(final_adapter_info, "final_adapter_info"))
+        final_env_info = steps[-1]["env_info"] if steps else {}
+        final_metrics = final_env_info.get("metrics", {})
+        row.update(_flatten_numeric_fields(final_env_info, "final_env_info"))
         row.update(_flatten_numeric_fields(final_metrics, "final_metrics"))
 
-        wrapper_log = episode_log["wrapper_log"]
-        row["route_history_count"] = len(wrapper_log["route_history"])
-        row["transition_count"] = len(wrapper_log["transitions"])
+        row["route_count"] = len(episode_log["routes"])
+        row["transition_count"] = len(steps)
 
         rows.append(row)
 
@@ -118,12 +109,21 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "adapter_source_mode": episode_log["adapter_source_mode"],
                 "termination_reason": episode_log["termination_reason"],
                 "step_idx": step["step_idx"],
-                "action_text": step["action_text"],
+                "route_id": step["route_id"],
+                "route_idx": step["route_idx"],
+                "action": step["action"],
+                "context_familiarity": step["context_familiarity"],
+                "context_stability": step["context_stability"],
+                "divergence": step["divergence"],
+                "replanned": int(step["replanned"]),
+                "replan_reason": step["replan_reason"],
+                "wrapper_requested_stop": int(step["wrapper_requested_stop"]),
             }
 
-            row.update(_flatten_numeric_fields(step, "step"))
-            row.update(_flatten_numeric_fields(step["adapter_info"], "adapter_info"))
-            row.update(_flatten_numeric_fields(step["adapter_info"].get("metrics", {}), "metrics"))
+            row.update(_flatten_numeric_fields(step["modulator_state"], "modulator"))
+            row.update(_flatten_numeric_fields(step["training_logs"], "training"))
+            row.update(_flatten_numeric_fields(step["env_info"], "env_info"))
+            row.update(_flatten_numeric_fields(step["env_info"].get("metrics", {}), "metrics"))
 
             rows.append(row)
 

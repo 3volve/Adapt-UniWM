@@ -8,11 +8,12 @@ from runtime_scripts.uniwm_schemas import MemorySnapshot
 class RuntimeMemoryBankManager:
     _cached_step_state: MemorySnapshot | None = None
 
-    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, verbose: bool = False):
+    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, ema_tau: float, verbose: bool = False):
         self.model = model
         self.is_enabled = use_memory_bank_inference
         self.current_step = 0
-        self._current_flashback_idx = self.current_step
+        self.ema_tau = ema_tau
+        self.context_ema: torch.Tensor | None = None
         self.verbose = verbose
 
     def setup_for_episode(self, episode_id: str | None = None):
@@ -25,6 +26,8 @@ class RuntimeMemoryBankManager:
             self.model.reset_memory_bank()
             if self.verbose:
                 print(f"  Intra-step memory bank reset for episode {episode_id}")
+            self.context_ema = None
+            
         elif hasattr(self.model, 'memory_bank_initialized'):
             # Fallback: manually reset memory bank state
             self.model.memory_bank_initialized = False # type: ignore
@@ -41,6 +44,7 @@ class RuntimeMemoryBankManager:
             self.model.reset_global_memory_bank()
             if self.verbose:
                 print(f"  Cross-step memory bank reset for episode {episode_id}")
+            self.context_ema = None
 
         # Enable global memory bank functionality
         if hasattr(self.model, 'enable_global_memory_bank'):
@@ -59,7 +63,7 @@ class RuntimeMemoryBankManager:
     def start_new_step(self):
         """Prepares for a new step within an episode."""
         if not self.is_enabled:
-            return
+            return 0.0
 
         self.current_step += 1
         if self.verbose:
@@ -87,6 +91,7 @@ class RuntimeMemoryBankManager:
             attention.stored_values = self._cached_step_state.stored_values[index]
 
         self.current_step = self._cached_step_state.current_step
+        self.context_ema = self._cached_step_state.context_ema
 
         self._cached_step_state = None
 
@@ -102,10 +107,11 @@ class RuntimeMemoryBankManager:
         self._cached_step_state = MemorySnapshot(
             current_step=self.current_step,
             stored_keys=tuple(attention.stored_keys for attention in attentions),
-            stored_values=tuple(attention.stored_values for attention in attentions)
+            stored_values=tuple(attention.stored_values for attention in attentions),
+            context_ema=self.context_ema
         )
 
-    def compute_memory_similarity(self, k: int = 1) -> float:
+    def compute_memory_familiarity(self, k: int = 1) -> float:
         if not self.is_enabled:
             return 0.0
 
@@ -127,15 +133,41 @@ class RuntimeMemoryBankManager:
 
         return sum(top_similarities) / len(top_similarities)
 
-    def initialize_step_memory(self, processor_inputs):
+    def initialize_step_memory(self, processor_inputs) -> float:
         if not self.is_enabled or self.model.memory_bank_initialized:
-            return
+            return 0.0
         
         with torch.autocast(device_type='cuda', dtype=self.model.dtype):
             self.model.initialize_memory_bank_no_pixels(
                 input_ids=processor_inputs['input_ids'],
                 attention_mask=processor_inputs['attention_mask']
             )
+            
+        context_parts = []
+        for layer_index in sorted(self.model.model.use_memory_bank_layers):
+            stored_keys = self.model.model.model.layers[layer_index].self_attn.stored_keys
+            if stored_keys is not None:
+                context_parts.append(stored_keys.detach().float().mean(dim=(1, 2)))
+
+
+        context_stability = 0.0
+        if context_parts:
+            current_context = torch.cat(context_parts, dim=-1)
+            if self.context_ema is not None:
+                similarity = torch.nn.functional.cosine_similarity(
+                    current_context,
+                    self.context_ema,
+                    dim=-1,
+                ).mean()
+                
+                context_stability = float(similarity.clamp(0.0, 1.0).cpu())
+
+                tau = self.ema_tau
+                self.context_ema = (tau * self.context_ema + (1 - tau) * current_context).detach()
+            else:
+                self.context_ema = current_context
+                
+        return context_stability
 
     def get_action_kwargs(self, action_gen_kwargs):
         if not self.is_enabled:
@@ -179,10 +211,10 @@ class RuntimeMemoryBankManager:
         })
         return viz_gen_kwargs_with_memory
 
-    def store_step_memory(self):
+    def store_step_memory(self) -> bool:
         """Stores the current step's K,V pairs into the global memory bank."""
         if not self.is_enabled or not self.model.memory_bank_initialized:
-            return
+            return False
 
         # Store current step's intra-step K,V to global cross-step memory bank
         # This happens after both action prediction and visualization substeps are completed
@@ -203,3 +235,7 @@ class RuntimeMemoryBankManager:
                                 print(
                                     f"    - Layer {layer_idx}: Latest stored V shape: {layer.self_attn.global_stored_values[-1].shape}")
                                 break  # Only print for first layer to avoid spam
+                            
+            return True
+        
+        return False

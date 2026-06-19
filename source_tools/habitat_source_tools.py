@@ -18,7 +18,6 @@ from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
 from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisode
 
-from gym.spaces import Dict as GymDictSpace
 from scripts.action_utils import extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
 from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, HabitatOutputBundle, OutputBundle

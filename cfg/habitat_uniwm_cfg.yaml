@@ -9,6 +9,7 @@ engine:
     do_task_level_eval: true
     do_rollout_eval: false
     use_memory_bank_inference: true
+    memory_context_smoothing_tau: 0.75
 
   action_token_generation:
     range_profile: habitat
@@ -49,20 +50,23 @@ engine:
       ignore_index: -100
       log_prefix: "habitat_loss_"
 
-
 wrapper:
   max_route_steps: 3
-  full_replan_threshold: 0.12
+  full_replan_threshold: 0.25
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
-  memory_mode: off
-  log_predicted_observations: true
-  log_real_observations: true
+  log_predicted_obs: true
+  log_real_obs: true
   add_global_memories: true
   training_enabled: true
 
+  enable_modulators: True
+  min_memories_for_confidence: 5
+  viz_loss_slow_ema: 0.95
+  viz_loss_fast_ema: 0.6
+
 runner:
-  max_episode_steps: 2
+  max_episode_steps: 3
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: habitat_source_tools
@@ -82,19 +86,18 @@ runner:
     image_h: 448
 
 modulators:
-  enable_modulators: True
-  max_visual_update_weight: 1.25
-
   viz_ema_tau:
-    ach: 0.75
+    ach: 0.65
     ne: 0.75
 
   viz_learning_mods:
-    learner_preference: 0.4
-    ne_range: [0.25, 1.25]
-    ne_curve_width: 0.65
+    ach_base_weight: 0.25
+    ne_bias: 0.5
+    ne_range: [0.25, 1.0]
+    ne_curve_width: 0.6
   
-  viz_scalers:
-    novelty: 0.25
-    act_entropy: 5.3471
-    viz_entropy: 9.0109
+  viz_norm_scalers:
+    novelty: 0.3
+    learning_surprise: 0.4
+    learning_progress: 0.4
+    persistent_loss: 4.0

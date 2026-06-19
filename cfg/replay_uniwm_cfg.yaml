@@ -9,6 +9,7 @@ engine:
     do_task_level_eval: true
     do_rollout_eval: false
     use_memory_bank_inference: true
+    memory_context_smoothing_tau: 0.75
 
   action_token_generation:
     range_profile: unknown
@@ -17,16 +18,22 @@ engine:
   generation:
     prompt_style_idx: 0
     action:
-      max_new_tokens: 64
+      max_new_tokens: 32
+      pad_token_id: 2
       multimodal_generation_mode: text-only
       current_substep: action
+      return_dict_in_generate: True
+      output_scores: True
     visualization:
       max_new_tokens: 800
       num_beams: 1
       temperature: 0.7
       top_p: 0.9
+      pad_token_id: 2
       multimodal_generation_mode: image-only
       current_substep: visualization
+      return_dict_in_generate: True
+      output_scores: True
 
   training:
     hyper_params:
@@ -43,20 +50,20 @@ engine:
       ignore_index: -100
       log_prefix: "replay_loss_"
 
-  route:
-    max_steps: 10
-
-
 wrapper:
   max_route_steps: 8
-  full_replan_threshold: 0.12
+  full_replan_threshold: 0.25
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
-  memory_mode: "off"
-  log_predicted_observations: true
-  log_real_observations: true
+  log_predicted_obs: true
+  log_real_obs: true
   add_global_memories: false
   training_enabled: false
+
+  enable_modulators: True
+  min_memories_for_confidence: 5
+  viz_loss_slow_ema: 0.95
+  viz_loss_fast_ema: 0.6
 
 runner:
   max_episode_steps: 100
@@ -76,18 +83,18 @@ runner:
     image_h: 256
 
 modulators:
-  enable_modulators: False
-  max_visual_update_weight: 1.0
-
   viz_ema_tau:
-    ach: 0.85
+    ach: 0.65
     ne: 0.75
 
   viz_learning_mods:
-    learner_preference: 0.5
-    ne_range: [0.5, 1.5]
+    ach_base_weight: 0.25
+    ne_bias: 0.5
+    ne_range: [0.25, 1.0]
+    ne_curve_width: 0.6
   
-  viz_scalers:
-    novelty: 0.25
-    act_entropy: 5.3471
-    viz_entropy: 9.0109
+  viz_norm_scalers:
+    novelty: 0.3
+    learning_surprise: 0.4
+    learning_progress: 0.4
+    persistent_loss: 4.0
