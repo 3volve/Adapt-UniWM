@@ -1,12 +1,16 @@
-CUDA_VISIBLE_DEVICES=2 torchrun --nproc_per_node 1 --master_port=20002 train.py \
---model anole \
---model_ckpt [model_ckpt path] \
---data scand \
---data_dir [dataset path] \
---decoder_type anole \
---image_seq_length 784 \
---input_format anole \
---output output \
---note eval \
---report_to none \
---do_task_level_eval \
+CKPT="./checkpoints/main_ckpt"
+
+NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=1 train.py \
+  --model anole \
+  --model_ckpt "$CKPT" \
+  --data go_stanford \
+  --data_dir ./eval_data \
+  --decoder_type anole \
+  --image_seq_length 784 \
+  --input_format anole \
+  --output ./outputs/prelim_eval \
+  --note gostanford_ckpt_singlestep \
+  --report_to none \
+  --val_bz 1 \
+  --do_single_step_eval \
+  --bfloat16

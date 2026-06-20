@@ -242,6 +242,7 @@ if __name__ == '__main__':
 
     training_cfg, training_args = init(args)
     training_args = _add_bfloat16_to_args(args, training_args)
+    args.resume_ckpt_path = training_args.load_weights_from
 
     selected_action_range_profile = args.action_range_profile or training_cfg['action_token_generation'].get('range_profile')
     if selected_action_range_profile:

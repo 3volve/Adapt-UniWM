@@ -38,12 +38,14 @@ def load_model(args, training_cfg):
         # Conditionally load processor from ckpt in inference to match extended vocab size
         # NEW: Now also conditionally load just the lora weights for training whether inference or not
         init_lora_ckpt_path = getattr(args, "init_lora_ckpt", None)
+        resume_ckpt_path = getattr(args, "resume_ckpt_path", None)
+        peft_ckpt_path = resume_ckpt_path or model_ckpt_path
 
         is_inference_only = (
             args.do_single_step_eval or args.do_task_level_eval or args.do_rollout_eval
-        ) and not args.do_train and model_ckpt_path
+        ) and not args.do_train and peft_ckpt_path
 
-        processor_ckpt_path = init_lora_ckpt_path or (model_ckpt_path if is_inference_only else None)
+        processor_ckpt_path = init_lora_ckpt_path or peft_ckpt_path
 
         if processor_ckpt_path:
             print(f"Loading processor from checkpoint: {processor_ckpt_path}")
@@ -117,7 +119,7 @@ def load_model(args, training_cfg):
         elif is_inference_only:
             lora_model = PeftModel.from_pretrained(
                 model,
-                model_ckpt_path,
+                peft_ckpt_path,
                 is_trainable=False,
             )
         else:
