@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import numpy as np
+import torch
 from pathlib import Path
 from typing import Any
 from PIL import Image
@@ -25,6 +26,18 @@ def save_runner_logs(
         if isinstance(value, np.ndarray):
             return {
                 "__omitted__": "np.ndarray",
+                "shape": list(value.shape),
+                "dtype": str(value.dtype),
+            }
+
+        if isinstance(value, np.generic):
+            return value.item()
+
+        if torch.is_tensor(value):
+            if value.numel() == 1:
+                return value.detach().cpu().item()
+            return {
+                "__omitted__": "torch.Tensor",
                 "shape": list(value.shape),
                 "dtype": str(value.dtype),
             }
@@ -122,6 +135,7 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
             row.update(_flatten_numeric_fields(step["modulator_state"], "modulator"))
             row.update(_flatten_numeric_fields(step["training_logs"], "training"))
+            row.update(_flatten_numeric_fields(step["eval_logs"], "eval_logs"))
             row.update(_flatten_numeric_fields(step["env_info"], "env_info"))
             row.update(_flatten_numeric_fields(step["env_info"].get("metrics", {}), "metrics"))
 
@@ -147,6 +161,12 @@ def _flatten_numeric_fields(value: Any, prefix: str) -> dict[str, int | float]:
 
     if isinstance(value, bool):
         return {prefix: int(value)}
+
+    if isinstance(value, np.generic):
+        return {prefix: value.item()}
+
+    if torch.is_tensor(value) and value.numel() == 1:
+        return {prefix: value.detach().cpu().item()}
 
     if isinstance(value, int | float):
         return {prefix: value}

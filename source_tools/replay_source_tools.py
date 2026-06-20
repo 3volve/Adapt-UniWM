@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 import json
 import pickle
 from pathlib import Path
@@ -9,9 +11,21 @@ from PIL import Image
 
 from scripts.action_utils import action_to_text, calculate_action_delta, extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
-from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, ReplayOutputBundle
+from runtime_scripts.datasource_schemas import OutputBundle, SourceFormatter, SourceAdapter
 
 
+@dataclass(frozen=True, kw_only=True)
+class ReplayOutputBundle(OutputBundle):
+    source_mode: str = "replay"
+
+    start_observation: Image.Image
+    goal_observation: Image.Image
+    current_observation: Image.Image
+    start_pose: list[float]
+    step_index: int
+    forced_action: list[float] | None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    
 class ReplayEpisodeAdapter(SourceAdapter):
     """Simple replay adapter for manifest-selected offline trajectories."""
 
@@ -38,7 +52,7 @@ class ReplayEpisodeAdapter(SourceAdapter):
         self.step_index = 0
         self.last_step: ReplayOutputBundle | None = None
 
-    def reset_ep(self) -> ReplayOutputBundle:
+    def reset_ep(self) -> list[ReplayOutputBundle]:
         self.current_traj_dir = self.traj_dirs[self.episode_cursor]
         self.current_episode_id = self.manifest[self.data_id]["episodes"][self.episode_cursor]
         self.episode_cursor += 1
@@ -54,8 +68,12 @@ class ReplayEpisodeAdapter(SourceAdapter):
         self.states_xy_yaw = self._make_states_xy_yaw()
         self.actions = self._make_actions()
         self.step_index = 0
+        
+        trajectory_output: list[ReplayOutputBundle] = [self._pack_step(0, None, False)]
+        for act_idx, action in enumerate(self.actions):
+            trajectory_output.append(self._pack_step(act_idx, action, False))
 
-        return self._pack_step(action_taken=None, done=False)
+        return trajectory_output
     
     def reset_src(self, data_id: str):
         self.data_id = data_id
@@ -73,11 +91,15 @@ class ReplayEpisodeAdapter(SourceAdapter):
         self.step_index = 0
         self.last_step: ReplayOutputBundle | None = None
 
-    def step(self, action: str) -> ReplayOutputBundle:
-        next_action = self.actions[self.step_index]
+    def step(self, actions: list[str]) -> list[ReplayOutputBundle]:
+        next_actions = self.actions[self.step_index:]
         self.step_index += 1
         done = self.step_index >= len(self.images) - 1
-        return self._pack_step(action_taken=next_action, done=done)
+        
+        trajectory_output: list[ReplayOutputBundle] = []
+        for act_idx, action in enumerate(next_actions):
+            trajectory_output.append(self._pack_step((self.step_index + act_idx), action, done))
+        return trajectory_output
 
     def close(self) -> None:
         self.current_episode = None
@@ -126,7 +148,8 @@ class ReplayEpisodeAdapter(SourceAdapter):
 
     def _pack_step(
         self,
-        action_taken: list[float] | None,
+        step_index: int,
+        action: list[float] | None,
         done: bool,
     ) -> ReplayOutputBundle:
         step = ReplayOutputBundle(
@@ -134,15 +157,14 @@ class ReplayEpisodeAdapter(SourceAdapter):
             done=done,
             start_observation=self.images[0],
             goal_observation=self.images[-1],
-            current_observation=self.images[self.step_index],
+            current_observation=self.images[step_index],
             start_pose=self.states_xy_yaw[0],
-            step_index=self.step_index,
-            action_taken=action_taken,
+            step_index=step_index,
+            forced_action=action,
             metadata={
                 "data_id": self.data_id,
                 "source_mode": self.source_mode,
                 "trajectory_path": str(self.current_traj_dir),
-                "adapter_step_idx": self.step_index,
                 "done": done,
             },
         )
@@ -156,9 +178,9 @@ class ReplayUniWMFormatter(SourceFormatter):
 
     source_mode = "replay"
 
-    def __init__(self, adapter: ReplayEpisodeAdapter | None = None, bin_step: float = 0.01, image_h: int = 256, image_w: int = 256):
+    def __init__(self, adapter: ReplayEpisodeAdapter | None = None, bin_step: float = 0.01, img_size: int = 448):
         self.bin_step: float = float(bin_step)
-        self.image_size: tuple[int, int] = (int(image_w), int(image_h))
+        self.image_size: tuple[int, int] = (int(img_size), int(img_size))
 
     def convert_action(self, action: str) -> list[str]:
         action_text = action.strip()
@@ -167,26 +189,30 @@ class ReplayUniWMFormatter(SourceFormatter):
         extract_bin_values(action_text, "dyaw", self.bin_step)
         return [action_text]
 
-    def convert_observation(
+    def convert_from_source(
         self,
-        output: ReplayOutputBundle
+        outputs: list[ReplayOutputBundle]
     ) -> UniWMInputBundle:
+        output = outputs[0]
         bundle_metadata: dict[str, object] = dict(output.metadata)
         bundle_metadata.update({
-            "done": output.done,
             "step_index": output.step_index,
-            "source_mode": output.source_mode,
-            "action_taken": output.action_taken,
+            "source_mode": output.source_mode
         })
         
         pose_str = f"Starting Point Coordinate: x={output.start_pose[0]:.3f}, y={output.start_pose[1]:.3f}, yaw={output.start_pose[2]:.3f}\n"
-        action_text = output.action_taken if output.action_taken is None else action_to_text(output.action_taken)
+        
+        actions_taken: list[str] = []
+        
+        for o in outputs:
+            actions_taken.append("" if o.forced_action is None else action_to_text(o.forced_action, self.bin_step))
 
         return UniWMInputBundle(
             start_observation=output.start_observation.resize(self.image_size),
             goal_observation=output.goal_observation.resize(self.image_size),
             current_observation=output.current_observation.resize(self.image_size),
             start_pose_str=pose_str,
-            action_text=action_text,
+            action_text=actions_taken,
+            source_done=output.done,
             metadata=bundle_metadata,
         )

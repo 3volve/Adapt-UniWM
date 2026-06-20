@@ -34,7 +34,7 @@ from runtime_scripts.runtime_utils import (
 
 REQUIRED_FIELDS: dict[str, dict | list] = {
     "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference", "memory_context_smoothing_tau"],
-    "action_token_generation": ["range_profile", "bin_step"],
+    "action_token_generation": ["bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
         "visualization": ["multimodal_generation_mode", "current_substep"]
@@ -48,8 +48,6 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
 
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
-    _action_cfg: ActionCfg = ActionCfg()
-    
     @property
     def action_cfg(self):
         return self._action_cfg
@@ -59,20 +57,21 @@ class UniWMEngine:
         self._action_cfg = get_action_config(new_cfg_target)
         
 
-    def __init__(self, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
+    def __init__(self, data_id: str, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
         self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
+        self._action_cfg: ActionCfg = ActionCfg()
 
-        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), None)
+        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
         self.model: PeftModel | PeftMixedModel = loaded["model"]
         raw_processor = loaded["processor"]
         
         self.processor = cast(ChameleonProcessor, raw_processor)
         self.tokenizer = cast(PreTrainedTokenizerFast, raw_processor.tokenizer)
         self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
-        self._configure_action_tokenizer()
+        self._configure_action_tokenizer(data_id)
 
 
         self._trainable_params = self._online_update_parameters(include_lm_head=False)
@@ -112,7 +111,7 @@ class UniWMEngine:
     def get_current_context(self):
         return self._context_familiarity, self._context_stability 
         
-    def _store_initial_route_state(self) -> tuple[torch.LongTensor, float, float, int]:
+    def _store_state(self) -> tuple[torch.LongTensor, float, float, int]:
         self._memory_manager.cache_step_state()
         return self._current_tok_obs, self._context_familiarity, self._context_stability, self.memory_count
         
@@ -123,41 +122,55 @@ class UniWMEngine:
         self._context_stability = stability
         self.memory_count = mem_count
         
-    def predict_step(
+    def eval_step(
             self,
             bundle: UniWMInputBundle,
     ) -> StepPrediction:
         _, _, _, start_pose_str, action_text = bundle.unpack()
+        if isinstance(action_text, list):
+            action_text = action_text[0]
+            
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
         step_outputs = self._predict_step(
             start_pose_str=start_pose_str,
             action_text=action_text,
         )
+        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
         return StepPrediction(bundle, *step_outputs)
 
     def predict_route(
         self,
         bundle: UniWMInputBundle,
-        max_steps: int,
+        max_steps: int
     ) -> RoutePrediction:
-        start_observation, goal_observation, current_observation, start_pose_str, _ = bundle.unpack()
+        start_observation, goal_observation, current_observation, start_pose_str, actions = bundle.unpack()
+        if isinstance(actions, str):
+            actions = None
+        elif isinstance(actions, list) and len(actions) > 0:
+            actions = actions[1:]
 
-        limit = int(max_steps)
         current = current_observation
         steps: list[StepPrediction] = []
-        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_initial_route_state()
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
         
-        for step_index in range(limit):
+        predict_range = max_steps
+        if actions is not None:
+            predict_range = min(max_steps, len(actions))
+        
+        for route_idx in range(predict_range):
+            action = None if actions is None else actions[route_idx]
             step_action, step_viz, step_act_e, step_viz_e, _, _ = self._predict_step(
                 start_pose_str=start_pose_str,
+                action_text=action
             )
 
-            new_bundle = bundle if step_index == 0 else UniWMInputBundle(
+            new_bundle = bundle if route_idx == 0 else UniWMInputBundle(
                 start_observation,
                 goal_observation,
                 current,
                 start_pose_str,
                 step_action,
-                bundle.metadata
+                metadata=bundle.metadata
             )
 
             steps.append(StepPrediction(new_bundle, step_action, step_viz, step_act_e, step_viz_e, real_mem_familiarity, real_context_stability))
@@ -171,11 +184,15 @@ class UniWMEngine:
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
             current = step_viz
             
-            if step_index < limit - 1:
+            if route_idx < max_steps - 1:
                 self.store_and_update_working_memory(current, start_pose_str, False)
+                
+            if route_idx == max_steps - 1:
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+                return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
             
         self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
-        return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
+        return RoutePrediction(steps=steps, stopped=True, stop_reason="out_of_forced_actions")
 
     def train_viz_step(
         self,
@@ -568,19 +585,12 @@ class UniWMEngine:
             
         return entropy.new_zeros(1) if entropy.numel() == 0 else entropy
 
-    def _configure_action_tokenizer(self) -> None:
-        token_cfg = dict(self.config.get("action_token_generation", {}))
-        range_profile = token_cfg.get("range_profile", "habitat")
-        bin_step = float(token_cfg.get("bin_step", 0.01))
-        ranges = get_action_ranges(range_profile)
-
-        bin_tokens = []
-        bin_tokens.extend(generate_bin_tokens("dx", ranges["dxy"][0], ranges["dxy"][1], bin_step))
-        bin_tokens.extend(generate_bin_tokens("dy", ranges["dxy"][0], ranges["dxy"][1], bin_step))
-        bin_tokens.extend(generate_bin_tokens("dyaw", ranges["dyaw"][0], ranges["dyaw"][1], bin_step))
+    def _configure_action_tokenizer(self, data_id: str) -> None:
+        self.action_cfg = data_id
+        self.action_cfg.bin_step = float(self.config["action_token_generation"]["bin_step"])
 
         existing_vocab = set(self.tokenizer.get_vocab().keys())
-        new_tokens = [token for token in bin_tokens if token not in existing_vocab]
+        new_tokens: list[Any] = [token for token in self.action_cfg.generate_tokens() if token not in existing_vocab]
         if not new_tokens:
             return
 

@@ -79,10 +79,10 @@ def load_model(args, training_cfg):
             processor.tokenizer._batch_encode_plus = patched_batch_encode_plus.__get__(processor.tokenizer)
 
         # Rest of your original code unchanged
-        processor.image_processor.size = {"shortest_edge": 448}
+        processor.image_processor.size = {"shortest_edge": training_cfg["img_size"]}
         processor.image_processor.crop_size = {
-            "height": 448,
-            "width": 448
+            "height": training_cfg["img_size"],
+            "width": training_cfg["img_size"]
         }
 
         model.config.pad_token_id = processor.tokenizer.pad_token_id

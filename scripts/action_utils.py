@@ -82,6 +82,23 @@ class ActionCfg:
 
     def get_dyaw_tuple(self) -> tuple[float, float]:
         return self.min_dyaw, self.max_dyaw
+    
+    def generate_tokens(self) -> list[str]:
+        tokens = []
+        dxy_bins_pos = int(math.floor(self.max_dxy / self.bin_step))
+        dxy_bins_neg = int(math.floor(abs(self.min_dxy) / self.bin_step))
+        
+        dyaw_bins_pos = int(math.floor(self.max_dyaw / self.bin_step))
+        dyaw_bins_neg = int(math.floor(abs(self.min_dyaw) / self.bin_step))
+        
+        tokens += [f"<dx_pos_bin_{i:02d}>" for i in range(0, dxy_bins_pos + 1)]
+        tokens += [f"<dx_neg_bin_{i:02d}>" for i in range(0, dxy_bins_neg + 1)]
+        tokens += [f"<dy_pos_bin_{i:02d}>" for i in range(0, dxy_bins_pos + 1)]
+        tokens += [f"<dy_neg_bin_{i:02d}>" for i in range(0, dxy_bins_neg + 1)]
+        tokens += [f"<dyaw_pos_bin_{i:02d}>" for i in range(0, dyaw_bins_pos + 1)]
+        tokens += [f"<dyaw_neg_bin_{i:02d}>" for i in range(0, dyaw_bins_neg + 1)]
+        
+        return tokens
 
 
 def get_action_ranges(range_profile: str | None) -> dict[str, tuple[float, float]]:

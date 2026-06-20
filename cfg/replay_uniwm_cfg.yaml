@@ -11,8 +11,10 @@ engine:
     use_memory_bank_inference: true
     memory_context_smoothing_tau: 0.75
 
+  load_model_cfg:
+    img_size: 448
+    
   action_token_generation:
-    range_profile: unknown
     bin_step: 0.01
 
   generation:
@@ -58,6 +60,7 @@ wrapper:
   log_predicted_obs: true
   log_real_obs: true
   add_global_memories: false
+  eval_forced_action: true
   training_enabled: false
 
   enable_modulators: True
@@ -77,10 +80,8 @@ runner:
     manifest_path: cfg/eval_dataset_manifest.json
 
   formatter_params:
-    linear_deadband: 0.02
-    angular_deadband: 0.02
-    image_w: 256
-    image_h: 256
+    bin_step: 0.01
+    img_size: 448
 
 modulators:
   viz_ema_tau:

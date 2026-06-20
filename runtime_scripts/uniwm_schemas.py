@@ -12,10 +12,12 @@ class UniWMInputBundle:
     goal_observation: Image.Image
     current_observation: Image.Image
     start_pose_str: str
-    action_text: str | None = None
+    action_text: str | list[str] | None = None
+    collision: bool = False
+    source_done: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | None]:
+    def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | list[str] | None]:
         return (
             self.start_observation,
             self.goal_observation,
@@ -67,6 +69,7 @@ class TransitionRecord:
     replan_reason: str | None
     modulator_state: dict[str, Any] | None = None
     training_logs: dict[str, Any] | None = None
+    eval_logs: dict[str, Any] | None = None
     env_info: dict[str, Any] | None = None
 
     def to_log(self) -> dict[str, Any]:
@@ -81,6 +84,7 @@ class TransitionRecord:
             "replan_reason": self.replan_reason,
             "modulator_state": None if self.modulator_state is None else dict(self.modulator_state),
             "training_logs": None if self.training_logs is None else dict(self.training_logs),
+            "eval_logs": None if self.eval_logs is None else dict(self.eval_logs),
             "env_info": None if self.env_info is None else dict(self.env_info),
         }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import math, torch, os
 from typing import Any, cast
 
@@ -20,7 +21,7 @@ from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisod
 
 from scripts.action_utils import extract_bin_values
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
-from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, HabitatOutputBundle, OutputBundle
+from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, OutputBundle
 
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
@@ -29,6 +30,17 @@ EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "right": "turn_right"
 }
 
+@dataclass(frozen=True, kw_only=True)
+class HabitatOutputBundle(OutputBundle):
+    source_mode: str = "habitat"
+
+    start_obs: Observations
+    current_obs: Observations
+    metrics: Mapping[str, Any]
+    episode: InstanceImageGoalNavEpisode | Episode
+    step_index: int
+    action_taken: str | None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
     """Thin Habitat environment adapter."""
@@ -62,17 +74,17 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.env = habitat.Env(config=self.config)
         assert self.env is not None
 
-    def reset_ep(self) -> HabitatOutputBundle:
+    def reset_ep(self) -> list[HabitatOutputBundle]:
         obs: Observations = self.env.reset()
         self.current_episode = self.env.current_episode
         self.step_index = 0
         self.start_obs = obs
 
-        return self._pack_step(
+        return [self._pack_step(
             obs=obs,
             done=bool(self.env.episode_over),
             action_taken=None,
-        )
+        )]
         
     def reset_src(self, data_id: str = "habitat") -> None:
         # TODO: Not high prio, but would like to have this start the episodes from the beginning again.
@@ -85,16 +97,24 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         # TODO: The main thing left here is to find the function habitat uses to fully reset the env rather than step the episode.
         # self.current_episode = self.env.
         
-    def step(self, action: str) -> HabitatOutputBundle:
-        obs = self.env.step(action)
-        self.current_episode = self.env.current_episode
-        self.step_index += 1
+    def step(self, actions: list[str]) -> list[HabitatOutputBundle]:
+        step_results: list[HabitatOutputBundle] = []
+        for action in actions:
+            obs = self.env.step(action)
+            self.current_episode = self.env.current_episode
+            self.step_index += 1
+            done = bool(self.env.episode_over)
 
-        return self._pack_step(
-            obs=obs,
-            done=bool(self.env.episode_over),
-            action_taken=action
-        )
+            step_results.append(self._pack_step(
+                obs=obs,
+                done=done,
+                action_taken=action
+            ))
+            
+            if done:
+                break
+        
+        return step_results
 
     @property
     def action_space(self) -> object:
@@ -154,11 +174,11 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
     START_POSE_TEMPLATE: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
     # TODO: bin_step should be set dynamically based on a universal config, not just a default which happens to match up to everything else.
-    def __init__(self, adapter: HabitatEpisodeAdapter, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, image_h: int = 256, image_w: int = 256):
+    def __init__(self, adapter: HabitatEpisodeAdapter, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, img_size: int = 448):
         self.bin_step: float = float(bin_step)
         self.linear_deadband: float = float(linear_deadband)
         self.angular_deadband: float = float(angular_deadband)
-        self.image_size: tuple[int, int] = (int(image_w), int(image_h))
+        self.image_size: tuple[int, int] = (int(img_size), int(img_size))
 
         hab_cfg = adapter.habitat_config
         if hab_cfg is not None:
@@ -212,28 +232,32 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
 
         return all_actions
 
-    def convert_observation(
+    def convert_from_source(
         self,
-        output: HabitatOutputBundle
+        outputs: list[HabitatOutputBundle]
     ) -> UniWMInputBundle:
+        output = outputs[-1]
         start_rgb = output.start_obs[self.RGB_KEY]
         goal_image = output.start_obs[self.GOAL_KEY]
         current_rgb = output.current_obs[self.RGB_KEY]
-        bundle_metadata: dict[str, object] = dict(output.metadata)
+        bundle_metadata: dict[str, Any] = dict(output.metadata)
 
         bundle_metadata.update({
-            "done": output.done,
-            "step_index": output.step_index,
+            "step_index": f"[{outputs[0].step_index}->{outputs[-1].step_index}]",
             "source_mode": output.source_mode,
-            "action_taken": output.action_taken,
+            "action_taken": ', '.join(['<no action>' if o.action_taken is None else o.action_taken for o in outputs]),
             "metrics": dict(output.metrics)
         })
+        
+        had_collision = any(o.metrics["collisions"]["is_collision"] for o in outputs)
 
         return UniWMInputBundle(
             start_observation=self._to_pil_image(start_rgb),
             goal_observation=self._to_pil_image(goal_image),
             current_observation=self._to_pil_image(current_rgb),
             start_pose_str=self.extract_start_pose(output.episode),
+            collision=had_collision,
+            source_done=any(o.done for o in outputs),
             metadata=bundle_metadata,
         )
 

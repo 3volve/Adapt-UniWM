@@ -34,6 +34,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
     def __init__(
         self,
         data_type: str,
+        data_id: str,
         full_output_path: Path,
         *,
         config_path: str | None = None,
@@ -42,11 +43,20 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         if config_path is None:
             config_path = resolve_config_path_from_id(data_type)
 
-        self.config: dict[str, Any] = load_config(config_path).get("runner", {})
+        config = load_config(config_path)
+        self.config: dict[str, Any] = config.get("runner", {})
+        
+        # Need to normalize these two to ensure proper generation and conversion
+        
+        if self.config["formatter_params"].get("img_size", False):
+            self.config["formatter_params"]["img_size"] = config["engine"]["load_model_cfg"]["img_size"]
+        if self.config["formatter_params"].get("bin_step", False):
+            self.config["formatter_params"]["bin_step"] = config["engine"]["action_token_generation"]["bin_step"]
+            
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.wrapper = UniWMWrapper(
-            UniWMEngine(config_path) if engine is None else engine,
+            UniWMEngine(data_id, config_path) if engine is None else engine,
             config_path,
             str(full_output_path)
         )
@@ -60,13 +70,13 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
     def run_episode(self, data_id: str) -> dict[str, Any]:
         print("[RUNNER]: Starting New Episode")
         # Generate new observation when resetting episode
-        step_result: T_OutputBundle = self.adapter.reset_ep()
+        step_results: list[T_OutputBundle] = self.adapter.reset_ep()
 
         # convert new observation to UniWMInputBundle
-        converted_obs: UniWMInputBundle = self.formatter.convert_observation(step_result)
+        converted_obs: UniWMInputBundle = self.formatter.convert_from_source(step_results)
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_result.episode_id, data_id)
+        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_results[0].episode_id)
 
         conv_info = converted_obs.metadata
         step_logs: list[dict[str, Any]] = []
@@ -84,12 +94,10 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
             # Assuming there are any valid actions returned...
             if len(converted_actions) > 0:
-                # Pass new actions one at a time to the source adapter
-                for action in converted_actions:
-                    step_result: T_OutputBundle = self.adapter.step(action)
+                step_results = self.adapter.step(converted_actions)
 
                 # Convert adapter output obs to UniWMInputBundle
-                converted_obs = self.formatter.convert_observation(step_result)
+                converted_obs = self.formatter.convert_from_source(step_results)
 
             # Give new obs state to wrapper to update its state
             transition: TransitionRecord = self.wrapper.observe_transition(converted_obs)
@@ -106,7 +114,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
                     }
                 )
 
-            if step_result.done:
+            if converted_obs.source_done:
                 termination_reason = "adapter_done"
                 break
             if wrapper_requested_stop and self.config["stop_on_wrapper_done"]:
@@ -115,7 +123,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
         episode_log = {
             "episode_index": len(self._episode_logs),
-            "episode_id": step_result.episode_id,
+            "episode_id": step_results[0].episode_id,
             "adapter_source_mode": self.adapter.source_mode,
             "max_episode_steps": self.config["max_episode_steps"],
             "steps_executed": steps_executed,
@@ -131,11 +139,13 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         return episode_log
 
     def run_episodes(self, num_episodes: int, data_id: str):
+        """ Leaving in code to parse multiple data_ids, but the system can't actually properly swap action_cfgs between types. Don't try to run with multiple. """
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
         
         data_ids = [data_id]
         if ',' in data_id:
+            raise NotImplementedError("[UNFINISHED_IMPLEMENTATION] System can't actually properly swap action_cfgs between types yet. Please run them one at a time instead.")
             data_ids = [id.strip() for id in data_id.split(',')]
             
         for id in data_ids:
@@ -183,6 +193,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_type", type=str, default="habitat")
+    
+    # For now, I'm just going to say only this will only work with a single data_id at a time.  I'll deal with splitting and rebuilding the runner per-data_id later if it seems necessary.
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
@@ -190,7 +202,7 @@ if __name__ == '__main__':
     
     run_dir = make_runner_output_dir(args.output_dir, args.data_id)
 
-    runner = UniWMEpisodeRunner(args.data_type, run_dir)
+    runner = UniWMEpisodeRunner(args.data_type, args.data_id, run_dir)
     runner.run_episodes(args.num_episodes, args.data_id)
 
     save_runner_logs(runner.get_logs(), run_dir)

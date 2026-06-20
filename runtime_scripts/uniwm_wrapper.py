@@ -31,9 +31,10 @@ REQUIRED_FIELDS: list[str] = [
     "full_replan_threshold",
     "divergence_metric",
     "replan_on_route_exhausted",
-    "log_predicted_observations",
-    "log_real_observations",
+    "log_predicted_obs",
+    "log_real_obs",
     "add_global_memories",
+    "eval_forced_action",
     "training_enabled",
     
     "enable_modulators",
@@ -49,14 +50,14 @@ class UniWMWrapper:
         self.config = root_config.get("wrapper", {})
         validate_config(self.config, REQUIRED_FIELDS)
         self.output_path = absolute_output_path
+        self.forced_actions = False
         
         self.modulators = ModulatorSystem(self.config["enable_modulators"], root_config["modulators"])
         
         self._reset_wrapper_state()
         self.ready_to_act = False
 
-    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str, episode_data_target: str = "unknown") -> dict[str, Any]:
-        self.engine.action_cfg = episode_data_target
+    def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str) -> dict[str, Any]:
         self._reset_wrapper_state()
         self.latest_bundle = initial_bundle
         self.engine.reset_episode(episode_id, initial_bundle)
@@ -96,12 +97,10 @@ class UniWMWrapper:
             print(f"Failing with values: ({self.ready_to_act}, {'exists' if self.pending_step else 'none'}, {self.pending_step_idx})")
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
         
-        
         pending_step, pending_step_idx = self.pending_step, self.pending_step_idx
         real_obs = observed_bundle.current_observation
-        is_collision: bool = observed_bundle.metadata["metrics"]["collisions"]["is_collision"]
         pending_step.context_familiarity, pending_step.context_stability = self.engine.get_current_context()
-        save_path_real, save_path_viz = build_img_paths(self.output_path, self.episode_id, self.route_id, self.pending_step_idx)
+        save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, self.route_id, self.pending_step_idx)
         
         if real_obs is not None and self.config["log_real_obs"]:
             save_img(real_obs, save_path_real)
@@ -115,16 +114,20 @@ class UniWMWrapper:
         
         divergence = 0
         training_log: dict[str, Any] | None = None
+        eval_log: dict[str, Any] | None = None
         modulator_state: dict[str, Any] | None = None
         if pending_step and not is_stop_action(pending_step.action_text):
-            divergence = self.compute_divergence(pending_step.visualization, pending_step.real_next_obs)
+            divergence, mod_divergence = self.compute_divergence(pending_step.visualization, pending_step.real_next_obs)
             
-            self._update_modulators(pending_step, divergence, is_collision)
+            self._update_modulators(pending_step, mod_divergence, observed_bundle.collision)
             lr_scalar = self.modulators.compute_visualization_update_weight()
             modulator_state = self.modulators.get_current_state()
             
             # TODO: Decide if more complicated logic for determining whether to train or not is necessary
-            if not is_collision:
+            if not observed_bundle.collision:
+                if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
+                    eval_log = self._run_eval_predict(observed_bundle, pending_step.real_next_obs, save_path_eval)
+                    
                 if self.config["training_enabled"]:
                     training_log = self.engine.train_viz_step(pending_step, lr_scalar)
                     self._update_viz_loss(training_log["base_loss"])
@@ -135,8 +138,8 @@ class UniWMWrapper:
         replan_reason = None
         replanned = False
         route_id = self.route_id
-        if is_collision or divergence > float(self.config["full_replan_threshold"]):
-            if is_collision:
+        if not observed_bundle.source_done and (observed_bundle.collision or divergence > float(self.config["full_replan_threshold"])):
+            if observed_bundle.collision:
                 replan_reason = f"collision"
             else:
                 replan_reason = f"divergence>{self.config['full_replan_threshold']:.3f}"
@@ -157,6 +160,7 @@ class UniWMWrapper:
             replan_reason=replan_reason,
             modulator_state=modulator_state,
             training_logs=training_log,
+            eval_logs=eval_log,
             env_info=observed_bundle.metadata,
         )
 
@@ -166,23 +170,28 @@ class UniWMWrapper:
         return record
 
     def replan_route(self, current_bundle: UniWMInputBundle, reason: str) -> None:
+        if current_bundle.source_done:
+            return
+        
         print("[WRAPPER]: Replanning Route")
         self.latest_bundle = current_bundle
         self.pending_step = None
         self.pending_step_idx = 0
         self._plan_route(current_bundle, reason=reason)
 
-    def compute_divergence(self, predicted_img: Any, real_img: Any) -> float:
+    def compute_divergence(self, predicted_img: Any, real_img: Any) -> tuple[float, float]:
+        # TODO: Figure out a cleaner solution for needing to return a divergence on abnormal inputs or ensure abnormal inputs can't be input.
         metric = self.config["divergence_metric"]
         if predicted_img is None and real_img is None:
-            return 0.0
+            return 0.0, 0.0
         if predicted_img is None or real_img is None:
-            return float("inf")
+            return float(self.config["full_replan_threshold"]) + 100, -1.0
 
         if metric == "mean_absolute_error":
             predicted_img_arr = image_to_array(predicted_img)
             real_img_arr = image_to_array(real_img)
-            return float(np.abs(predicted_img_arr - real_img_arr).mean())
+            result = float(np.abs(predicted_img_arr - real_img_arr).mean())
+            return result, result
 
         raise AssertionError(f"Unsupported divergence_metric '{metric}'")
 
@@ -217,8 +226,8 @@ class UniWMWrapper:
         self.modulators.reset_episode()
 
     def _plan_route(self, bundle: UniWMInputBundle, *, reason: str) -> None:
-        if len(self.route_history) > 0:
-            self.route_history[-1].stop_reason = reason
+        if bundle.source_done:
+            return
         
         self.route_idx = 0
         self.route_id += 1
@@ -239,6 +248,24 @@ class UniWMWrapper:
                 planned_actions=[str(step.action_text) for step in self.current_route.steps]
             )
         )
+        
+    def _run_eval_predict(self, observed_bundle: UniWMInputBundle, target_obs: Image.Image, save_path_eval: str) -> dict[str, Any]:
+        eval_log = {}
+        eval_prediction = self.engine.eval_step(observed_bundle)
+        eval_divergence, _ = self.compute_divergence(eval_prediction.visualization, target_obs)
+        
+        eval_log["forced_action"] = eval_prediction.action_text
+        eval_log["divergence"] = eval_divergence
+        eval_log["viz_entropy"] = eval_prediction.viz_entropy
+        eval_log["context_familiarity"] = eval_prediction.context_familiarity
+        eval_log["context_stability"] = eval_prediction.context_stability
+        eval_log["prediction_available"] = eval_prediction.visualization is not None
+        eval_log["predicted_obs_path"] = save_path_eval if eval_prediction.visualization is not None and self.config["log_predicted_obs"] else None
+        
+        if eval_prediction.visualization is not None and self.config["log_predicted_obs"]:
+            save_img(eval_prediction.visualization, save_path_eval)
+            
+        return eval_log
     
     def _update_viz_loss(self, new_loss: float) -> None:
         new_loss = max(0.0, new_loss)
@@ -286,7 +313,7 @@ class UniWMWrapper:
             self.modulators.on_learning_progress(relative_progress * pending_step.context_stability)
             self.modulators.on_persistent_error(persistent_error)
             
-        if not is_collision:
+        if not is_collision and divergence >= 0.0:
             self.modulators.on_prediction_mismatch(divergence)
             self.modulators.on_visual_uncertainty(pending_step.viz_entropy)
         

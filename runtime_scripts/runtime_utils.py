@@ -36,7 +36,7 @@ def make_runner_output_dir(
     data_id: str
 ) -> Path:
     """ Make a unique directory based on data_id.  Passed-in output_dir is assumed to be relative to the repo-root. """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     run_dir = root_dir() / output_dir / f"{data_id}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
@@ -64,9 +64,9 @@ def validate_config_recursive(config_node: dict | str, required_fields_at_node: 
             if isinstance(required_fields_at_node, dict):
                 validate_config_recursive(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
                 
-def build_img_paths(output_dir: str, episode_id: str, route_id: int, route_step: int) -> tuple[str, str]:
+def build_img_paths(output_dir: str, episode_id: str, route_id: int, route_step: int) -> tuple[str, str, str]:
     base_path = str(root_dir() / Path(output_dir) / f"episode_{episode_id}/route_{route_id}/step_{route_step}")
-    return f"{base_path}_real.png", f"{base_path}_pred.png"
+    return f"{base_path}_real.png", f"{base_path}_pred.png", f"{base_path}_eval.png"
     
 def is_stop_action(action_text: str) -> bool:
     return action_text.strip().lower() == "stop"
