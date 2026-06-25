@@ -1,10 +1,8 @@
 CKPT="./checkpoints/main_ckpt"
-DATASET="go_stanford"
-Run_ID="$DATASET"_offline_eval
+DATASET="recon,scand"
+Run_ID="$DATASET"_offline_training
 
-mkdir ./output/"$Run_ID"
-
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 safe_run torchrun --nproc_per_node=2 train.py \
+NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 train.py \
   --model anole \
   --model_ckpt "$CKPT" \
   --data "$DATASET" \
@@ -12,13 +10,15 @@ NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 safe_run torchrun --nproc_per_node=2
   --decoder_type anole \
   --image_seq_length 784 \
   --input_format anole \
-  --output ./output \
-  --note "$Run_ID"_onestep \
+  --output ./output/"$Run_ID" \
+  --note "$Run_ID" \
   --report_to none \
+  --do_train \
+  --train_bz 1 \
   --val_bz 1 \
-  --do_single_step_eval \
+  --grad_acc 2 \
   --bfloat16
 
 timeout 0.25
-  
+
 tail -f ~/safe_run.log

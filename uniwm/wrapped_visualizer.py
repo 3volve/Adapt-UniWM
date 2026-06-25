@@ -102,6 +102,13 @@ class AnoleforConditionalGeneration(ChameleonForConditionalGeneration):
             **kwargs
         )
 
+        # When return_dict_in_generate=True, Transformers returns a generation
+        # output object containing both `sequences` and metadata such as
+        # `scores`. Runtime inference needs that metadata to compute entropy,
+        # so preserve the object instead of treating it as a token tensor.
+        if hasattr(generate_ids, "sequences"):
+            return generate_ids
+
         if multimodal_generation_mode == "text-only":
             return generate_ids[:, kwargs["input_ids"].shape[-1]:], None
         

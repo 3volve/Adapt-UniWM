@@ -40,6 +40,7 @@ class HabitatOutputBundle(OutputBundle):
     episode: InstanceImageGoalNavEpisode | Episode
     step_index: int
     action_taken: str | None
+    is_collision: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
@@ -249,7 +250,8 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
             "metrics": dict(output.metrics)
         })
         
-        had_collision = any(o.metrics["collisions"]["is_collision"] for o in outputs)
+        
+        had_collision = any(o.is_collision for o in outputs)
 
         return UniWMInputBundle(
             start_observation=self._to_pil_image(start_rgb),

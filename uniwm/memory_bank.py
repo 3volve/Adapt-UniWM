@@ -395,7 +395,14 @@ class CustomAnoleAttention(ChameleonAttention):
                     attn_min = new_image_attn.min().item()
                                         
                     # Replace the query states with the new attention results
-                    query_states[:, :, start_pos:end_pos+1, :] = new_image_attn
+                    query_states = torch.cat(
+                        (
+                            query_states[:, :, :start_pos, :],
+                            new_image_attn,
+                            query_states[:, :, end_pos + 1:, :],
+                        ),
+                        dim=2,
+                    )
                     
             # else:
             #     print(f"Layer {self.layer_idx}: ❌ Insufficient token pairs for memory bank usage")
@@ -715,19 +722,30 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
         # Run forward pass to initialize memory bank
         with torch.no_grad():
             try:
-                outputs = self.model(**model_inputs)
-                self.memory_bank_initialized = True
+                self.model(**model_inputs)
+                initialized_layers = []
                 if hasattr(self.model, 'layers'):
                     for layer in self.model.layers:
                         if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
+                            layer_initialized = (
+                                layer.self_attn.memory_bank_initialized
+                                and layer.self_attn.stored_keys is not None
+                                and layer.self_attn.stored_values is not None
+                            )
+                            initialized_layers.append(layer_initialized)
                             print(f"Layer {layer.self_attn.layer_idx}: memory_bank_initialized = {layer.self_attn.memory_bank_initialized}")
-                            # print(f"Layer {layer.self_attn.layer_idx}: stored_keys = {layer.self_attn.stored_keys}")
                             if layer.self_attn.stored_keys is not None:
                                 print(f"layer stored keys shape: {layer.self_attn.stored_keys.shape}")
                             else:
                                 print(f"Layer {layer.self_attn.layer_idx}: stored_keys is None - initialization failed")
-                return True
+
+                self.memory_bank_initialized = (
+                    len(initialized_layers) == len(self.use_memory_bank_layers)
+                    and all(initialized_layers)
+                )
+                return self.memory_bank_initialized
             except Exception as e:
+                self.memory_bank_initialized = False
                 print(f"Memory bank initialization failed: {e}")
                 print(f"Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}")
                 return False
@@ -798,19 +816,30 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
         # Run forward pass to initialize memory bank
         with torch.no_grad():
             try:
-                outputs = self.model(**model_inputs)
-                self.memory_bank_initialized = True
+                self.model(**model_inputs)
+                initialized_layers = []
                 if hasattr(self.model, 'layers'):
                     for layer in self.model.layers:
                         if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
+                            layer_initialized = (
+                                layer.self_attn.memory_bank_initialized
+                                and layer.self_attn.stored_keys is not None
+                                and layer.self_attn.stored_values is not None
+                            )
+                            initialized_layers.append(layer_initialized)
                             print(f"Layer {layer.self_attn.layer_idx}: memory_bank_initialized = {layer.self_attn.memory_bank_initialized}")
-                            # print(f"Layer {layer.self_attn.layer_idx}: stored_keys = {layer.self_attn.stored_keys}")
                             if layer.self_attn.stored_keys is not None:
                                 print(f"layer stored keys shape: {layer.self_attn.stored_keys.shape}")
                             else:
                                 print(f"Layer {layer.self_attn.layer_idx}: stored_keys is None - initialization failed")
-                return True
+
+                self.memory_bank_initialized = (
+                    len(initialized_layers) == len(self.use_memory_bank_layers)
+                    and all(initialized_layers)
+                )
+                return self.memory_bank_initialized
             except Exception as e:
+                self.memory_bank_initialized = False
                 print(f"Memory bank initialization failed: {e}")
                 print(f"Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}, pixel_values: {pixel_values.dtype}")
                 return False
@@ -916,9 +945,16 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 **kwargs
             )
         finally:
-            # Clean up generation-level parameters
-            self._generation_use_memory_bank = False
-            self._generation_is_memory_bank_init = False
-            self._generation_current_step = None
-            self._generation_current_substep = None
-            self._generation_use_global_memory_bank = False
+            # Remove generation-only overrides entirely. Leaving these
+            # attributes set to False/None makes decoder layers prefer stale
+            # generation state over the temporary flags used by explicit
+            # memory-bank initialization forwards.
+            for attr in (
+                '_generation_use_memory_bank',
+                '_generation_is_memory_bank_init',
+                '_generation_current_step',
+                '_generation_current_substep',
+                '_generation_use_global_memory_bank',
+            ):
+                if hasattr(self, attr):
+                    delattr(self, attr)

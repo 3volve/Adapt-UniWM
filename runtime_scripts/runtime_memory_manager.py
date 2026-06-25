@@ -90,6 +90,9 @@ class RuntimeMemoryBankManager:
             attention.stored_keys = self._cached_step_state.stored_keys[index]
             attention.stored_values = self._cached_step_state.stored_values[index]
 
+        self.model.model.memory_bank_initialized = all(
+            layer.self_attn.memory_bank_initialized for layer in layers
+        )
         self.current_step = self._cached_step_state.current_step
         self.context_ema = self._cached_step_state.context_ema
 

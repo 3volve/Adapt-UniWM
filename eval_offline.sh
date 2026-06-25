@@ -1,6 +1,6 @@
 CKPT="./checkpoints/main_ckpt"
 
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=1 train.py \
+NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 torchrun --nproc_per_node=1 train.py \
   --model anole \
   --model_ckpt "$CKPT" \
   --data go_stanford \

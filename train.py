@@ -3,17 +3,11 @@ import wandb
 import torch
 import logging
 import argparse
+import warnings
 import yaml
-import copy
-import math
-import configparser
-import transformers
 import torch.distributed as dist
 
-from torch.utils.data import DataLoader
-from transformers import EarlyStoppingCallback, StopStringCriteria, set_seed, DataCollatorForSeq2Seq, DataCollatorForLanguageModeling
-from transformers.data.data_collator import default_data_collator
-from transformers.trainer_utils import get_last_checkpoint
+from transformers import EarlyStoppingCallback, StopStringCriteria, set_seed
 from transformers.generation import StoppingCriteriaList
 
 from scripts.run_config import create_run_name
@@ -28,6 +22,19 @@ from transformers.utils import logging as hf_logging
 hf_logging.set_verbosity_error()  
 
 logger = logging.getLogger(__name__)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"`torch\.cpu\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+    category=FutureWarning,
+    module=r"torch\.utils\.checkpoint",
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Setting `save_embedding_layers` to `True` as the embedding layer has been resized during finetuning\.",
+    category=UserWarning,
+)
 
 WANDB_API_KEY = "<YOUR_WANDB_KEY_API>"
 WANDB_ENTITY = "<YOUR_WANDB_ENTITY>"

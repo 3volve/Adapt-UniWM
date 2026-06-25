@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Any, Generic
 
@@ -135,6 +136,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             "final_wrapper_state": self.wrapper.get_state_snapshot(),
         }
 
+        print("[RUNNER]: Finishing Episode")
         self._episode_logs.append(episode_log)
         return episode_log
 
@@ -173,6 +175,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             raise AssertionError(f"Unable to load adapter module from {file_path}")
 
         module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
         adapter_class_name = f"{data_type.capitalize()}EpisodeAdapter"
@@ -186,7 +189,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
-        adapter: T_Adapter = adapter_cls(**self.config["adapter_params"])
+        adapter: T_Adapter = adapter_cls(max_episode_steps=self.config["max_episode_steps"], **self.config["adapter_params"])
         formatter: T_Formatter = formatter_cls(adapter, **self.config["formatter_params"])
         return adapter, formatter
 
@@ -199,6 +202,7 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
     args = parser.parse_args()
+    print("[RUNNER]: Starting New Run")
     
     run_dir = make_runner_output_dir(args.output_dir, args.data_id)
 
@@ -206,3 +210,5 @@ if __name__ == '__main__':
     runner.run_episodes(args.num_episodes, args.data_id)
 
     save_runner_logs(runner.get_logs(), run_dir)
+    
+    print("[RUNNER]: Ending Run")
