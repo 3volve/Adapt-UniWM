@@ -17,6 +17,9 @@ import habitat
 from habitat.config.default import get_config
 from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
+from habitat.core.embodied_task import SimulatorTaskAction
+from habitat.core.registry import registry
+from habitat.utils.geometry_utils import quaternion_rotate_vector
 from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisode
 
 from scripts.action_utils import extract_bin_values
@@ -26,10 +29,50 @@ from runtime_scripts.datasource_schemas import SourceFormatter, SourceAdapter, O
 EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "stop": "stop",
     "forward": "move_forward",
+    "backward": "move_backward",
+    "strafe_left": "strafe_left",
+    "strafe_right": "strafe_right",
     "left": "turn_left",
     "right": "turn_right"
 }
 
+#-------------------- Habitat Config Additional Actions
+def _move_relative(sim, local_delta: np.ndarray):
+    state = sim.get_agent_state()
+    start = state.position
+    target = start + quaternion_rotate_vector(state.rotation, local_delta)
+
+    allow_sliding = sim.config.sim_cfg.allow_sliding
+    step_fn = sim.pathfinder.try_step if allow_sliding else sim.pathfinder.try_step_no_sliding
+    final_position = step_fn(start, target)
+
+    sim.set_agent_state(final_position, state.rotation, reset_sensors=False)
+
+@registry.register_task_action
+class MoveBackwardAction(SimulatorTaskAction):
+    name = "move_backward"
+
+    def step(self, *args, **kwargs):
+        step_size = self._sim.config.sim_cfg.forward_step_size
+        return _move_relative(self._sim, np.array([0.0, 0.0, step_size]))
+
+@registry.register_task_action
+class StrafeLeftAction(SimulatorTaskAction):
+    name = "strafe_left"
+
+    def step(self, *args, **kwargs):
+        step_size = self._sim.config.sim_cfg.forward_step_size
+        return _move_relative(self._sim, np.array([-step_size, 0.0, 0.0]))
+
+@registry.register_task_action
+class StrafeRightAction(SimulatorTaskAction):
+    name = "strafe_right"
+
+    def step(self, *args, **kwargs):
+        step_size = self._sim.config.sim_cfg.forward_step_size
+        return _move_relative(self._sim, np.array([step_size, 0.0, 0.0]))
+
+#-------------------- Habitat Source Tool Classes
 @dataclass(frozen=True, kw_only=True)
 class HabitatOutputBundle(OutputBundle):
     source_mode: str = "habitat"
@@ -201,30 +244,14 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
         all_actions: list[str] = []
         # Add a forward movement
         if dx >= self.linear_deadband:
-            forward_action = EXPECTED_HABITAT_ACTIONS["forward"]
-            all_actions.append(forward_action)
-
-        # TODO: Replace these hacky approaches for backward and strafe movements with updating Habitat movement options directly, or better restrict UniWM to not allow these options.
-        # Add a backward movement
+            all_actions.append(EXPECTED_HABITAT_ACTIONS["forward"])
         elif dx <= -self.linear_deadband:
-            # Turn 180 degrees, move forward once, then turn back around.
-            turn_around = [EXPECTED_HABITAT_ACTIONS["right"]] * (self.right_angle_turn_repeats * 2)
+            all_actions.append(EXPECTED_HABITAT_ACTIONS["backward"])
 
-            all_actions.extend(turn_around)
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["forward"])
-            all_actions.extend(turn_around)
-
-        # Add a strafe movement
-        if abs(dy) >= self.linear_deadband:
-            # Turn 90 degrees in direction of strafe, move forward once, then turn 90 degrees in opposite direction of strafe
-            turns_order = (EXPECTED_HABITAT_ACTIONS["left"], EXPECTED_HABITAT_ACTIONS["right"]) if dy > 0 else (EXPECTED_HABITAT_ACTIONS["right"], EXPECTED_HABITAT_ACTIONS["left"])
-
-            turn_first = [turns_order[0]] * self.right_angle_turn_repeats
-            turn_second = [turns_order[1]] * self.right_angle_turn_repeats
-
-            all_actions.extend(turn_first)
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["forward"])
-            all_actions.extend(turn_second)
+        if dy >= self.linear_deadband:
+            all_actions.append(EXPECTED_HABITAT_ACTIONS["strafe_left"])
+        elif dy <= -self.linear_deadband:
+            all_actions.append(EXPECTED_HABITAT_ACTIONS["strafe_right"])
 
         # Add a turn movement
         if abs(dyaw) >= self.angular_deadband:

@@ -11,6 +11,7 @@ zero/
 models/
 cross.zip
 data/
+local_helper_tools/
 eval_data/
 *_step_frames/
 

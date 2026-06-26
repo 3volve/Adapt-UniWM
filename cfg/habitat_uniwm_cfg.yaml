@@ -82,6 +82,11 @@ runner:
     scenes_dir: data/scene_datasets
     seed: 100
 
+    extra_overrides:
+      - "+habitat.task.actions.move_backward.type=MoveBackwardAction"
+      - "+habitat.task.actions.strafe_left.type=StrafeLeftAction"
+      - "+habitat.task.actions.strafe_right.type=StrafeRightAction"
+
   formatter_params:
     bin_step: 0.01
     linear_deadband: 0.01
