@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, cast
 
@@ -89,6 +90,24 @@ class UniWMEngine:
         
         if hasattr(self.model, "eval"):
             self.model.eval()
+
+    def save_online_training_state(self, output_dir: str | Path) -> Path:
+        """Save the current online-adapted weights and optimizer state."""
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        self.model.save_pretrained(str(output_path))
+        if hasattr(self.processor, "save_pretrained"):
+            self.processor.save_pretrained(output_path)
+
+        torch.save(
+            {
+                "optimizer": self._optimizer.state_dict(),
+                "engine_training_config": self.config["training"],
+            },
+            output_path / "online_training_state.pt",
+        )
+        return output_path
 
     def reset_episode(self, episode_id: str, bundle: UniWMInputBundle):
         self._memory_manager.setup_for_episode(episode_id=episode_id)
@@ -320,7 +339,7 @@ class UniWMEngine:
         ]
         
         scores = cast(tuple[torch.FloatTensor], outputs.scores)
-        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores))
+        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
     
         decoded_text, token_position_info = decode_action(self.processor, generated_tokens, action_token_ids)
         
@@ -348,7 +367,7 @@ class UniWMEngine:
             )
             
         scores = cast(tuple[torch.FloatTensor], outputs.scores)
-        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores))
+        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
         
         entropy = self._calculate_entropy(
             generated_tokens,
@@ -356,8 +375,11 @@ class UniWMEngine:
             token_ids=cast(list[int], self.model.model.bpe_indices),
         )
         
+        entropy_value = float(entropy.mean().detach().cpu())
+        del outputs, scores, entropy
+        
         generated_img = decode_image(self.model, self.processor, generated_tokens)
-        return generated_img, float(entropy.mean().detach().cpu())
+        return generated_img, entropy_value
 
     def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> torch.Tensor | None:
         scaled_loss = update_scale * supervised_loss
@@ -566,7 +588,10 @@ class UniWMEngine:
         position_mask = None
         if token_position < 0:
             position_mask = torch.isin(generated_tokens.to(score_tensor.device), allowed_ids)
-            score_tensor = score_tensor.index_select(-1, allowed_ids)
+            score_tensor = torch.stack(
+                tuple(score.index_select(-1, allowed_ids) for score in scores),
+                dim=1,
+            ).float()
         else:
             score_tensor = score_tensor[:, token_position, :].index_select(-1, allowed_ids)
 

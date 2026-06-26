@@ -9,6 +9,6 @@ NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 u
   --output_dir "$OUTPUT_DIR" \
   --num_episodes "$NUM_EPISODES"
 
-timeout 0.5
+timeout 1
   
 tail -f ~/safe_run.log

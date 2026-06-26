@@ -189,7 +189,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
-        adapter: T_Adapter = adapter_cls(max_episode_steps=self.config["max_episode_steps"], **self.config["adapter_params"])
+        habitat_max_steps = self.config["max_episode_steps"] * 5 # To account for the potential of multiple habitat actions per uniwm step.
+        adapter: T_Adapter = adapter_cls(max_episode_steps=habitat_max_steps, **self.config["adapter_params"])
         formatter: T_Formatter = formatter_cls(adapter, **self.config["formatter_params"])
         return adapter, formatter
 

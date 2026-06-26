@@ -4,10 +4,13 @@ from dataclasses import dataclass, field
 import math, torch, os
 from typing import Any, cast
 
+from habitat_sim import ActionSpec, ActuationSpec
 import numpy as np
 from PIL import Image
 from collections.abc import Mapping
 
+from habitat.config import read_write
+from omegaconf import OmegaConf
 
 # Disable some habitat-based warnings that pollute logs
 os.environ.setdefault("MAGNUM_LOG", "quiet")
@@ -15,11 +18,13 @@ os.environ.setdefault("HABITAT_SIM_LOG", "quiet")
 
 import habitat
 from habitat.config.default import get_config
+from habitat.config.default_structured_configs import DiscreteNavigationActionConfig
 from habitat.core.simulator import Observations
 from habitat.core.dataset import Episode
 from habitat.core.embodied_task import SimulatorTaskAction
 from habitat.core.registry import registry
-from habitat.utils.geometry_utils import quaternion_rotate_vector
+from habitat.sims.habitat_simulator.actions import HabitatSimActions
+from habitat.sims.habitat_simulator.habitat_simulator import HabitatSim
 from habitat.tasks.nav.instance_image_nav_task import InstanceImageGoalNavEpisode
 
 from scripts.action_utils import extract_bin_values
@@ -36,41 +41,43 @@ EXPECTED_HABITAT_ACTIONS: Mapping[str, str] = {
     "right": "turn_right"
 }
 
-#-------------------- Habitat Config Additional Actions
-def _move_relative(sim, local_delta: np.ndarray):
-    state = sim.get_agent_state()
-    start = state.position
-    target = start + quaternion_rotate_vector(state.rotation, local_delta)
+MOVE_BACKWARD_ID = HabitatSimActions.extend_action_space("move_backward")
+MOVE_LEFT_ID = HabitatSimActions.extend_action_space("move_left")
+MOVE_RIGHT_ID = HabitatSimActions.extend_action_space("move_right")
 
-    allow_sliding = sim.config.sim_cfg.allow_sliding
-    step_fn = sim.pathfinder.try_step if allow_sliding else sim.pathfinder.try_step_no_sliding
-    final_position = step_fn(start, target)
+@dataclass
+class MoveBackwardActionConfig(DiscreteNavigationActionConfig):
+    type: str = "MoveBackwardAction"
 
-    sim.set_agent_state(final_position, state.rotation, reset_sensors=False)
+@dataclass
+class StrafeLeftActionConfig(DiscreteNavigationActionConfig):
+    type: str = "StrafeLeftAction"
+
+@dataclass
+class StrafeRightActionConfig(DiscreteNavigationActionConfig):
+    type: str = "StrafeRightAction"
 
 @registry.register_task_action
 class MoveBackwardAction(SimulatorTaskAction):
-    name = "move_backward"
+    name: str = "move_backward"
 
-    def step(self, *args, **kwargs):
-        step_size = self._sim.config.sim_cfg.forward_step_size
-        return _move_relative(self._sim, np.array([0.0, 0.0, step_size]))
+    def step(self, *args: Any, **kwargs: Any) -> Observations:
+        return self._sim.step(MOVE_BACKWARD_ID)
 
 @registry.register_task_action
 class StrafeLeftAction(SimulatorTaskAction):
-    name = "strafe_left"
+    name: str = "strafe_left"
 
-    def step(self, *args, **kwargs):
-        step_size = self._sim.config.sim_cfg.forward_step_size
-        return _move_relative(self._sim, np.array([-step_size, 0.0, 0.0]))
+    def step(self, *args: Any, **kwargs: Any) -> Observations:
+        return self._sim.step(MOVE_LEFT_ID)
 
 @registry.register_task_action
 class StrafeRightAction(SimulatorTaskAction):
-    name = "strafe_right"
+    name: str = "strafe_right"
 
-    def step(self, *args, **kwargs):
-        step_size = self._sim.config.sim_cfg.forward_step_size
-        return _move_relative(self._sim, np.array([step_size, 0.0, 0.0]))
+    def step(self, *args: Any, **kwargs: Any) -> Observations:
+        return self._sim.step(MOVE_RIGHT_ID)
+
 
 #-------------------- Habitat Source Tool Classes
 @dataclass(frozen=True, kw_only=True)
@@ -114,12 +121,29 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
                 *extra_overrides,
             ],
         )
+        
+        registry.register_task_action(MoveBackwardAction, name="MoveBackwardAction")
+        registry.register_task_action(StrafeLeftAction, name="StrafeLeftAction")
+        registry.register_task_action(StrafeRightAction, name="StrafeRightAction")
+        
+        with read_write(self.config):
+            actions = self.config.habitat.task.actions
+            actions.move_backward = OmegaConf.structured(MoveBackwardActionConfig())
+            actions.strafe_left = OmegaConf.structured(StrafeLeftActionConfig())
+            actions.strafe_right = OmegaConf.structured(StrafeRightActionConfig())
 
         self.env = habitat.Env(config=self.config)
         assert self.env is not None
 
+        if not isinstance(self.env.sim, HabitatSim):
+            raise TypeError("[UNEXPECTED ERROR] Habitat environment simulator should be a HabitatSim type.")
+            
+        self.sim: HabitatSim = self.env.sim
+        self._update_action_specs()
+
     def reset_ep(self) -> list[HabitatOutputBundle]:
         obs: Observations = self.env.reset()
+        self._update_action_specs()
         self.current_episode = self.env.current_episode
         self.step_index = 0
         self.start_obs = obs
@@ -179,6 +203,18 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.last_step = None
         self.start_obs =  Observations({})
         self.step_index = 0
+        
+    def _update_action_specs(self) -> None:
+        agent_id = self.sim.habitat_config.default_agent_id
+        spec = ActuationSpec(amount=self.sim.habitat_config.forward_step_size)
+        action_specs = { 
+            MOVE_BACKWARD_ID: ActionSpec("move_backward", spec),
+            MOVE_LEFT_ID: ActionSpec("move_left", spec),
+            MOVE_RIGHT_ID: ActionSpec("move_right", spec),
+        }
+
+        self.sim.sim_config.agents[agent_id].action_space.update(action_specs)
+        self.sim.get_agent(agent_id).agent_config.action_space.update(action_specs)
 
     def _pack_step(
         self,

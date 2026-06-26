@@ -198,6 +198,7 @@ class CustomAnoleAttention(ChameleonAttention):
         current_step: Optional[int] = None,
         current_substep: Optional[str] = None,
         use_global_memory_bank: bool = False,
+        verbose: bool = True,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         
@@ -258,7 +259,8 @@ class CustomAnoleAttention(ChameleonAttention):
             
             if len(token_pairs) >= 3:  # Use special tokens if available
                 start_pos, end_pos = token_pairs[2]  # Third pair (0-indexed)
-                print(f"Layer {self.layer_idx}: Using special token positions {start_pos}:{end_pos+1}")
+                if verbose:
+                    print(f"Layer {self.layer_idx}: Using special token positions {start_pos}:{end_pos+1}")
             
             # Extract K, V for the determined token range
             # print(f"Layer {self.layer_idx}: Checking token positions - start_pos: {start_pos}, end_pos: {end_pos}, q_len: {q_len}")
@@ -268,11 +270,13 @@ class CustomAnoleAttention(ChameleonAttention):
                 self.stored_values = value_states[:, :, start_pos:end_pos+1, :].clone().to(target_dtype)
                 self.memory_bank_initialized = True
                 
-                print(f"Layer {self.layer_idx}: ✅ Memory bank initialized with K,V from positions {start_pos}:{end_pos+1}")
+                if verbose:
+                    print(f"Layer {self.layer_idx}: ✅ Memory bank initialized with K,V from positions {start_pos}:{end_pos+1}")
   
             else:
                 self.memory_bank_initialized = False
-                print(f"Layer {self.layer_idx}: memory_bank_initialized set to: {self.memory_bank_initialized}")
+                if verbose:
+                    print(f"Layer {self.layer_idx}: memory_bank_initialized set to: {self.memory_bank_initialized}")
         
         # Perform standard attention computation
         if past_key_value is not None:
@@ -299,12 +303,14 @@ class CustomAnoleAttention(ChameleonAttention):
             # print(f"Layer {self.layer_idx}: Found {len(token_pairs)} token pairs in current input")
             if len(token_pairs) >= 3:  # Use the third pair
                 start_pos, end_pos = token_pairs[2]
-                print(f"Layer {self.layer_idx}: Using token positions {start_pos}:{end_pos+1} for memory bank enhancement")
+                if verbose:
+                    print(f"Layer {self.layer_idx}: Using token positions {start_pos}:{end_pos+1} for memory bank enhancement")
                 
                 if start_pos < q_len and end_pos < q_len and start_pos < end_pos:
                     # Extract query states for the image tokens
                     image_query_states = query_states[:, :, start_pos:end_pos+1, :]
-                    print(f"Layer {self.layer_idx}: Extracted query states shape: {image_query_states.shape}, dtype: {image_query_states.dtype}")
+                    if verbose:
+                        print(f"Layer {self.layer_idx}: Extracted query states shape: {image_query_states.shape}, dtype: {image_query_states.dtype}")
                     
                     # Prepare current intra-step K,V
                     current_stored_keys = self.stored_keys
@@ -323,7 +329,8 @@ class CustomAnoleAttention(ChameleonAttention):
                         if selected_indices:
                             # Step 2: Temporal decay - compute exponential decay weights for selected entries
                             weights = self.compute_temporal_decay_weights(current_step, selected_indices, gamma=0.3)
-                            print(f"Layer {self.layer_idx}: Temporal decay weights: {[f'{w:.4f}' for w in weights]}")
+                            if verbose:
+                                print(f"Layer {self.layer_idx}: Temporal decay weights: {[f'{w:.4f}' for w in weights]}")
                             
                             # Prepare list of selected K,V tensors (historical + current)
                             all_keys = []
@@ -340,25 +347,28 @@ class CustomAnoleAttention(ChameleonAttention):
                                     all_keys.append(weighted_k)
                                     all_values.append(weighted_v)
                                     step_timestamp = self.global_step_timestamps[idx] if idx < len(self.global_step_timestamps) else 'unknown'
-                                    print(f"Layer {self.layer_idx}: Added selected historical step {step_timestamp} (idx={idx}) with weight {weight:.4f}, similarity {similarities[i]:.4f}")
+                                    if verbose:
+                                        print(f"Layer {self.layer_idx}: Added selected historical step {step_timestamp} (idx={idx}) with weight {weight:.4f}, similarity {similarities[i]:.4f}")
                             
                             # Add current memory with highest weight (1.0)
                             all_keys.append(current_stored_keys * 0.1)
                             all_values.append(current_stored_values * 0.1)
-                            print(f"Layer {self.layer_idx}: Added current step {current_step} with weight 1.0")
+                            if verbose:
+                                print(f"Layer {self.layer_idx}: Added current step {current_step} with weight 1.0")
                             
                             # Concatenate selected memories along sequence dimension
                             merged_keys = torch.cat(all_keys, dim=2)  # Concat along seq_len dimension
                             merged_values = torch.cat(all_values, dim=2)
                             
-                            print(f"Layer {self.layer_idx}: Merged keys shape: {merged_keys.shape}")
-                            print(f"Layer {self.layer_idx}: Merged values shape: {merged_values.shape}")
+                            if verbose:
+                                print(f"Layer {self.layer_idx}: Merged keys shape: {merged_keys.shape}")
+                                print(f"Layer {self.layer_idx}: Merged values shape: {merged_values.shape}")
                             
                             current_stored_keys = merged_keys
                             current_stored_values = merged_values
-                        else:
+                        elif verbose:
                             print(f"Layer {self.layer_idx}: No similar historical entries found, using only current memory")
-                    else:
+                    elif verbose:
                         print(f"Layer {self.layer_idx}: Using only current intra-step memory bank")
                     
                     # Repeat stored K,V if needed for multi-head attention
@@ -369,13 +379,15 @@ class CustomAnoleAttention(ChameleonAttention):
                         stored_values = current_stored_values.repeat_interleave(
                             self.num_heads // self.num_key_value_heads, dim=1
                         )
-                        print(f"Layer {self.layer_idx}: Repeated stored K,V for multi-head attention")
+                        if verbose:
+                            print(f"Layer {self.layer_idx}: Repeated stored K,V for multi-head attention")
                     else:
                         stored_keys = current_stored_keys
                         stored_values = current_stored_values
                     
-                    print(f"Layer {self.layer_idx}: Final stored_keys shape: {stored_keys.shape}, dtype: {stored_keys.dtype}")
-                    print(f"Layer {self.layer_idx}: Final stored_values shape: {stored_values.shape}, dtype: {stored_values.dtype}")
+                    if verbose:
+                        print(f"Layer {self.layer_idx}: Final stored_keys shape: {stored_keys.shape}, dtype: {stored_keys.dtype}")
+                        print(f"Layer {self.layer_idx}: Final stored_values shape: {stored_values.shape}, dtype: {stored_values.dtype}")
                     
                     # Compute new attention for image tokens using stored K,V
                     new_image_attn = F.scaled_dot_product_attention(
@@ -386,7 +398,8 @@ class CustomAnoleAttention(ChameleonAttention):
                         dropout_p=0.0 if not self.training else 0.1
                     )
                     
-                    print(f"Layer {self.layer_idx}: Computed new attention shape: {new_image_attn.shape}, dtype: {new_image_attn.dtype}")
+                    if verbose:
+                        print(f"Layer {self.layer_idx}: Computed new attention shape: {new_image_attn.shape}, dtype: {new_image_attn.dtype}")
                     
                     # Calculate attention statistics for verification
                     attn_mean = new_image_attn.mean().item()
