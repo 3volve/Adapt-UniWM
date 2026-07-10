@@ -16,6 +16,11 @@ class RuntimeMemoryBankManager:
         self.top_k = top_k
         self.context_ema: torch.Tensor | None = None
         self.verbose = verbose
+        
+        layers = self.model.model.model.layers
+        for layer_index in sorted(self.model.model.use_memory_bank_layers):
+            attention = layers[layer_index].self_attn
+            attention.memory_top_k = self.top_k
 
     def setup_for_episode(self, episode_id: str | None = None):
         """Prepares the memory bank for a new episode."""
@@ -189,7 +194,6 @@ class RuntimeMemoryBankManager:
             'current_step': self.current_step,
             'current_substep': 'action',
             'use_global_memory_bank': use_global_mb,
-            "memory_top_k": self.top_k,
         })
 
         return action_gen_kwargs_with_memory
@@ -215,7 +219,6 @@ class RuntimeMemoryBankManager:
             'current_step': self.current_step,
             'current_substep': 'visualization',
             'use_global_memory_bank': use_global_mb_viz,
-            "memory_top_k": self.top_k,
         })
         return viz_gen_kwargs_with_memory
 

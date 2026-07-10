@@ -69,9 +69,18 @@ class UniWMEngine:
         self._action_cfg: ActionCfg = ActionCfg()
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
+        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
         self.model: PeftModel | PeftMixedModel = loaded["model"]
+
+        if hasattr(self.model, "gradient_checkpointing_enable"):
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
+            
         raw_processor = loaded["processor"]
-        
         self.processor = cast(ChameleonProcessor, raw_processor)
         self.tokenizer = cast(PreTrainedTokenizerFast, raw_processor.tokenizer)
         self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
@@ -476,85 +485,6 @@ class UniWMEngine:
             raise RuntimeError("No online-trainable parameters selected.")
 
         return params
-
-    def _build_action_batch(self, predicted, actual, prompt: str):
-
-        # This is also an LLM-stubbed method that I'm still in the middle of adjusting.
-        #   It's a decent start, but I've gotta replace a bunch of self.___ values with config values,
-        #   and adjust it to handle whether I give it an image tensor or text as the "actual" to handle batching it properly either way.
-        return NotImplemented
-        # input_images = input_images or []
-        # label_images = label_images or []
-        #
-        # tokenized_input = self.processor(
-        #     [prompt],
-        #     images=input_images if input_images else None,
-        #     padding="max_length",
-        #     return_tensors="pt",
-        #     max_length=self.input_max_length,
-        # )
-        #
-        # tokenized_label = self.label_processor(
-        #     ["<image>"],
-        #     images=label_images if label_images else None,
-        #     padding="max_length",
-        #     return_tensors="pt",
-        #     max_length=self.label_max_length,
-        # )
-        #
-        # # Match original UniWM: omit label-side starting token.
-        # tokenized_label = {
-        #     key: value[:, 1:] if key in ("input_ids", "attention_mask") else value
-        #     for key, value in tokenized_label.items()
-        # }
-        #
-        # # Replace image placeholder tokens in the input side, if present.
-        # if input_images:
-        #     tokenized_input["input_ids"] = self._replace_image_placeholders_with_vq_tokens(
-        #         input_ids=tokenized_input["input_ids"],
-        #         pixel_values=tokenized_input["pixel_values"],
-        #     )
-        #
-        # # Replace image placeholder tokens in the label side, if present.
-        # if label_images:
-        #     tokenized_label["input_ids"] = self._replace_image_placeholders_with_vq_tokens(
-        #         input_ids=tokenized_label["input_ids"],
-        #         pixel_values=tokenized_label["pixel_values"],
-        #     )
-        #
-        # # We only need pixel_values to produce image tokens; do not forward them here.
-        # tokenized_input.pop("pixel_values", None)
-        # tokenized_label.pop("pixel_values", None)
-        #
-        # input_ids = torch.cat(
-        #     [tokenized_input["input_ids"], tokenized_label["input_ids"]],
-        #     dim=1,
-        # )
-        #
-        # attention_mask = torch.cat(
-        #     [tokenized_input["attention_mask"], tokenized_label["attention_mask"]],
-        #     dim=1,
-        # )
-        #
-        # input_side_ignore = torch.full_like(
-        #     tokenized_input["input_ids"],
-        #     fill_value=self.ignore_index,
-        # )
-        #
-        # labels = torch.cat(
-        #     [input_side_ignore, tokenized_label["input_ids"]],
-        #     dim=1,
-        # )
-        #
-        # labels[labels == self.processor.tokenizer.pad_token_id] = self.ignore_index
-        #
-        # batch = {
-        #     "input_ids": input_ids,
-        #     "attention_mask": attention_mask,
-        #     "labels": labels,
-        # }
-        #
-        # return self._move_batch_to_model_device(batch)
         
     def _build_image_batch(
         self,

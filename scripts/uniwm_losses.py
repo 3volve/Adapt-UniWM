@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import torch, importlib
-from peft import PeftModel
+from peft.peft_model import PeftModel
 from torch import Tensor
 import torch.nn.functional as F
 
@@ -120,17 +120,19 @@ def compute_image_codebook_discrepancy_loss(
     del tokenizer
     del ignore_index
 
-    image_token_ids = torch.tensor(model.model.bpe_indices, device=labels.device)
-    image_mask = torch.isin(labels, image_token_ids)
+    image_token_ids = torch.as_tensor(model.model.bpe_indices, device=logits.device, dtype=torch.long)
+    shifted_labels = labels[:, 1:]
+    image_mask = torch.isin(shifted_labels, image_token_ids.to(shifted_labels.device))
 
     if not torch.any(image_mask):
         return logits.new_zeros(())
 
-    image_labels = labels[image_mask]
-    image_logits = logits[:, :-1, :][image_mask[:, 1:], :]
+    image_labels = shifted_labels[image_mask]
+    shifted_image_logits = logits[:, :-1, :].index_select(-1, image_token_ids)
+    image_logits = shifted_image_logits[image_mask, :]
 
     vis_img_tokens = model.model.model.convert_bpe2img_tokens(image_labels)
-    image_probs = F.softmax(image_logits[:, model.model.bpe_indices], dim=-1)
+    image_probs = F.softmax(image_logits, dim=-1)
 
     num_codebook_tokens = model.model.model.vqmodel.quantize.embedding.weight.shape[0]
     label_one_hot = F.one_hot(
@@ -218,7 +220,7 @@ def _is_peft_model(model):
     if is_peft_available():
         classes_to_check = (PeftModel,) if is_peft_available() else ()
         if version.parse(importlib.metadata.version("peft")) >= version.parse("0.7.0"):
-            from peft import PeftMixedModel
+            from peft.mixed_model import PeftMixedModel
 
             classes_to_check = (*classes_to_check, PeftMixedModel)
         return isinstance(model, classes_to_check)
