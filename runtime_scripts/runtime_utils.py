@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,13 @@ def load_config(config_path: str) -> dict[str, Any]:
 
     with Path(config_path).open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle) or {}
+
+def copy_base_config(config_path: str, output_dir: str | Path) -> Path:
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    destination = output_path / "base_config.yaml"
+    shutil.copyfile(config_path, destination)
+    return destination
 
 def validate_config(config: dict, required_fields: dict | list) -> None:
     validate_config_recursive(config, required_fields, "config_root")

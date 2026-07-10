@@ -11,6 +11,7 @@ from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
 from runtime_scripts.runtime_engine import UniWMEngine
 from runtime_scripts.runtime_utils import (
+    copy_base_config,
     is_stop_action,
     load_config,
     resolve_config_path_from_id,
@@ -45,6 +46,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             config_path = resolve_config_path_from_id(data_type)
 
         config = load_config(config_path)
+        copy_base_config(config_path, full_output_path)
         self.config: dict[str, Any] = config.get("runner", {})
         
         # Need to normalize these two to ensure proper generation and conversion
@@ -126,7 +128,6 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             "episode_index": len(self._episode_logs),
             "episode_id": step_results[0].episode_id,
             "adapter_source_mode": self.adapter.source_mode,
-            "max_episode_steps": self.config["max_episode_steps"],
             "steps_executed": steps_executed,
             "termination_reason": termination_reason,
             "reset_info": conv_info,

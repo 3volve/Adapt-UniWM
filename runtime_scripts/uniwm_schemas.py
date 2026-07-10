@@ -44,6 +44,8 @@ class StepPrediction:
     viz_entropy: float
     context_familiarity: float
     context_stability: float
+    
+    viz_used_memory: bool
 
     real_input_obs: Image.Image | None = None
     real_next_obs: Image.Image | None = None
@@ -64,6 +66,7 @@ class TransitionRecord:
     action: str
     context_familiarity: float
     context_stability: float
+    viz_used_memory: bool
     divergence: float
     replanned: bool
     replan_reason: str | None
@@ -79,6 +82,7 @@ class TransitionRecord:
             "action": self.action,
             "context_familiarity": self.context_familiarity,
             "context_stability": self.context_stability,
+            "viz_used_memory": self.viz_used_memory,
             "divergence": self.divergence,
             "replanned": self.replanned,
             "replan_reason": self.replan_reason,

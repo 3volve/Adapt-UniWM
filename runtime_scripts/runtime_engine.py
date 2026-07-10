@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, cast
@@ -34,7 +35,8 @@ from runtime_scripts.runtime_utils import (
 )
 
 REQUIRED_FIELDS: dict[str, dict | list] = {
-    "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference", "memory_context_smoothing_tau"],
+    "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference"],
+    "memory_bank": ["top_k", "memory_context_tau"],
     "action_token_generation": ["bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
@@ -43,7 +45,8 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
     "training": {
         "hyper_params": ["initial_lr"], 
         "visualization": ["use_cache"], 
-        "loss": ["include_action_loss", "include_image_loss", "action_loss_weight", "image_loss_weight", "log_prefix"]
+        "loss": ["include_action_loss", "include_image_loss", "action_loss_weight", "image_loss_weight", "log_prefix"],
+        "memory": ["min_memories", "similarity_threshold", "stability_margin"]
     },
 }
 
@@ -82,11 +85,17 @@ class UniWMEngine:
             weight_decay=0.0,
         )
 
+        using_memory = self.config["load_model_args"]["use_memory_bank_inference"]
         self._memory_manager = RuntimeMemoryBankManager(
-            self.model,
-            self.config["load_model_args"]["use_memory_bank_inference"],
-            self.config["load_model_args"]["memory_context_smoothing_tau"]
+            self.model, using_memory, **self.config["memory_bank"]
         )
+        
+        self.config["generation"]["action"]["use_memory_bank"] = using_memory
+        self.config["generation"]["action"]["use_global_memory_bank"] = using_memory
+        self.config["generation"]["visualization"]["use_memory_bank"] = using_memory
+        self.config["generation"]["visualization"]["use_global_memory_bank"] = using_memory
+        self.config["training"]["visualization"]["use_memory_bank"] = using_memory
+        self.config["training"]["visualization"]["use_global_memory_bank"] = using_memory
         
         if hasattr(self.model, "eval"):
             self.model.eval()
@@ -145,30 +154,22 @@ class UniWMEngine:
             self,
             bundle: UniWMInputBundle,
     ) -> StepPrediction:
-        _, _, _, start_pose_str, action_text = bundle.unpack()
-        if isinstance(action_text, list):
-            action_text = action_text[0]
-            
         cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
-        step_outputs = self._predict_step(
-            start_pose_str=start_pose_str,
-            action_text=action_text,
-        )
+        step = self._predict_step(bundle)
         self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
-        return StepPrediction(bundle, *step_outputs)
+        return step
 
     def predict_route(
         self,
         bundle: UniWMInputBundle,
         max_steps: int
     ) -> RoutePrediction:
-        start_observation, goal_observation, current_observation, start_pose_str, actions = bundle.unpack()
+        current, actions = bundle.current_observation, bundle.action_text
         if isinstance(actions, str):
             actions = None
-        elif isinstance(actions, list) and len(actions) > 0:
-            actions = actions[1:]
+        elif isinstance(actions, list):
+            actions = None if len(actions) <= 1 else actions[1:]
 
-        current = current_observation
         steps: list[StepPrediction] = []
         cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
         
@@ -177,34 +178,28 @@ class UniWMEngine:
             predict_range = min(max_steps, len(actions))
         
         for route_idx in range(predict_range):
-            action = None if actions is None else actions[route_idx]
-            step_action, step_viz, step_act_e, step_viz_e, _, _ = self._predict_step(
-                start_pose_str=start_pose_str,
-                action_text=action
+            temp_bundle = replace(
+                bundle,
+                action_text=None if actions is None else actions[route_idx],
+                current_observation=current
             )
-
-            new_bundle = bundle if route_idx == 0 else UniWMInputBundle(
-                start_observation,
-                goal_observation,
-                current,
-                start_pose_str,
-                step_action,
-                metadata=bundle.metadata
-            )
-
-            steps.append(StepPrediction(new_bundle, step_action, step_viz, step_act_e, step_viz_e, real_mem_familiarity, real_context_stability))
+            
+            step = self._predict_step(temp_bundle)
+            step.context_familiarity = real_mem_familiarity
+            step.context_stability = real_context_stability
+            steps.append(step)
                 
-            if is_stop_action(step_action):
+            if is_stop_action(step.action_text):
                 self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             
-            if step_viz is None:
+            if step.visualization is None:
                 self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
-            current = step_viz
+            current = step.visualization
             
             if route_idx < max_steps - 1:
-                self.store_and_update_working_memory(current, start_pose_str, False)
+                self.store_and_update_working_memory(current, bundle.start_pose_str, False)
                 
             if route_idx == max_steps - 1:
                 self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
@@ -246,9 +241,7 @@ class UniWMEngine:
         self.model.train()
         self._optimizer.zero_grad(set_to_none=True)
         
-        memory_kwargs = self._memory_manager.get_viz_kwargs(
-            viz_gen_kwargs=dict(self.config["training"]["visualization"])
-        )
+        memory_kwargs, _ = self._get_viz_kwargs(dict(self.config["training"]["visualization"]), prediction.viz_used_memory)
 
         with torch.autocast(device_type="cuda", dtype=self.model.dtype):
             outputs = self.model(
@@ -283,42 +276,42 @@ class UniWMEngine:
 
     def _predict_step(
         self,
-        *,
-        start_pose_str: str,
-        action_text: str | None = None,
-    ) -> tuple[str, Image.Image | None, float, float, float, float]:
+        input_bundle: UniWMInputBundle
+    ) -> StepPrediction:
         """Note: Make sure you are calling the UniWMEngine.init_working_memory() when you want to store a prior step into global memory and update the observation in working KV memory used by the model."""
         
-        if not start_pose_str:
-            raise AssertionError("start_pose_str is required.")
-
+        if not input_bundle.start_pose_str:
+            raise AssertionError("[UNEXPECTED ERROR] start_pose_str is required.")
+        
+        if isinstance(input_bundle.action_text, list):
+            raise AssertionError("[UNEXPECTED ERROR] any forced actions should be converted to text by this point.")
+            
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
-                start_pose_str=start_pose_str,
+                start_pose_str=input_bundle.start_pose_str,
                 dxy_range=self.action_cfg.get_dxy_tuple(),
                 dyaw_range=self.action_cfg.get_dyaw_tuple(),
                 prompt_style_idx=self.config["generation"]["prompt_style_idx"]
             )
         )
         
-        act_entropy = 0
+        action_text, act_entropy = input_bundle.action_text, 0
         if action_text is None:
             action_text, act_entropy = self._predict_action(action_inputs)
 
-        viz = None
-        viz_entropy = 0
+        viz, viz_entropy, used_memory = None, 0, False
         if not is_stop_action(action_text):
             visualization_inputs = self._processor_inputs_from_prompt(
                 input_text=build_viz_prompt(
                     decoded_action=action_text,
-                    start_pose_str=start_pose_str,
+                    start_pose_str=input_bundle.start_pose_str,
                     prompt_style_idx=self.config["generation"]["prompt_style_idx"],
                 )
             )
             
-            viz, viz_entropy = self._predict_visualization(visualization_inputs)
+            viz, viz_entropy, used_memory = self._predict_visualization(visualization_inputs)
             
-        return action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability
+        return StepPrediction(input_bundle, action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability, used_memory)
 
     def _predict_action(self, processor_inputs: Any) -> tuple[str, float]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
@@ -354,10 +347,10 @@ class UniWMEngine:
 
         return decoded_text, entropy
 
-    def _predict_visualization(self, processor_inputs: Any) -> tuple[Image.Image | None, float]:
+    def _predict_visualization(self, processor_inputs: Any) -> tuple[Image.Image | None, float, bool]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
-        kwargs = self._memory_manager.get_viz_kwargs(
-            viz_gen_kwargs=dict(self.config["generation"]["visualization"])
+        kwargs, used_memory = self._get_viz_kwargs(
+            dict(self.config["generation"]["visualization"])
         )
             
         with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
@@ -379,7 +372,7 @@ class UniWMEngine:
         del outputs, scores, entropy
         
         generated_img = decode_image(self.model, self.processor, generated_tokens)
-        return generated_img, entropy_value
+        return generated_img, entropy_value, used_memory
 
     def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> torch.Tensor | None:
         scaled_loss = update_scale * supervised_loss
@@ -396,7 +389,7 @@ class UniWMEngine:
 
         return grad_norm    
     
-    def _set_working_memory(self, real_obs: Image.Image, start_pose_str: str, skip_context_compute: bool = False):
+    def _set_working_memory(self, real_obs: Image.Image, start_pose_str: str):
         self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
         
         action_inputs = self._processor_inputs_from_prompt(
@@ -411,6 +404,21 @@ class UniWMEngine:
         self._memory_manager.start_new_step()
         self._context_stability = self._memory_manager.initialize_step_memory(action_inputs)
         self._context_familiarity = self._memory_manager.compute_memory_familiarity()
+        
+    def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
+        use_memory = use_memory if use_memory is not None else (
+                self.memory_count >= self.config["training"]["memory"]["min_memories"]
+                and self._context_familiarity >= self.config["training"]["memory"]["similarity_threshold"]
+                and self._context_familiarity > self._context_stability + self.config["training"]["memory"]["stability_margin"]
+            )
+        
+        if not use_memory:
+            kwargs.pop("current_step", None)
+            kwargs.pop("current_substep", None)
+            kwargs["use_memory_bank"] = False
+            kwargs["use_global_memory_bank"] = False
+            
+        return self._memory_manager.get_viz_kwargs(viz_gen_kwargs=kwargs), bool(use_memory)
         
 #----------------------------- Private Processor-related Helpers -----------------------------#
     def _image_to_vq_bpe_tokens(self, image: Image.Image) -> torch.LongTensor:

@@ -127,6 +127,7 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "action": step["action"],
                 "context_familiarity": step["context_familiarity"],
                 "context_stability": step["context_stability"],
+                "viz_used_memory": int(step["viz_used_memory"]),
                 "divergence": step["divergence"],
                 "replanned": int(step["replanned"]),
                 "replan_reason": step["replan_reason"],

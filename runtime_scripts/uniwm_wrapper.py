@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +156,7 @@ class UniWMWrapper:
             action=pending_step.action_text,
             context_familiarity=pending_step.context_familiarity,
             context_stability=pending_step.context_stability,
+            viz_used_memory=pending_step.viz_used_memory,
             divergence=divergence,
             replanned=replanned,
             replan_reason=replan_reason,
@@ -250,6 +252,12 @@ class UniWMWrapper:
         )
         
     def _run_eval_predict(self, observed_bundle: UniWMInputBundle, target_obs: Image.Image, save_path_eval: str) -> dict[str, Any]:
+        if observed_bundle.action_text is None or (isinstance(observed_bundle.action_text, list) and len(observed_bundle.action_text) <= 0):
+            raise AssertionError("[UNEXPECTED ERROR] eval needs a forced action to perform a proper evaluation.")
+        
+        if isinstance(observed_bundle.action_text, list):
+            observed_bundle = replace(observed_bundle, action_text=observed_bundle.action_text[0])
+        
         eval_log = {}
         eval_prediction = self.engine.eval_step(observed_bundle)
         eval_divergence, _ = self.compute_divergence(eval_prediction.visualization, target_obs)

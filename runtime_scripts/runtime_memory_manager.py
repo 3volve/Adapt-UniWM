@@ -8,11 +8,12 @@ from runtime_scripts.uniwm_schemas import MemorySnapshot
 class RuntimeMemoryBankManager:
     _cached_step_state: MemorySnapshot | None = None
 
-    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, ema_tau: float, verbose: bool = False):
+    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, memory_context_tau: float, top_k: int = 3, verbose: bool = False):
         self.model = model
         self.is_enabled = use_memory_bank_inference
         self.current_step = 0
-        self.ema_tau = ema_tau
+        self.ema_tau = memory_context_tau
+        self.top_k = top_k
         self.context_ema: torch.Tensor | None = None
         self.verbose = verbose
 
@@ -114,7 +115,7 @@ class RuntimeMemoryBankManager:
             context_ema=self.context_ema
         )
 
-    def compute_memory_familiarity(self, k: int = 1) -> float:
+    def compute_memory_familiarity(self) -> float:
         if not self.is_enabled:
             return 0.0
 
@@ -125,7 +126,7 @@ class RuntimeMemoryBankManager:
             attention = layers[layer_index].self_attn
             _, similarities = attention.compute_similarity_and_select_topk(
                 attention.stored_keys,
-                k=k,
+                k=self.top_k,
             )
 
             if similarities:
@@ -176,17 +177,19 @@ class RuntimeMemoryBankManager:
         if not self.is_enabled:
             action_gen_kwargs.pop("current_step", None)
             action_gen_kwargs.pop("current_substep", None)
+            action_gen_kwargs["use_memory_bank"] = False
+            action_gen_kwargs["use_global_memory_bank"] = False
             return action_gen_kwargs
 
         action_gen_kwargs_with_memory = action_gen_kwargs.copy()
 
-        use_global_mb = self.current_step > 1
+        use_global_mb = self.current_step > 1 and action_gen_kwargs["use_global_memory_bank"]
         action_gen_kwargs_with_memory.update({
-            'use_memory_bank': True,
             'is_memory_bank_init': False,
             'current_step': self.current_step,
             'current_substep': 'action',
-            'use_global_memory_bank': use_global_mb
+            'use_global_memory_bank': use_global_mb,
+            "memory_top_k": self.top_k,
         })
 
         return action_gen_kwargs_with_memory
@@ -195,6 +198,8 @@ class RuntimeMemoryBankManager:
         if not self.is_enabled:
             viz_gen_kwargs.pop("current_step", None)
             viz_gen_kwargs.pop("current_substep", None)
+            viz_gen_kwargs["use_memory_bank"] = False
+            viz_gen_kwargs["use_global_memory_bank"] = False
             return viz_gen_kwargs
 
         if self.verbose:
@@ -204,13 +209,13 @@ class RuntimeMemoryBankManager:
         viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
         
         # Use global memory bank for visualization (always available since we're in step >= 1)
-        use_global_mb_viz = self.current_step >= 1
+        use_global_mb_viz = self.current_step >= 1 and viz_gen_kwargs["use_global_memory_bank"]
         viz_gen_kwargs_with_memory.update({
-            'use_memory_bank': True,
             'is_memory_bank_init': False,  # Use existing memory bank for visualization
             'current_step': self.current_step,
             'current_substep': 'visualization',
-            'use_global_memory_bank': use_global_mb_viz
+            'use_global_memory_bank': use_global_mb_viz,
+            "memory_top_k": self.top_k,
         })
         return viz_gen_kwargs_with_memory
 

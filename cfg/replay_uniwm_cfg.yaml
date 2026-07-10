@@ -9,7 +9,10 @@ engine:
     do_task_level_eval: true
     do_rollout_eval: false
     use_memory_bank_inference: true
-    memory_context_smoothing_tau: 0.75
+
+  memory_bank:
+    top_k: 1
+    memory_context_tau: 0.75
 
   load_model_cfg:
     img_size: 448
@@ -39,7 +42,7 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 2e-5
+      initial_lr: 5e-4
 
     visualization:
       use_cache: false
@@ -51,6 +54,11 @@ engine:
       image_loss_weight: 1.0
       ignore_index: -100
       log_prefix: "replay_loss_"
+
+    memory:
+      min_memories: 3
+      similarity_threshold: 0.6
+      stability_margin: 0.05
 
 wrapper:
   max_route_steps: 8

@@ -198,6 +198,7 @@ class CustomAnoleAttention(ChameleonAttention):
         current_step: Optional[int] = None,
         current_substep: Optional[str] = None,
         use_global_memory_bank: bool = False,
+        memory_top_k: int = 3,
         verbose: bool = True,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -322,7 +323,7 @@ class CustomAnoleAttention(ChameleonAttention):
                         # print(f"Layer {self.layer_idx}: Global memory bank has {len(self.global_stored_keys)} historical steps")
                         
                         # Step 1: Similarity gating - select top-k most similar entries
-                        selected_indices, similarities = self.compute_similarity_and_select_topk(current_stored_keys, k=3)
+                        selected_indices, similarities = self.compute_similarity_and_select_topk(current_stored_keys, k=memory_top_k)
                         # print(f"Layer {self.layer_idx}: Selected {len(selected_indices)} most similar entries: {selected_indices}")
                         # print(f"Layer {self.layer_idx}: Similarity scores: {[f'{s:.4f}' for s in similarities]}")
                         
