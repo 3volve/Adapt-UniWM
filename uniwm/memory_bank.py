@@ -1,10 +1,8 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, List, Tuple, Dict, Any
-import numpy as np
+from typing import Optional, List, Tuple
 from .wrapped_visualizer import AnoleforConditionalGeneration
-from .custom_chameleon import ChameleonAttention, ChameleonDecoderLayer
+from .custom_chameleon import ChameleonAttention, ChameleonDecoderLayer, apply_rotary_pos_emb
 from transformers.generation.configuration_utils import GenerationConfig
 from transformers.generation.logits_process import LogitsProcessorList
 
@@ -157,16 +155,16 @@ class CustomAnoleAttention(ChameleonAttention):
             elif isinstance(input_ids, int):
                 input_ids_list = [input_ids]
             else:
-                print(f"Layer {getattr(self, 'layer_idx', 'unknown')}: Warning - input_ids type {type(input_ids)} not supported")
+                print(f"[MEMORY_BANK][WARNING] Layer {getattr(self, 'layer_idx', 'unknown')}: Warning - input_ids type {type(input_ids)} not supported")
                 return pairs
                 
             # Final safety check
             if not isinstance(input_ids_list, (list, tuple)):
-                print(f"Layer {getattr(self, 'layer_idx', 'unknown')}: Error - input_ids_list is still not a list: {type(input_ids_list)}")
+                print(f"[MEMORY_BANK][ERROR] Layer {getattr(self, 'layer_idx', 'unknown')}: Error - input_ids_list is still not a list: {type(input_ids_list)}")
                 return pairs
                 
         except Exception as e:
-            print(f"Layer {getattr(self, 'layer_idx', 'unknown')}: Error converting input_ids to list: {e}")
+            print(f"[MEMORY_BANK][ERROR] Layer {getattr(self, 'layer_idx', 'unknown')}: Error converting input_ids to list: {e}")
             return pairs
         
         i = 0
@@ -226,6 +224,13 @@ class CustomAnoleAttention(ChameleonAttention):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
         
+        # Adding back in the normalization that Chameleon uniquely does in its normal layers 
+        query_states = query_states.reshape(-1, self.num_heads, self.head_dim)
+        query_states = self.q_norm(query_states)
+
+        key_states = key_states.reshape(-1, self.num_key_value_heads, self.head_dim)
+        key_states = self.k_norm(key_states)
+        
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -233,13 +238,8 @@ class CustomAnoleAttention(ChameleonAttention):
         # Apply rotary position embeddings if needed
         if hasattr(self, 'rotary_emb') and position_ids is not None:
             cos, sin = self.rotary_emb(value_states, position_ids)
-            # Apply rotary position embeddings
-            def apply_rotary_pos_emb(q, k, cos, sin):
-                # This is a simplified version - you may need to adjust based on the actual implementation
-                q_embed = (q * cos) + (self._rotate_half(q) * sin)
-                k_embed = (k * cos) + (self._rotate_half(k) * sin)
-                return q_embed, k_embed
             
+            # Apply rotary position embeddings
             query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
         
         # Ensure data type consistency before any operations
@@ -262,7 +262,7 @@ class CustomAnoleAttention(ChameleonAttention):
             if len(token_pairs) >= 3:  # Use special tokens if available
                 start_pos, end_pos = token_pairs[2]  # Third pair (0-indexed)
                 if verbose:
-                    print(f"Layer {self.layer_idx}: Using special token positions {start_pos}:{end_pos+1}")
+                    print(f"[MEMORY_BANK] Layer {self.layer_idx}: Using special token positions {start_pos}:{end_pos+1}")
             
             # Extract K, V for the determined token range
             # print(f"Layer {self.layer_idx}: Checking token positions - start_pos: {start_pos}, end_pos: {end_pos}, q_len: {q_len}")
@@ -273,12 +273,12 @@ class CustomAnoleAttention(ChameleonAttention):
                 self.memory_bank_initialized = True
                 
                 if verbose:
-                    print(f"Layer {self.layer_idx}: ✅ Memory bank initialized with K,V from positions {start_pos}:{end_pos+1}")
+                    print(f"[MEMORY_BANK] Layer {self.layer_idx}: ✅ Memory bank initialized with K,V from positions {start_pos}:{end_pos+1}")
   
             else:
                 self.memory_bank_initialized = False
                 if verbose:
-                    print(f"Layer {self.layer_idx}: memory_bank_initialized set to: {self.memory_bank_initialized}")
+                    print(f"[MEMORY_BANK] Layer {self.layer_idx}: memory_bank_initialized set to: {self.memory_bank_initialized}")
         
         # Perform standard attention computation
         if past_key_value is not None:
@@ -306,13 +306,13 @@ class CustomAnoleAttention(ChameleonAttention):
             if len(token_pairs) >= 3:  # Use the third pair
                 start_pos, end_pos = token_pairs[2]
                 if verbose:
-                    print(f"Layer {self.layer_idx}: Using token positions {start_pos}:{end_pos+1} for memory bank enhancement")
+                    print(f"[MEMORY_BANK] Layer {self.layer_idx}: Using token positions {start_pos}:{end_pos+1} for memory bank enhancement")
                 
                 if start_pos < q_len and end_pos < q_len and start_pos < end_pos:
                     # Extract query states for the image tokens
                     image_query_states = query_states[:, :, start_pos:end_pos+1, :]
                     if verbose:
-                        print(f"Layer {self.layer_idx}: Extracted query states shape: {image_query_states.shape}, dtype: {image_query_states.dtype}")
+                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Extracted query states shape: {image_query_states.shape}, dtype: {image_query_states.dtype}")
                     
                     # Prepare current intra-step K,V
                     current_stored_keys = self.stored_keys
@@ -332,7 +332,7 @@ class CustomAnoleAttention(ChameleonAttention):
                             # Step 2: Temporal decay - compute exponential decay weights for selected entries
                             weights = self.compute_temporal_decay_weights(current_step, selected_indices, gamma=0.3)
                             if verbose:
-                                print(f"Layer {self.layer_idx}: Temporal decay weights: {[f'{w:.4f}' for w in weights]}")
+                                print(f"[MEMORY_BANK] Layer {self.layer_idx}: Temporal decay weights: {[f'{w:.4f}' for w in weights]}")
                             
                             # Prepare list of selected K,V tensors (historical + current)
                             all_keys = []
@@ -350,28 +350,28 @@ class CustomAnoleAttention(ChameleonAttention):
                                     all_values.append(weighted_v)
                                     step_timestamp = self.global_step_timestamps[idx] if idx < len(self.global_step_timestamps) else 'unknown'
                                     if verbose:
-                                        print(f"Layer {self.layer_idx}: Added selected historical step {step_timestamp} (idx={idx}) with weight {weight:.4f}, similarity {similarities[i]:.4f}")
+                                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Added selected historical step {step_timestamp} (idx={idx}) with weight {weight:.4f}, similarity {similarities[i]:.4f}")
                             
                             # Add current memory with highest weight (1.0)
                             all_keys.append(current_stored_keys * 0.1)
                             all_values.append(current_stored_values * 0.1)
                             if verbose:
-                                print(f"Layer {self.layer_idx}: Added current step {current_step} with weight 1.0")
+                                print(f"[MEMORY_BANK] Layer {self.layer_idx}: Added current step {current_step} with weight 1.0")
                             
                             # Concatenate selected memories along sequence dimension
                             merged_keys = torch.cat(all_keys, dim=2)  # Concat along seq_len dimension
                             merged_values = torch.cat(all_values, dim=2)
                             
                             if verbose:
-                                print(f"Layer {self.layer_idx}: Merged keys shape: {merged_keys.shape}")
-                                print(f"Layer {self.layer_idx}: Merged values shape: {merged_values.shape}")
+                                print(f"[MEMORY_BANK] Layer {self.layer_idx}: Merged keys shape: {merged_keys.shape}")
+                                print(f"[MEMORY_BANK] Layer {self.layer_idx}: Merged values shape: {merged_values.shape}")
                             
                             current_stored_keys = merged_keys
                             current_stored_values = merged_values
                         elif verbose:
-                            print(f"Layer {self.layer_idx}: No similar historical entries found, using only current memory")
+                            print(f"[MEMORY_BANK] Layer {self.layer_idx}: No similar historical entries found, using only current memory")
                     elif verbose:
-                        print(f"Layer {self.layer_idx}: Using only current intra-step memory bank")
+                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Using only current intra-step memory bank")
                     
                     # Repeat stored K,V if needed for multi-head attention
                     if self.num_key_value_heads != self.num_heads:
@@ -382,14 +382,14 @@ class CustomAnoleAttention(ChameleonAttention):
                             self.num_heads // self.num_key_value_heads, dim=1
                         )
                         if verbose:
-                            print(f"Layer {self.layer_idx}: Repeated stored K,V for multi-head attention")
+                            print(f"[MEMORY_BANK] Layer {self.layer_idx}: Repeated stored K,V for multi-head attention")
                     else:
                         stored_keys = current_stored_keys
                         stored_values = current_stored_values
                     
                     if verbose:
-                        print(f"Layer {self.layer_idx}: Final stored_keys shape: {stored_keys.shape}, dtype: {stored_keys.dtype}")
-                        print(f"Layer {self.layer_idx}: Final stored_values shape: {stored_values.shape}, dtype: {stored_values.dtype}")
+                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Final stored_keys shape: {stored_keys.shape}, dtype: {stored_keys.dtype}")
+                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Final stored_values shape: {stored_values.shape}, dtype: {stored_values.dtype}")
                     
                     # Compute new attention for image tokens using stored K,V
                     new_image_attn = F.scaled_dot_product_attention(
@@ -401,7 +401,7 @@ class CustomAnoleAttention(ChameleonAttention):
                     )
                     
                     if verbose:
-                        print(f"Layer {self.layer_idx}: Computed new attention shape: {new_image_attn.shape}, dtype: {new_image_attn.dtype}")
+                        print(f"[MEMORY_BANK] Layer {self.layer_idx}: Computed new attention shape: {new_image_attn.shape}, dtype: {new_image_attn.dtype}")
                     
                     # Calculate attention statistics for verification
                     attn_mean = new_image_attn.mean().item()
@@ -483,7 +483,7 @@ class CustomAnoleDecoderLayer(ChameleonDecoderLayer):
                 self._generation_current_substep = None
                 self._generation_use_global_memory_bank = False
         
-        print(f"Warning: Could not find root model for layer {getattr(self, 'layer_idx', 'unknown')}, using dummy")
+        print(f"[MEMORY_BANK][WARNING] Could not find root model for layer {getattr(self, 'layer_idx', 'unknown')}, using dummy")
         return DummyRootModel()
     
     def forward(
@@ -538,17 +538,6 @@ class CustomAnoleDecoderLayer(ChameleonDecoderLayer):
                 current_step=current_step_param,
                 current_substep=current_substep_param,
                 use_global_memory_bank=use_global_memory_bank_param,
-                **kwargs
-            )
-        else:
-            hidden_states, self_attn_weights, present_key_value = self.self_attn(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
                 **kwargs
             )
         
@@ -614,9 +603,9 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                     # Replace with custom layer
                     config = layers[layer_idx].config if hasattr(layers[layer_idx], 'config') else self.config
                     layers[layer_idx] = CustomAnoleDecoderLayer(config, layer_idx)
-                    print(f"Replaced layer {layer_idx} with CustomAnoleDecoderLayer")
+                    print(f"[MEMORY_BANK] Replaced layer {layer_idx} with CustomAnoleDecoderLayer")
         else:
-            print("Warning: Could not find model layers to replace")
+            print("[MEMORY_BANK][WARNING] Could not find model layers to replace")
     
     def _set_root_model_references(self):
         """Set root model reference for all custom layers."""
@@ -634,7 +623,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                     # Use weak reference to avoid circular reference issues
                     import weakref
                     layer._root_model_ref = weakref.ref(self)
-                    print(f"Set root model reference for layer {layer_idx}")
+                    print(f"[MEMORY_BANK] Set root model reference for layer {layer_idx}")
     
     def reset_memory_bank(self):
         """Reset intra-step memory bank state for all layers (but keep cross-step memory bank)."""
@@ -645,7 +634,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
                     layer.self_attn.reset_memory_bank()
         
-        print("Intra-step memory bank reset for all layers", flush=True)
+        print("\n[MEMORY_BANK] Working memory reset for all layers", flush=True)
     
     def reset_global_memory_bank(self):
         """Reset cross-step memory bank state for all layers (only at trajectory start)."""
@@ -655,7 +644,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
                     layer.self_attn.reset_global_memory_bank()
         
-        print("Cross-step memory bank reset for all layers")
+        print("[MEMORY_BANK] Cross-step memory bank reset for all layers")
     
     def store_to_global_memory_bank(self, current_step: int):
         """Store current intra-step K,V to global cross-step memory bank for all layers."""
@@ -664,7 +653,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
                     layer.self_attn.store_to_global_memory_bank(current_step)
         
-        print(f"Stored step {current_step} to global memory bank for all layers")
+        print(f"[MEMORY_BANK] Stored step {current_step} to global memory bank for all layers")
     
     def enable_global_memory_bank(self):
         """Enable global memory bank functionality for all layers."""
@@ -673,7 +662,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
                     layer.self_attn.use_global_memory_bank = True
         
-        print("Global memory bank enabled for all custom attention layers")
+        print("[MEMORY_BANK] Global memory bank enabled for all custom attention layers")
     
     def enable_memory_bank(self):
         """Enable memory bank functionality."""
@@ -681,7 +670,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
             for layer in self.model.layers:
                 if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
                     layer.self_attn.use_memory_bank = True
-        print("Memory bank enabled for all custom attention layers")
+        print("[MEMORY_BANK] Memory bank enabled for all custom attention layers")
     
     def initialize_memory_bank_no_pixels(self, input_ids: torch.Tensor, attention_mask: torch.Tensor):
         """
@@ -691,9 +680,13 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
             input_ids: Input token IDs containing special tokens or image tokens
             attention_mask: Attention mask
         """
-        print(f"Initializing memory bank with input shapes:")
-        print(f"  Input IDs: {input_ids.shape}")
-        print(f"  Attention mask: {attention_mask.shape}")
+        
+        if input_ids.shape == attention_mask.shape:
+            print(f"[MEMORY_BANK] Initializing memory bank with an inputs shape of: {input_ids.shape}")
+        else:
+            print(f"[MEMORY_BANK][WARNING] Attempting to initialize memory bank with incompatible input shapes:")
+            print(f"                       Input IDs: {input_ids.shape}")
+            print(f"                       Attention mask: {attention_mask.shape}")
         
         # Check for special token pairs first
         input_ids_list = input_ids.squeeze().tolist() if input_ids.dim() > 1 else input_ids.tolist()
@@ -713,15 +706,13 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
         use_special_tokens = len(pairs) >= 3
         
         if use_special_tokens:
-            print(f"Found {len(pairs)} special token pairs: {pairs}")
-            print(f"Using third pair: {pairs[2]}")
+            print(f"[MEMORY_BANK] Using {pairs[2]} token pair from the {len(pairs)} special token pairs found: {pairs}")
         else:
-            print(f"Warning: Insufficient tokens for memory bank initialization")
+            print(f"[MEMORY_BANK][WARNING] Insufficient tokens for memory bank initialization")
             return False
         
         # Ensure proper data types for initialization
         target_dtype = self.config.torch_dtype if hasattr(self.config, 'torch_dtype') else torch.bfloat16
-        
         
         # Prepare inputs for forward pass (without memory bank parameters for base model)
         model_inputs = {
@@ -740,19 +731,43 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 self.model(**model_inputs)
                 initialized_layers = []
                 if hasattr(self.model, 'layers'):
+                    uninitialized_layers = []
+                    missing_key_layers = []
+                    missing_value_layers = []
+                    stored_key_shapes = {}
+
                     for layer in self.model.layers:
                         if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
-                            layer_initialized = (
-                                layer.self_attn.memory_bank_initialized
-                                and layer.self_attn.stored_keys is not None
-                                and layer.self_attn.stored_values is not None
-                            )
-                            initialized_layers.append(layer_initialized)
-                            print(f"Layer {layer.self_attn.layer_idx}: memory_bank_initialized = {layer.self_attn.memory_bank_initialized}")
-                            if layer.self_attn.stored_keys is not None:
-                                print(f"layer stored keys shape: {layer.self_attn.stored_keys.shape}")
+                            attention = layer.self_attn
+                            layer_idx = attention.layer_idx
+
+                            if not attention.memory_bank_initialized:
+                                uninitialized_layers.append(layer_idx)
+                            if attention.stored_keys is None:
+                                missing_key_layers.append(layer_idx)
                             else:
-                                print(f"Layer {layer.self_attn.layer_idx}: stored_keys is None - initialization failed")
+                                stored_key_shapes[layer_idx] = tuple(attention.stored_keys.shape)
+                            if attention.stored_values is None:
+                                missing_value_layers.append(layer_idx)
+
+                            initialized_layers.append(
+                                attention.memory_bank_initialized
+                                and attention.stored_keys is not None
+                                and attention.stored_values is not None
+                            )
+
+                    if uninitialized_layers:
+                        print(f"[MEMORY_BANK] Memory bank not initialized for layers: {uninitialized_layers}")
+                    if missing_key_layers:
+                        print(f"[MEMORY_BANK] Memory bank missing stored_keys for layers: {missing_key_layers}")
+                    if missing_value_layers:
+                        print(f"[MEMORY_BANK] Memory bank missing stored_values for layers: {missing_value_layers}")
+
+                    unique_key_shapes = sorted(set(stored_key_shapes.values()))
+                    if len(unique_key_shapes) == 1:
+                        print(f"[MEMORY_BANK] Memory bank stored_keys shape for initialized layers: {unique_key_shapes[0]}")
+                    elif unique_key_shapes:
+                        print(f"[MEMORY_BANK][WARNING]: Memory bank stored_keys shapes differ by layer: {stored_key_shapes}")
 
                 self.memory_bank_initialized = (
                     len(initialized_layers) == len(self.use_memory_bank_layers)
@@ -761,8 +776,8 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 return self.memory_bank_initialized
             except Exception as e:
                 self.memory_bank_initialized = False
-                print(f"Memory bank initialization failed: {e}")
-                print(f"Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}")
+                print(f"[MEMORY_BANK][ERROR] Memory bank initialization failed: {e}")
+                print(f"    Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}")
                 return False
             finally:
                 # Clean up temporary variables
@@ -779,10 +794,13 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
             pixel_values: Pixel values for images
             attention_mask: Attention mask
         """
-        print(f"Initializing memory bank with input shapes:")
-        print(f"  Input IDs: {input_ids.shape}")
-        print(f"  Pixel values: {pixel_values.shape}")
-        print(f"  Attention mask: {attention_mask.shape}")
+        if input_ids.shape == pixel_values.shape == attention_mask.shape:
+            print(f"[MEMORY_BANK] Initializing memory bank with an inputs shape of: {input_ids.shape}")
+        else:
+            print(f"[MEMORY_BANK][WARNING] Attempting to initialize memory bank with incompatible input shapes:")
+            print(f"                       Input IDs: {input_ids.shape}")
+            print(f"                       Pixel values: {pixel_values.shape}")
+            print(f"                       Attention mask: {attention_mask.shape}")
         
         # Check for special token pairs first
         input_ids_list = input_ids.squeeze().tolist() if input_ids.dim() > 1 else input_ids.tolist()
@@ -802,10 +820,9 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
         use_special_tokens = len(pairs) >= 3
         
         if use_special_tokens:
-            print(f"Found {len(pairs)} special token pairs: {pairs}")
-            print(f"Using third pair: {pairs[2]}")
+            print(f"[MEMORY_BANK] Using {pairs[2]} token pair from the {len(pairs)} special token pairs found: {pairs}")
         else:
-            print(f"Warning: Insufficient tokens for memory bank initialization")
+            print(f"[MEMORY_BANK][WARNING] Insufficient tokens for memory bank initialization")
             return False
         
         # Ensure proper data types for initialization
@@ -814,7 +831,7 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
         # Convert pixel_values to the correct dtype
         if pixel_values.dtype != target_dtype:
             pixel_values = pixel_values.to(target_dtype)
-            print(f"Converted pixel_values from {pixel_values.dtype} to {target_dtype}")
+            print(f"[MEMORY_BANK] Converted pixel_values from {pixel_values.dtype} to {target_dtype}")
         
         # Prepare inputs for forward pass (without memory bank parameters for base model)
         model_inputs = {
@@ -834,20 +851,44 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 self.model(**model_inputs)
                 initialized_layers = []
                 if hasattr(self.model, 'layers'):
+                    uninitialized_layers = []
+                    missing_key_layers = []
+                    missing_value_layers = []
+                    stored_key_shapes = {}
+
                     for layer in self.model.layers:
                         if hasattr(layer, 'self_attn') and isinstance(layer.self_attn, CustomAnoleAttention):
-                            layer_initialized = (
-                                layer.self_attn.memory_bank_initialized
-                                and layer.self_attn.stored_keys is not None
-                                and layer.self_attn.stored_values is not None
-                            )
-                            initialized_layers.append(layer_initialized)
-                            print(f"Layer {layer.self_attn.layer_idx}: memory_bank_initialized = {layer.self_attn.memory_bank_initialized}")
-                            if layer.self_attn.stored_keys is not None:
-                                print(f"layer stored keys shape: {layer.self_attn.stored_keys.shape}")
-                            else:
-                                print(f"Layer {layer.self_attn.layer_idx}: stored_keys is None - initialization failed")
+                            attention = layer.self_attn
+                            layer_idx = attention.layer_idx
 
+                            if not attention.memory_bank_initialized:
+                                uninitialized_layers.append(layer_idx)
+                            if attention.stored_keys is None:
+                                missing_key_layers.append(layer_idx)
+                            else:
+                                stored_key_shapes[layer_idx] = tuple(attention.stored_keys.shape)
+                            if attention.stored_values is None:
+                                missing_value_layers.append(layer_idx)
+
+                            initialized_layers.append(
+                                attention.memory_bank_initialized
+                                and attention.stored_keys is not None
+                                and attention.stored_values is not None
+                            )
+
+                    if uninitialized_layers:
+                        print(f"[MEMORY_BANK] Memory bank not initialized for layers: {uninitialized_layers}")
+                    if missing_key_layers:
+                        print(f"[MEMORY_BANK] Memory bank missing stored_keys for layers: {missing_key_layers}")
+                    if missing_value_layers:
+                        print(f"[MEMORY_BANK] Memory bank missing stored_values for layers: {missing_value_layers}")
+
+                    unique_key_shapes = sorted(set(stored_key_shapes.values()))
+                    if len(unique_key_shapes) == 1:
+                        print(f"[MEMORY_BANK] Memory bank stored_keys shape for initialized layers: {unique_key_shapes[0]}")
+                    elif unique_key_shapes:
+                        print(f"[MEMORY_BANK][WARNING] Memory bank stored_keys shapes differ by layer: {stored_key_shapes}")
+                        
                 self.memory_bank_initialized = (
                     len(initialized_layers) == len(self.use_memory_bank_layers)
                     and all(initialized_layers)
@@ -855,8 +896,8 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
                 return self.memory_bank_initialized
             except Exception as e:
                 self.memory_bank_initialized = False
-                print(f"Memory bank initialization failed: {e}")
-                print(f"Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}, pixel_values: {pixel_values.dtype}")
+                print(f"[MEMORY_BANK][ERROR] Memory bank initialization failed: {e}")
+                print(f"     Input dtypes - input_ids: {input_ids.dtype}, attention_mask: {attention_mask.dtype}, pixel_values: {pixel_values.dtype}")
                 return False
             finally:
                 # Clean up temporary variables
@@ -947,10 +988,17 @@ class MemoryBankAnoleForConditionalGeneration(AnoleforConditionalGeneration):
             })
             
             if current_step is not None:
-                print(f"Step {current_step} ({current_substep}): Generating with memory bank")
-                print(f"  Memory bank init: {is_memory_bank_init}")
-                print(f"  Global memory bank: {use_global_memory_bank}")
-                print(f"  Memory bank initialized: {self.memory_bank_initialized}")
+                context = "[UNEXPECTED WARNING] Attempting to generate using uninitialized memory."
+                if is_memory_bank_init:
+                    context = "initializing working memory"
+                else:
+                    context = ""
+                    if use_global_memory_bank:
+                        context += "long-term memory is initialized, "
+                    if self.memory_bank_initialized:
+                        context += "working memory is initialized"
+                
+                print(f"\n[MEMORY_BANK] Memory-Frame {current_step} ({current_substep}): {context}")
         
         try:
             return super().generate(

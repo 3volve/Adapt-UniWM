@@ -1,10 +1,13 @@
-CKPT="./checkpoints/main_ckpt"
+CKPT="./checkpoints/base_ckpt"
 DATASET="go_stanford"
 Run_ID="$DATASET"_offline_eval
+TARGET_GPU=1
 
 mkdir ./output/"$Run_ID"
 
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 train.py \
+export NCCL_P2P_DISABLE=1
+
+safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20007 train.py \
   --model anole \
   --model_ckpt "$CKPT" \
   --data "$DATASET" \
@@ -19,6 +22,7 @@ NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 t
   --do_single_step_eval \
   --bfloat16
 
-timeout 0.25
-  
-tail -f ~/safe_run.log
+timeout 1
+
+tail -f "$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
+stop_run "$TARGET_GPU"

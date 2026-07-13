@@ -1,8 +1,8 @@
 engine:
   load_model_args:
     model: anole
-    model_ckpt: ./checkpoints/base_ckpt
-    update_model_on_save: false
+    model_ckpt: ./checkpoints/living_ckpt
+    update_model_on_save: true
     image_seq_length: 784
     device: cuda
     do_train: false
@@ -13,7 +13,7 @@ engine:
 
   memory_bank:
     top_k: 3
-    memory_context_tau: 0.75
+    memory_context_tau: 0.
 
   load_model_cfg:
     img_size: 448
@@ -45,7 +45,7 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 5e-4
+      initial_lr: 1e-4
 
     visualization:
       use_cache: false
@@ -64,7 +64,7 @@ engine:
       stability_margin: 0.05
 
 wrapper:
-  max_route_steps: 15
+  max_route_steps: 10
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
@@ -81,8 +81,8 @@ wrapper:
 
 runner:
   source_type: "habitat"
-  max_episode_steps: 100
-  source_max_episodes: 5
+  max_episode_steps: 50
+  source_max_episodes: 3
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: habitat_source_tools
@@ -104,11 +104,11 @@ runner:
 modulators:
   viz_ema_tau:
     ach: 0.65
-    ne: 0.75
+    ne: 0.6
 
   viz_learning_mods:
-    ach_base_weight: 0.25
-    ne_bias: 0.5
+    ach_base_weight: 0.3
+    ne_bias: 0.7
     ne_range: [0.1, 1.0]
     ne_curve_width: 0.6
   

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import math, shutil
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +35,7 @@ from runtime_scripts.runtime_utils import (
 )
 
 REQUIRED_FIELDS: dict[str, dict | list] = {
-    "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference"],
+    "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference", "update_model_on_save"],
     "memory_bank": ["top_k", "memory_context_tau"],
     "action_token_generation": ["bin_step"],
     "generation": {
@@ -111,7 +111,12 @@ class UniWMEngine:
 
     def save_online_training_state(self, output_dir: str | Path) -> Path:
         """Save the current online-adapted weights and optimizer state."""
-        output_path = Path(output_dir)
+        if self.config["load_model_args"]["update_model_on_save"]:
+            output_path = self.config["load_model_args"]["model_ckpt"]
+        else:
+            output_path = Path(output_dir)
+
+        shutil.rmtree(output_path, ignore_errors=True)
         output_path.mkdir(parents=True, exist_ok=True)
 
         self.model.save_pretrained(str(output_path))

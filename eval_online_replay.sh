@@ -1,14 +1,18 @@
-DATA_TYPE="replay"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export NCCL_P2P_DISABLE=1
+TARGET_GPU=1
+
+CFG_PATH="cfg/replay_uniwm_cfg.yaml"
 DATASET="sacson"
 OUTPUT_DIR="./output"
 NUM_EPISODES=10
-
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 uniwm_episode_runner.py \
-  --data_type "$DATA_TYPE" \
+safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20002 uniwm_episode_runner.py \
+  --config_path "$CFG_PATH" \
   --data_id "$DATASET" \
   --output_dir "$OUTPUT_DIR" \
   --num_episodes "$NUM_EPISODES"
 
 timeout 1
-  
-tail -f ~/safe_run.log
+
+tail -f "$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
+stop_run "$TARGET_GPU"

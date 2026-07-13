@@ -31,7 +31,7 @@ class RuntimeMemoryBankManager:
         if hasattr(self.model, 'reset_memory_bank'):
             self.model.reset_memory_bank()
             if self.verbose:
-                print(f"  Intra-step memory bank reset for episode {episode_id}")
+                print(f"[MEMORY] Working memory reset for episode {episode_id}")
             self.context_ema = None
             
         elif hasattr(self.model, 'memory_bank_initialized'):
@@ -43,26 +43,26 @@ class RuntimeMemoryBankManager:
                     if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'reset_memory_bank'):
                         layer.self_attn.reset_memory_bank()
             if self.verbose:
-                print(f"  Fallback intra-step memory bank reset for episode {episode_id}")
+                print(f"[MEMORY] Fallback working memory reset for episode {episode_id}")
 
         # Reset global cross-step memory bank for each episode
         if hasattr(self.model, 'reset_global_memory_bank'):
             self.model.reset_global_memory_bank()
             if self.verbose:
-                print(f"  Cross-step memory bank reset for episode {episode_id}")
+                print(f"[MEMORY] Long-term memory reset for episode {episode_id}")
             self.context_ema = None
 
         # Enable global memory bank functionality
         if hasattr(self.model, 'enable_global_memory_bank'):
             self.model.enable_global_memory_bank()
             if self.verbose:
-                print(f"  Global memory bank enabled for episode {episode_id}")
+                print(f"[MEMORY] Long-term memory enabled for episode {episode_id}")
 
         # Enable memory bank functionality if available
         if hasattr(self.model, 'enable_memory_bank'):
             self.model.enable_memory_bank()
             if self.verbose:
-                print(f"  Memory bank functionality enabled for episode {episode_id}")
+                print(f"[MEMORY] General memory bank functionality enabled for episode {episode_id}")
 
         self.current_step = 0
 
@@ -72,14 +72,10 @@ class RuntimeMemoryBankManager:
             return 0.0
 
         self.current_step += 1
-        if self.verbose:
-            print(f"\n=== Step {self.current_step} Action Prediction Substep ===")
 
         # Reset intra memory bank for action prediction substep (but keep cross memory bank)
         if hasattr(self.model, 'reset_memory_bank'):
             self.model.reset_memory_bank()
-            if self.verbose:
-                print(f"  Step {self.current_step}: intra memory bank reset for action prediction")
 
     def load_cached_state(self) -> None:
         if self._cached_step_state is None:
@@ -185,6 +181,9 @@ class RuntimeMemoryBankManager:
             action_gen_kwargs["use_memory_bank"] = False
             action_gen_kwargs["use_global_memory_bank"] = False
             return action_gen_kwargs
+        
+        if self.verbose:
+            print(f"\n[MEMORY] Memory-state {self.current_step} Action Prediction Substep ===")
 
         action_gen_kwargs_with_memory = action_gen_kwargs.copy()
 
@@ -207,7 +206,7 @@ class RuntimeMemoryBankManager:
             return viz_gen_kwargs
 
         if self.verbose:
-            print(f"\n=== Step {self.current_step} Visualization Substep ===")
+            print(f"\n[MEMORY] Memory-state {self.current_step}: Visualization Substep ===")
 
         # Enable memory bank for visualization generation
         viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
@@ -224,28 +223,37 @@ class RuntimeMemoryBankManager:
 
     def store_step_memory(self) -> bool:
         """Stores the current step's K,V pairs into the global memory bank."""
-        if not self.is_enabled or not self.model.memory_bank_initialized:
+        memory_model = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
+        layers = [
+            memory_model.model.layers[index]
+            for index in sorted(memory_model.use_memory_bank_layers)
+        ]
+        memory_ready = all(
+            layer.self_attn.memory_bank_initialized
+            and layer.self_attn.stored_keys is not None
+            and layer.self_attn.stored_values is not None
+            for layer in layers
+        )
+
+        if not self.is_enabled or not memory_ready:
             return False
 
         # Store current step's intra-step K,V to global cross-step memory bank
         # This happens after both action prediction and visualization substeps are completed
-        if hasattr(self.model, 'store_to_global_memory_bank'):
-            self.model.store_to_global_memory_bank(self.current_step)
+        if hasattr(memory_model, 'store_to_global_memory_bank'):
+            memory_model.store_to_global_memory_bank(self.current_step)
+            
+            print(f"[MEMORY] Memory-state {self.current_step}: Promoted working memory to long-term memory")
             if self.verbose:
-                print(f"  Step {self.current_step}: Stored intra-step K,V to global memory bank")
-
-                if hasattr(self.model, 'model') and hasattr(self.model.model, 'model') and hasattr(
-                        self.model.model.model, 'layers'):
-                    for layer_idx, layer in enumerate(self.model.model.model.layers):
-                        if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'global_stored_keys'):
-                            if len(layer.self_attn.global_stored_keys) > 0:
-                                print(
-                                    f"    - Layer {layer_idx}: Global memory bank now has {len(layer.self_attn.global_stored_keys)} steps")
-                                print(
-                                    f"    - Layer {layer_idx}: Latest stored K shape: {layer.self_attn.global_stored_keys[-1].shape}")
-                                print(
-                                    f"    - Layer {layer_idx}: Latest stored V shape: {layer.self_attn.global_stored_values[-1].shape}")
-                                break  # Only print for first layer to avoid spam
+                for layer_idx, layer in zip(sorted(memory_model.use_memory_bank_layers), layers):
+                    if len(layer.self_attn.global_stored_keys) > 0:
+                        print(
+                            f"    - Layer {layer_idx}: Global memory bank now has {len(layer.self_attn.global_stored_keys)} steps")
+                        print(
+                            f"    - Layer {layer_idx}: Latest stored K shape: {layer.self_attn.global_stored_keys[-1].shape}")
+                        print(
+                            f"    - Layer {layer_idx}: Latest stored V shape: {layer.self_attn.global_stored_values[-1].shape}")
+                        break  # Only print for first layer to avoid spam
                             
             return True
         

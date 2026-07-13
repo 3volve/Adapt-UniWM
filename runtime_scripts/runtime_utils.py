@@ -23,15 +23,6 @@ def image_to_array(observation: Image.Image) -> np.ndarray:
 def root_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
-def resolve_config_path_from_id(data_id: str) -> str:
-    config_path = Path(root_dir() / "cfg" / f"{data_id}_uniwm_cfg.yaml")
-
-    if not config_path.is_file():
-        raise AssertionError(f"config_path must be file or data_id must identify a config file within the local cfg folder so this is a valid path: {config_path}")
-
-    abs_path = str(config_path.resolve())
-    return abs_path
-
 def make_runner_output_dir(
     output_dir: str,
     data_id: str
@@ -70,11 +61,20 @@ def validate_config_recursive(config_node: dict | str, required_fields_at_node: 
                 raise AssertionError(f"{parent_str} is missing required key '{key}'.")
 
             if isinstance(required_fields_at_node, dict):
+                if isinstance(required_fields_at_node[key], bool) and not required_fields_at_node[key]:
+                    print(f"[VALIDATION][WARNING] Skipping validation on field with expected children: {key}. This should only be seen for a replay run.")
+                    continue
+                
                 validate_config_recursive(config_node[key], required_fields_at_node[key], f"{parent_str}.{key}")
                 
-def build_img_paths(output_dir: str, episode_id: str, route_id: int, route_step: int) -> tuple[str, str, str]:
-    base_path = str(root_dir() / Path(output_dir) / f"episode_{episode_id}/route_{route_id}/step_{route_step}")
-    return f"{base_path}_real.png", f"{base_path}_pred.png", f"{base_path}_eval.png"
+def build_img_paths(output_dir: str, episode_id: str, suffixes: list[str] = ["default"], route_id: int | None = None, route_step: int | None = None) -> list[str]:
+    base_path = root_dir() / Path(output_dir) / f"episode_{episode_id}"
+    if route_id is not None:
+        base_path = base_path / str(route_id)
+        if route_step is not None:
+            base_path = base_path / str(route_step)
+            
+    return [f"{str(base_path)}_{suffix}.png" for suffix in suffixes]
     
 def is_stop_action(action_text: str) -> bool:
     return action_text.strip().lower() == "stop"

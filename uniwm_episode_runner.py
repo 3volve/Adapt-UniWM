@@ -14,7 +14,6 @@ from runtime_scripts.runtime_utils import (
     copy_base_config,
     is_stop_action,
     load_config,
-    resolve_config_path_from_id,
     validate_config,
     make_runner_output_dir
 )
@@ -27,7 +26,8 @@ REQUIRED_FIELDS: list[str] = [
     "stop_on_wrapper_done",
     "log_every_step",
     "source_file_name",
-    "adapter_params"
+    "adapter_params",
+    "save_model_weights",
 ]
 
 class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
@@ -35,16 +35,12 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
     def __init__(
         self,
-        data_type: str,
+        config_path: str,
         data_id: str,
         full_output_path: Path,
         *,
-        config_path: str | None = None,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
-        if config_path is None:
-            config_path = resolve_config_path_from_id(data_type)
-
         config = load_config(config_path)
         copy_base_config(config_path, full_output_path)
         self.config: dict[str, Any] = config.get("runner", {})
@@ -64,7 +60,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             str(full_output_path)
         )
 
-        source_classes = self._load_source_classes(data_type)
+        source_classes = self._load_source_classes(self.config["source_type"])
         self.adapter: T_Adapter = source_classes[0]
         self.formatter: T_Formatter = source_classes[1]
 
@@ -141,7 +137,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self._episode_logs.append(episode_log)
         return episode_log
 
-    def run_episodes(self, num_episodes: int, data_id: str):
+    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path):
         """ Leaving in code to parse multiple data_ids, but the system can't actually properly swap action_cfgs between types. Don't try to run with multiple. """
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
@@ -154,6 +150,9 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         for id in data_ids:
             self.adapter.reset_src(id)
             [self.run_episode(id) for _ in range(num_episodes)]
+            
+            if self.config["save_model_weights"]:
+                runner.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
@@ -196,8 +195,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         return adapter, formatter
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_type", type=str, default="habitat")
+    parser = argparse.ArgumentParser()    
+    parser.add_argument("--config_path", type=str, required=True)
     
     # For now, I'm just going to say only this will only work with a single data_id at a time.  I'll deal with splitting and rebuilding the runner per-data_id later if it seems necessary.
     parser.add_argument("--data_id", type=str, default="habitat")
@@ -208,8 +207,8 @@ if __name__ == '__main__':
     
     run_dir = make_runner_output_dir(args.output_dir, args.data_id)
 
-    runner = UniWMEpisodeRunner(args.data_type, args.data_id, run_dir)
-    runner.run_episodes(args.num_episodes, args.data_id)
+    runner = UniWMEpisodeRunner(args.config_path, args.data_id, run_dir)
+    runner.run_episodes(args.num_episodes, args.data_id, run_dir)
 
     save_runner_logs(runner.get_logs(), run_dir)
     

@@ -53,12 +53,17 @@ class UniWMWrapper:
         self.output_path = absolute_output_path
         self.forced_actions = False
         
-        self.modulators = ModulatorSystem(self.config["enable_modulators"], root_config["modulators"])
+        modulators_enabled = self.config["training_enabled"] and self.config["enable_modulators"]
+        self.modulators = ModulatorSystem(modulators_enabled, root_config["modulators"])
         
         self._reset_wrapper_state()
         self.ready_to_act = False
 
     def reset_episode(self, initial_bundle: UniWMInputBundle, episode_id: str) -> dict[str, Any]:
+        start_img_path, goal_img_path = build_img_paths(self.output_path, episode_id, ["start", "goal"])
+        save_img(initial_bundle.start_observation, start_img_path)
+        save_img(initial_bundle.goal_observation, goal_img_path)
+        
         self._reset_wrapper_state()
         self.latest_bundle = initial_bundle
         self.engine.reset_episode(episode_id, initial_bundle)
@@ -101,7 +106,7 @@ class UniWMWrapper:
         pending_step, pending_step_idx = self.pending_step, self.pending_step_idx
         real_obs = observed_bundle.current_observation
         pending_step.context_familiarity, pending_step.context_stability = self.engine.get_current_context()
-        save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, self.route_id, self.pending_step_idx)
+        save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, ["real", "pred", "eval"], self.route_id, self.pending_step_idx)
         
         if real_obs is not None and self.config["log_real_obs"]:
             save_img(real_obs, save_path_real)

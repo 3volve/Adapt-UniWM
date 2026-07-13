@@ -1,8 +1,8 @@
-CKPT="./checkpoints/main_ckpt"
+CKPT="./checkpoints/base_ckpt"
 DATASET="recon,scand"
 Run_ID="$DATASET"_offline_training
 
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 train.py \
+NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 --master_port=20009 train.py \
   --model anole \
   --model_ckpt "$CKPT" \
   --data "$DATASET" \

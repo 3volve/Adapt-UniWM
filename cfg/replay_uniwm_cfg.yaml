@@ -1,7 +1,8 @@
 engine:
   load_model_args:
     model: anole
-    model_ckpt: ./checkpoints/main_ckpt
+    model_ckpt: ./checkpoints/base_ckpt
+    update_model_on_save: false
     image_seq_length: 784
     device: cuda
     do_train: false
@@ -27,9 +28,9 @@ engine:
       pad_token_id: 2
       multimodal_generation_mode: text-only
       current_substep: action
-      return_dict_in_generate: True
-      return_legacy_cache: True
-      output_scores: True
+      return_dict_in_generate: true
+      return_legacy_cache: true
+      output_scores: true
     visualization:
       max_new_tokens: 800
       num_beams: 1
@@ -38,29 +39,11 @@ engine:
       pad_token_id: 2
       multimodal_generation_mode: image-only
       current_substep: visualization
-      return_dict_in_generate: True
-      return_legacy_cache: True
-      output_scores: True
+      return_dict_in_generate: true
+      return_legacy_cache: true
+      output_scores: true
 
-  training:
-    hyper_params:
-      initial_lr: 5e-4
-
-    visualization:
-      use_cache: false
-
-    loss:
-      include_action_loss: true
-      include_image_loss: true
-      action_loss_weight: 1.0
-      image_loss_weight: 1.0
-      ignore_index: -100
-      log_prefix: "replay_loss_"
-
-    memory:
-      min_memories: 3
-      similarity_threshold: 0.6
-      stability_margin: 0.05
+  training: false
 
 wrapper:
   max_route_steps: 8
@@ -71,19 +54,21 @@ wrapper:
   log_real_obs: true
   add_global_memories: false
   eval_forced_action: true
-  training_enabled: false
 
-  enable_modulators: True
+  training_enabled: false
+  enable_modulators: false
   min_memories_for_confidence: 5
   viz_loss_slow_ema: 0.95
   viz_loss_fast_ema: 0.6
 
 runner:
+  source_type: "replay"
   max_episode_steps: 100
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: replay_source_tools
   source_max_episodes: 64
+  save_model_weights: false
 
   adapter_params:
     data_root: eval_data
@@ -93,19 +78,4 @@ runner:
     bin_step: 0.01
     img_size: 448
 
-modulators:
-  viz_ema_tau:
-    ach: 0.65
-    ne: 0.75
-
-  viz_learning_mods:
-    ach_base_weight: 0.25
-    ne_bias: 0.5
-    ne_range: [0.25, 1.0]
-    ne_curve_width: 0.6
-  
-  viz_norm_scalers:
-    novelty: 0.3
-    learning_surprise: 0.4
-    learning_progress: 0.4
-    persistent_loss: 4.0
+modulators: false
