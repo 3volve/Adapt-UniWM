@@ -1,8 +1,13 @@
-CKPT="./checkpoints/base_ckpt"
+export NCCL_P2P_DISABLE=1
+export CUDA_VISIBLE_DEVICES=0,1
+
+TARGET_GPU=0,1
+CKPT="./output/recon,scand_offline_training/recon,scand_offline_trainingimage_seq_len-784-train-anole-hyper-train1val1lr0.0002-recon,scand-prompt_anole-42/checkpoint-4200"
 DATASET="recon,scand"
 Run_ID="$DATASET"_offline_training
 
-NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 --master_port=20009 train.py \
+
+safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=2 --master_port=20009 train.py \
   --model anole \
   --model_ckpt "$CKPT" \
   --data "$DATASET" \
@@ -19,6 +24,10 @@ NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=1 safe_run torchrun --nproc_per_node=1 -
   --grad_acc 2 \
   --bfloat16
 
-timeout 0.25
+timeout 1
 
-tail -f ~/safe_run.log
+OUTPUT_FILE="$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
+touch "$OUTPUT_FILE"
+tail -f "$OUTPUT_FILE"
+
+stop_run "$TARGET_GPU"

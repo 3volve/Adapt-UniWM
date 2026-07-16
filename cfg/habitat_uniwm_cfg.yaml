@@ -102,18 +102,29 @@ runner:
     img_size: 448
 
 modulators:
-  viz_ema_tau:
-    ach: 0.65
-    ne: 0.75
+  visualization:
+    decay_tau:
+      ach: 0.65
+      ne:  0.75
 
-  viz_learning_mods:
-    ach_base_weight: 0.25
-    ne_bias: 0.5
-    ne_range: [0.1, 1.0]
-    ne_curve_width: 0.6
-  
-  viz_norm_scalers:
-    novelty: 0.3
-    learning_surprise: 0.4
-    learning_progress: 0.4
-    persistent_loss: 4.0
+    learning_mods:
+      ach_base_weight: 0.25
+      ne_bias:         0.5
+      ne_range:        [0.1, 1.0]
+      ne_curve_width:  0.6
+    
+    norm_scalers:
+      novelty:           0.3
+      learning_surprise: 0.4
+      learning_progress: 0.4
+      persistent_loss:   4.0
+
+    event_strengths:
+      pred_mismatch:     [0.15, 0.25]
+      mem_novelty:       [0.30, 0.10]
+      act_uncertainty:   [0.00, 0.10]
+      viz_uncertainty:   [0.05, 0.55]
+      learning_surprise: [0.00, 0.35]
+      learning_progress: [0.40, 0.00]
+      persistent_error:  [0.20, 0.10]
+      collision:         [0.00, 0.25]

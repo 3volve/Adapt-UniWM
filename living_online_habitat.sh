@@ -13,6 +13,9 @@ safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20003 uni
   --num_episodes "$NUM_EPISODES"
 
 timeout 1
-  
-tail -f "$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
+
+OUTPUT_FILE="$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
+touch "$OUTPUT_FILE"
+tail -f "$OUTPUT_FILE"
+
 stop_run "$TARGET_GPU"

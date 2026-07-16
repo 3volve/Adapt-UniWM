@@ -54,7 +54,10 @@ class UniWMWrapper:
         self.forced_actions = False
         
         modulators_enabled = self.config["training_enabled"] and self.config["enable_modulators"]
-        self.modulators = ModulatorSystem(modulators_enabled, root_config["modulators"])
+        self.viz_modulators = ModulatorSystem(modulators_enabled, root_config["modulators"]["visualization"])
+        
+        # TODO: Add additional action-selection modulator system
+        #self.act_modulators = ModulatorSystem(modulators_enabled, root_config["modulators"]["action"])
         
         self._reset_wrapper_state()
         self.ready_to_act = False
@@ -90,8 +93,8 @@ class UniWMWrapper:
         self.last_predicted_observation = current_step.visualization
         self.route_idx += 1
         
-        self.modulators.start_step()
-        self.modulators.on_action_uncertainty(current_step.act_entropy)
+        self.viz_modulators.start_step()
+        self.viz_modulators.on_action_uncertainty(current_step.act_entropy)
             
         return current_step.action_text
 
@@ -126,8 +129,8 @@ class UniWMWrapper:
             divergence, mod_divergence = self.compute_divergence(pending_step.visualization, pending_step.real_next_obs)
             
             self._update_modulators(pending_step, mod_divergence, observed_bundle.collision)
-            lr_scalar = self.modulators.compute_visualization_update_weight()
-            modulator_state = self.modulators.get_current_state()
+            lr_scalar = self.viz_modulators.compute_step_update_weight()
+            modulator_state = self.viz_modulators.get_current_state()
             
             # TODO: Decide if more complicated logic for determining whether to train or not is necessary
             if not observed_bundle.collision:
@@ -230,7 +233,7 @@ class UniWMWrapper:
         self.latest_bundle: UniWMInputBundle | None = None
         self._viz_loss_slow: float | None = None
         self._viz_loss_fast: float | None = None
-        self.modulators.reset_episode()
+        self.viz_modulators.reset_episode()
 
     def _plan_route(self, bundle: UniWMInputBundle, *, reason: str) -> None:
         if bundle.source_done:
@@ -310,11 +313,11 @@ class UniWMWrapper:
         if not self.config["enable_modulators"]:
             return
         
-        self.modulators.on_collision_or_unsafe(is_collision)
+        self.viz_modulators.on_collision_or_unsafe(is_collision)
         
         memory_confidence = min(self.engine.memory_count / int(self.config["min_memories_for_confidence"]), 1.0)
         memory_novelty_score = (1.0 - pending_step.context_familiarity) * memory_confidence
-        self.modulators.on_memory_novelty(memory_novelty_score)
+        self.viz_modulators.on_memory_novelty(memory_novelty_score)
         
         if self._viz_loss_fast is not None and self._viz_loss_slow is not None:
             loss_baseline = max(self._viz_loss_fast, self._viz_loss_slow, 1e-8)
@@ -322,12 +325,12 @@ class UniWMWrapper:
             relative_progress = max(0.0, (self._viz_loss_slow - self._viz_loss_fast) / loss_baseline)
             persistent_error = min(self._viz_loss_fast, self._viz_loss_slow) * pending_step.context_stability
 
-            self.modulators.on_learning_surprise(relative_surprise)
-            self.modulators.on_learning_progress(relative_progress * pending_step.context_stability)
-            self.modulators.on_persistent_error(persistent_error)
+            self.viz_modulators.on_learning_surprise(relative_surprise)
+            self.viz_modulators.on_learning_progress(relative_progress * pending_step.context_stability)
+            self.viz_modulators.on_persistent_error(persistent_error)
             
         if not is_collision and divergence >= 0.0:
-            self.modulators.on_prediction_mismatch(divergence)
-            self.modulators.on_visual_uncertainty(pending_step.viz_entropy)
+            self.viz_modulators.on_prediction_mismatch(divergence)
+            self.viz_modulators.on_visual_uncertainty(pending_step.viz_entropy)
         
-        self.modulators.ema_update_signals()
+        self.viz_modulators.ema_update_signals()
