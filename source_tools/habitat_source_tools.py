@@ -152,6 +152,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             obs=obs,
             done=bool(self.env.episode_over),
             action_taken=None,
+            is_collision=False,
         )]
         
     def reset_src(self, data_id: str = "habitat") -> None:
@@ -169,6 +170,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         step_results: list[HabitatOutputBundle] = []
         for action in actions:
             obs = self.env.step(action)
+            is_collision = bool(self.sim.previous_step_collided)
             self.current_episode = self.env.current_episode
             self.step_index += 1
             done = bool(self.env.episode_over)
@@ -176,7 +178,8 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             step_results.append(self._pack_step(
                 obs=obs,
                 done=done,
-                action_taken=action
+                action_taken=action,
+                is_collision=is_collision,
             ))
             
             if done:
@@ -222,6 +225,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         obs: Observations,
         done: bool,
         action_taken: str | None,
+        is_collision: bool,
     ) -> HabitatOutputBundle:
         episode = self.current_episode
         if episode is None:
@@ -236,6 +240,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             episode=episode,
             step_index=self.step_index,
             action_taken=action_taken,
+            is_collision=is_collision,
         )
 
         self.last_step = step
@@ -260,11 +265,11 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
         self.angular_deadband: float = float(angular_deadband)
         self.image_size: tuple[int, int] = (int(img_size), int(img_size))
 
-        hab_cfg = adapter.habitat_config
-        if hab_cfg is not None:
-            turn_step_size: float = hab_cfg.habitat.simulator.turn_angle
-            self.right_angle_turn_repeats = round(90 / turn_step_size)
-            self.forward_step_size: float = hab_cfg.habitat.simulator.forward_step_size
+        # hab_cfg = adapter.habitat_config
+        # if hab_cfg is not None:
+        #     turn_step_size: float = hab_cfg.habitat.simulator.turn_angle
+        #     self.right_angle_turn_repeats = round(90 / turn_step_size)
+        #     self.forward_step_size: float = hab_cfg.habitat.simulator.forward_step_size
 
     def convert_action(self, action: str) -> list[str]:
         dx, dy, dyaw, action = 0.0, 0.0, 0.0, action.strip()

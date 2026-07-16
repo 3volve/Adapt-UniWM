@@ -87,7 +87,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             print(f"[RUNNER]: Starting New Step #[{step_idx}]")
             # Retrieve the predicted next action from wrapper
             planned_action: str = self.wrapper.get_next_action()
-
+            wrapper_requested_stop = is_stop_action(planned_action)
+            
             # Convert returned actions list[str] to source-friendly version
             converted_actions: list[str] = self.formatter.convert_action(planned_action)
 
@@ -102,8 +103,6 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             transition: TransitionRecord = self.wrapper.observe_transition(converted_obs)
 
             steps_executed = step_idx + 1
-            wrapper_requested_stop = is_stop_action(planned_action)
-
             if self.config["log_every_step"]:
                 step_logs.append(
                     {
@@ -112,7 +111,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
                         "wrapper_requested_stop": wrapper_requested_stop,
                     }
                 )
-
+                
             if converted_obs.source_done:
                 termination_reason = "adapter_done"
                 break
