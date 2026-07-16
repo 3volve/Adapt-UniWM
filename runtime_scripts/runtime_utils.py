@@ -61,7 +61,7 @@ def validate_config_recursive(config_node: dict | str, required_fields_at_node: 
                 raise AssertionError(f"{parent_str} is missing required key '{key}'.")
 
             if isinstance(required_fields_at_node, dict):
-                if isinstance(required_fields_at_node[key], bool) and not required_fields_at_node[key]:
+                if isinstance(config_node[key], bool) and not config_node[key]:
                     print(f"[VALIDATION][WARNING] Skipping validation on field with expected children: {key}. This should only be seen for a replay run.")
                     continue
                 

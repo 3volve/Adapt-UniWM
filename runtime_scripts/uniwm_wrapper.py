@@ -54,7 +54,8 @@ class UniWMWrapper:
         self.forced_actions = False
         
         modulators_enabled = self.config["training_enabled"] and self.config["enable_modulators"]
-        self.viz_modulators = ModulatorSystem(modulators_enabled, root_config["modulators"]["visualization"])
+        mod_config = None if not modulators_enabled else root_config["modulators"]["visualization"]
+        self.viz_modulators = ModulatorSystem(modulators_enabled, mod_config)
         
         # TODO: Add additional action-selection modulator system
         #self.act_modulators = ModulatorSystem(modulators_enabled, root_config["modulators"]["action"])

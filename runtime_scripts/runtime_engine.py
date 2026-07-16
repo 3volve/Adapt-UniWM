@@ -36,7 +36,8 @@ from runtime_scripts.runtime_utils import (
 
 REQUIRED_FIELDS: dict[str, dict | list] = {
     "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference", "update_model_on_save"],
-    "memory_bank": ["top_k", "memory_context_tau"],
+    "memory_bank_args": ["top_k", "memory_context_tau"],
+    "memory": ["min_memories", "similarity_threshold", "stability_margin"],
     "action_token_generation": ["bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
@@ -46,7 +47,6 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
         "hyper_params": ["initial_lr"], 
         "visualization": ["use_cache"], 
         "loss": ["include_action_loss", "include_image_loss", "action_loss_weight", "image_loss_weight", "log_prefix"],
-        "memory": ["min_memories", "similarity_threshold", "stability_margin"]
     },
 }
 
@@ -86,25 +86,25 @@ class UniWMEngine:
         self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
         self._configure_action_tokenizer(data_id)
 
-
-        self._trainable_params = self._online_update_parameters(include_lm_head=False)
-        self._optimizer = AdamW(
-            self._trainable_params,
-            lr=float(self.config["training"]["hyper_params"]["initial_lr"]),
-            weight_decay=0.0,
-        )
-
         using_memory = self.config["load_model_args"]["use_memory_bank_inference"]
         self._memory_manager = RuntimeMemoryBankManager(
-            self.model, using_memory, **self.config["memory_bank"]
+            self.model, using_memory, **self.config["memory_bank_args"]
         )
-        
+            
         self.config["generation"]["action"]["use_memory_bank"] = using_memory
         self.config["generation"]["action"]["use_global_memory_bank"] = using_memory
         self.config["generation"]["visualization"]["use_memory_bank"] = using_memory
         self.config["generation"]["visualization"]["use_global_memory_bank"] = using_memory
-        self.config["training"]["visualization"]["use_memory_bank"] = using_memory
-        self.config["training"]["visualization"]["use_global_memory_bank"] = using_memory
+        
+        if self.config["training"] != False:
+            self._trainable_params = self._online_update_parameters(include_lm_head=False)
+            self._optimizer = AdamW(
+                self._trainable_params,
+                lr=float(self.config["training"]["hyper_params"]["initial_lr"]),
+                weight_decay=0.0,
+            )
+            self.config["training"]["visualization"]["use_memory_bank"] = using_memory
+            self.config["training"]["visualization"]["use_global_memory_bank"] = using_memory
         
         if hasattr(self.model, "eval"):
             self.model.eval()
@@ -421,9 +421,9 @@ class UniWMEngine:
         
     def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
         use_memory = use_memory if use_memory is not None else (
-                self.memory_count >= self.config["training"]["memory"]["min_memories"]
-                and self._context_familiarity >= self.config["training"]["memory"]["similarity_threshold"]
-                and self._context_familiarity > self._context_stability + self.config["training"]["memory"]["stability_margin"]
+                self.memory_count >= self.config["memory"]["min_memories"]
+                and self._context_familiarity >= self.config["memory"]["similarity_threshold"]
+                and self._context_familiarity > self._context_stability + self.config["memory"]["stability_margin"]
             )
         
         if not use_memory:
