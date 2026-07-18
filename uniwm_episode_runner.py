@@ -18,7 +18,7 @@ from runtime_scripts.runtime_utils import (
     make_runner_output_dir
 )
 
-from runtime_scripts.test_runtime_metrics import save_runner_logs
+from runtime_scripts.test_runtime_metrics import append_runner_event, save_runner_logs
 
 
 REQUIRED_FIELDS: list[str] = [
@@ -53,6 +53,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             self.config["formatter_params"]["bin_step"] = config["engine"]["action_token_generation"]["bin_step"]
             
         validate_config(self.config, REQUIRED_FIELDS)
+        self.full_output_path = full_output_path
 
         self.wrapper = UniWMWrapper(
             UniWMEngine(data_id, config_path) if engine is None else engine,
@@ -67,7 +68,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self._episode_logs: list[dict[str, Any]] = []
 
     def run_episode(self, data_id: str) -> dict[str, Any]:
-        print("[RUNNER]: Starting New Episode")
+        print("[RUNNER] Starting New Episode")
         # Generate new observation when resetting episode
         step_results: list[T_OutputBundle] = self.adapter.reset_ep()
 
@@ -84,7 +85,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
         # Start running through steps with the returned UniWM Action str to start the loop
         for step_idx in range(self.config["max_episode_steps"]):
-            print(f"[RUNNER]: Starting New Step #[{step_idx}]")
+            print(f"[RUNNER] Starting New Step #[{step_idx}]")
             # Retrieve the predicted next action from wrapper
             planned_action: str = self.wrapper.get_next_action()
             wrapper_requested_stop = is_stop_action(planned_action)
@@ -104,12 +105,15 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
             steps_executed = step_idx + 1
             if self.config["log_every_step"]:
-                step_logs.append(
-                    {
-                        "step_idx": step_idx,
-                        **transition.to_log(),
-                        "wrapper_requested_stop": wrapper_requested_stop,
-                    }
+                step_log = {
+                    "step_idx": step_idx,
+                    **transition.to_log(),
+                    "wrapper_requested_stop": wrapper_requested_stop,
+                }
+                step_logs.append(step_log)
+                append_runner_event(
+                    self.full_output_path,
+                    step_log,
                 )
                 
             if converted_obs.source_done:
@@ -132,7 +136,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             "final_wrapper_state": self.wrapper.get_state_snapshot(),
         }
 
-        print("[RUNNER]: Finishing Episode")
+        print("[RUNNER] Finishing Episode")
         self._episode_logs.append(episode_log)
         return episode_log
 
@@ -202,7 +206,7 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--num_episodes", type=int, default=-1)
     args = parser.parse_args()
-    print("[RUNNER]: Starting New Run")
+    print("[RUNNER] Starting New Run")
     
     run_dir = make_runner_output_dir(args.output_dir, args.data_id)
 
@@ -211,4 +215,4 @@ if __name__ == '__main__':
 
     save_runner_logs(runner.get_logs(), run_dir)
     
-    print("[RUNNER]: Ending Run")
+    print("[RUNNER] Ending Run")

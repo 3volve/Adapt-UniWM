@@ -107,43 +107,45 @@ class UniWMWrapper:
             print(f"Failing with values: ({self.ready_to_act}, {'exists' if self.pending_step else 'none'}, {self.pending_step_idx})")
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
         
-        pending_step, pending_step_idx = self.pending_step, self.pending_step_idx
+        transition_step, transition_step_idx = self.pending_step, self.pending_step_idx
         real_obs = observed_bundle.current_observation
-        pending_step.context_familiarity, pending_step.context_stability = self.engine.get_current_context()
-        save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, ["real", "pred", "eval"], self.route_id, self.pending_step_idx)
+        transition_step.context_familiarity, transition_step.context_stability = self.engine.get_current_context()
+        save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, ["real", "pred", "eval"], self.route_id, transition_step_idx)
         
         if real_obs is not None and self.config["log_real_obs"]:
             save_img(real_obs, save_path_real)
-        if pending_step.visualization is not None and self.config["log_predicted_obs"]:
-            save_img(pending_step.visualization, save_path_viz)
+        if transition_step.visualization is not None and self.config["log_predicted_obs"]:
+            save_img(transition_step.visualization, save_path_viz)
         
         if len(self.current_route) > self.route_idx:
             next_step = self.current_route.steps[self.route_idx]
             next_step.real_input_obs = real_obs
-        pending_step.real_next_obs = real_obs
+        transition_step.real_next_obs = real_obs
         
         divergence = 0
         training_log: dict[str, Any] | None = None
         eval_log: dict[str, Any] | None = None
         modulator_state: dict[str, Any] | None = None
-        if pending_step and not is_stop_action(pending_step.action_text):
-            divergence, mod_divergence = self.compute_divergence(pending_step.visualization, pending_step.real_next_obs)
+        if transition_step and not is_stop_action(transition_step.action_text):
+            divergence, mod_divergence = self.compute_divergence(transition_step.visualization, transition_step.real_next_obs)
             
-            self._update_modulators(pending_step, mod_divergence, observed_bundle.collision)
+            self._update_modulators(transition_step, mod_divergence, observed_bundle.collision)
             lr_scalar = self.viz_modulators.compute_step_update_weight()
             modulator_state = self.viz_modulators.get_current_state()
             
             # TODO: Decide if more complicated logic for determining whether to train or not is necessary
             if not observed_bundle.collision:
                 if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
-                    eval_log = self._run_eval_predict(observed_bundle, pending_step.real_next_obs, save_path_eval)
+                    eval_log = self._run_eval_predict(observed_bundle, transition_step.real_next_obs, save_path_eval)
                     
                 if self.config["training_enabled"]:
-                    training_log = self.engine.train_viz_step(pending_step, lr_scalar)
+                    training_log = self.engine.train_viz_step(transition_step, lr_scalar)
                     self._update_viz_loss(training_log["base_loss"])
                     training_log["_viz_loss_slow"], training_log["_viz_loss_fast"] = self._viz_loss_slow, self._viz_loss_fast
             
-                self.engine.store_and_update_working_memory(real_obs, observed_bundle.start_pose_str, self.config["add_global_memories"])
+            self.engine.update_working_memory(real_obs, observed_bundle.start_pose_str)
+            if not observed_bundle.collision and self.config["add_global_memories"]:
+                self.engine.store_working_memory()
                 
         replan_reason = None
         replanned = False
@@ -151,6 +153,10 @@ class UniWMWrapper:
         if not observed_bundle.source_done and (observed_bundle.collision or divergence > float(self.config["full_replan_threshold"])):
             if observed_bundle.collision:
                 replan_reason = f"collision"
+                    
+                observed_bundle.metadata["prev_action"] = self.last_planned_action
+                if "action_taken" in transition_step.input_bundle.metadata:
+                    observed_bundle.metadata["action_taken"] = transition_step.input_bundle.metadata["action_taken"]
             else:
                 replan_reason = f"divergence>{self.config['full_replan_threshold']:.3f}"
                 
@@ -161,11 +167,11 @@ class UniWMWrapper:
 
         record = TransitionRecord(
             route_id=route_id,
-            route_idx=pending_step_idx,
-            action=pending_step.action_text,
-            context_familiarity=pending_step.context_familiarity,
-            context_stability=pending_step.context_stability,
-            viz_used_memory=pending_step.viz_used_memory,
+            route_idx=transition_step_idx,
+            action=transition_step.action_text,
+            context_familiarity=transition_step.context_familiarity,
+            context_stability=transition_step.context_stability,
+            viz_used_memory=transition_step.viz_used_memory,
             divergence=divergence,
             replanned=replanned,
             replan_reason=replan_reason,
@@ -184,11 +190,11 @@ class UniWMWrapper:
         if current_bundle.source_done:
             return
         
-        print("[WRAPPER]: Replanning Route")
+        print(f"[WRAPPER] Replanning Route: {reason}")
         self.latest_bundle = current_bundle
         self.pending_step = None
         self.pending_step_idx = 0
-        self._plan_route(current_bundle, reason=reason)
+        self._plan_route(current_bundle, reason)
 
     def compute_divergence(self, predicted_img: Any, real_img: Any) -> tuple[float, float]:
         # TODO: Figure out a cleaner solution for needing to return a divergence on abnormal inputs or ensure abnormal inputs can't be input.
@@ -236,7 +242,7 @@ class UniWMWrapper:
         self._viz_loss_fast: float | None = None
         self.viz_modulators.reset_episode()
 
-    def _plan_route(self, bundle: UniWMInputBundle, *, reason: str) -> None:
+    def _plan_route(self, bundle: UniWMInputBundle, reason: str) -> None:
         if bundle.source_done:
             return
         
@@ -246,7 +252,7 @@ class UniWMWrapper:
         
         self.current_route = self.engine.predict_route(
             bundle,
-            self.config["max_route_steps"],
+            self.config["max_route_steps"]
         )
         self.current_route.steps[0].real_input_obs = bundle.current_observation
         

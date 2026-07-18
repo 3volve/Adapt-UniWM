@@ -138,17 +138,30 @@ class UniWMEngine:
         self._goal_tok_obs = self._image_to_vq_bpe_tokens(bundle.goal_observation)
         self.memory_count = 0
             
-        self._set_working_memory(bundle.current_observation, bundle.start_pose_str)
+        self.update_working_memory(bundle.current_observation, bundle.start_pose_str)
         
-    def store_and_update_working_memory(self, real_obs: Image.Image, start_pose_str: str, store_global_memory: bool = True):
+    def store_working_memory(self):
         if self._start_tok_obs is None or self._goal_tok_obs is None:
             raise AssertionError("Attempted to store step memory before encoding the goal or start observations.")
         
-        if store_global_memory:
-            if self._memory_manager.store_step_memory():
-                self.memory_count += 1
+        if self._memory_manager.store_step_memory():
+            self.memory_count += 1
             
-        self._set_working_memory(real_obs, start_pose_str)
+    def update_working_memory(self, real_obs: Image.Image, start_pose_str: str):
+        self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
+        
+        action_inputs = self._processor_inputs_from_prompt(
+            input_text=build_action_prompt(
+                start_pose_str=start_pose_str,
+                dxy_range=self.action_cfg.get_dxy_tuple(),
+                dyaw_range=self.action_cfg.get_dyaw_tuple(),
+                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
+            ),
+        )
+        
+        self._memory_manager.start_new_step()
+        self._context_stability = self._memory_manager.initialize_step_memory(action_inputs)
+        self._context_familiarity = self._memory_manager.compute_memory_familiarity()
     
     def get_current_context(self):
         return self._context_familiarity, self._context_stability 
@@ -176,7 +189,7 @@ class UniWMEngine:
     def predict_route(
         self,
         bundle: UniWMInputBundle,
-        max_steps: int
+        max_steps: int,
     ) -> RoutePrediction:
         current, actions = bundle.current_observation, bundle.action_text
         if isinstance(actions, str):
@@ -195,7 +208,8 @@ class UniWMEngine:
             temp_bundle = replace(
                 bundle,
                 action_text=None if actions is None else actions[route_idx],
-                current_observation=current
+                current_observation=current,
+                collision=bundle.collision if route_idx == 0 else False
             )
             
             step = self._predict_step(temp_bundle)
@@ -213,7 +227,7 @@ class UniWMEngine:
             current = step.visualization
             
             if route_idx < max_steps - 1:
-                self.store_and_update_working_memory(current, bundle.start_pose_str, False)
+                self.update_working_memory(current, bundle.start_pose_str)
                 
             if route_idx == max_steps - 1:
                 self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
@@ -299,13 +313,26 @@ class UniWMEngine:
         
         if isinstance(input_bundle.action_text, list):
             raise AssertionError("[UNEXPECTED ERROR] any forced actions should be converted to text by this point.")
+        
+        action_feedback = None
+        if input_bundle.collision and ("prev_action" in input_bundle.metadata):
+            prev_action = input_bundle.metadata["prev_action"]
+            action_feedback = [
+                f"The previously output action caused a collision: {prev_action}",
+                "Try a radically different action this time. Maybe try only turning in the next action?"
+            ]
+            
+            if "action_taken" in input_bundle.metadata:
+                action_taken = input_bundle.metadata["action_taken"]
+                action_feedback[0] += f" as a direct result of the {action_taken} part of the movement"
             
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
                 start_pose_str=input_bundle.start_pose_str,
                 dxy_range=self.action_cfg.get_dxy_tuple(),
                 dyaw_range=self.action_cfg.get_dyaw_tuple(),
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
+                prompt_style_idx=self.config["generation"]["prompt_style_idx"],
+                action_feedback=action_feedback
             )
         )
         
@@ -401,23 +428,7 @@ class UniWMEngine:
 
         self._optimizer.step()
 
-        return grad_norm    
-    
-    def _set_working_memory(self, real_obs: Image.Image, start_pose_str: str):
-        self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
-        
-        action_inputs = self._processor_inputs_from_prompt(
-            input_text=build_action_prompt(
-                start_pose_str=start_pose_str,
-                dxy_range=self.action_cfg.get_dxy_tuple(),
-                dyaw_range=self.action_cfg.get_dyaw_tuple(),
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
-            ),
-        )
-        
-        self._memory_manager.start_new_step()
-        self._context_stability = self._memory_manager.initialize_step_memory(action_inputs)
-        self._context_familiarity = self._memory_manager.compute_memory_familiarity()
+        return grad_norm
         
     def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
         use_memory = use_memory if use_memory is not None else (

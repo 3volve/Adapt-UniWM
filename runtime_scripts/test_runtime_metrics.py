@@ -10,60 +10,68 @@ from PIL import Image
 
 # This isn't intended as the final metric collection, this is only a temporary demonstration file to start seeing some outputs.
 
+def serialize_log_value(value: Any, path_parts: tuple[str | int, ...] = ()) -> Any:
+    # Skip / summarize any potentially large objects instead of serializing them:
+    if isinstance(value, Image.Image):
+        return {
+            "__omitted__": "PIL.Image",
+            "mode": value.mode,
+            "size": value.size,
+        }
+
+    if isinstance(value, np.ndarray):
+        return {
+            "__omitted__": "np.ndarray",
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+        }
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    if torch.is_tensor(value):
+        if value.numel() == 1:
+            return value.detach().cpu().item()
+        return {
+            "__omitted__": "torch.Tensor",
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+        }
+
+    if isinstance(value, bytes):
+        return {
+            "__omitted__": "bytes",
+            "length": len(value),
+        }
+
+    # Now start adding the normal objects
+    if isinstance(value, dict):
+        return {
+            key: serialize_log_value(child, (*path_parts, key))
+            for key, child in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            serialize_log_value(child, (*path_parts, index))
+            for index, child in enumerate(value)
+        ]
+
+    return value
+
+
+def append_runner_event(output_dir: Path, event: dict[str, Any]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    serialized_event = serialize_log_value(event, ("live_events",))
+    with (output_dir / "runner_events.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(serialized_event) + "\n")
+
+
 def save_runner_logs(
     logs: list[dict[str, Any]],
     output_dir: Path
 ):
-    def convert(value: Any, path_parts: tuple[str | int, ...]) -> Any:
-        # Skip / summarize any potentially large objects instead of serializing them:
-        if isinstance(value, Image.Image):
-            return {
-                "__omitted__": "PIL.Image",
-                "mode": value.mode,
-                "size": value.size,
-            }
-
-        if isinstance(value, np.ndarray):
-            return {
-                "__omitted__": "np.ndarray",
-                "shape": list(value.shape),
-                "dtype": str(value.dtype),
-            }
-
-        if isinstance(value, np.generic):
-            return value.item()
-
-        if torch.is_tensor(value):
-            if value.numel() == 1:
-                return value.detach().cpu().item()
-            return {
-                "__omitted__": "torch.Tensor",
-                "shape": list(value.shape),
-                "dtype": str(value.dtype),
-            }
-
-        if isinstance(value, bytes):
-            return {
-                "__omitted__": "bytes",
-                "length": len(value),
-            }
-        
-        # Now start adding the normal objects
-        if isinstance(value, dict):
-            return {
-                key: convert(child, (*path_parts, key))
-                for key, child in value.items()
-            }
-
-        if isinstance(value, list):
-            return [
-                convert(child, (*path_parts, index))
-                for index, child in enumerate(value)
-            ]
-        
-        return value
-
-    serialized_logs = convert(logs, ("logs",))
+    serialized_logs = serialize_log_value(logs, ("logs",))
 
     with (output_dir / "episode_logs.json").open("w", encoding="utf-8") as handle:
         json.dump(serialized_logs, handle, indent=2)
@@ -90,6 +98,7 @@ def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any
         steps = episode_log["steps"]
         divergences = [step["divergence"] for step in steps]
         replans = [int(step["replanned"]) for step in steps]
+        collisions = [step[""] for step in steps]
 
         row["step_count"] = len(steps)
         row["replanned_count"] = sum(replans)

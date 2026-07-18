@@ -182,7 +182,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
                 is_collision=is_collision,
             ))
             
-            if done:
+            if done or is_collision:
                 break
         
         return step_results
