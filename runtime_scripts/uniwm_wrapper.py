@@ -129,23 +129,32 @@ class UniWMWrapper:
         if transition_step and not is_stop_action(transition_step.action_text):
             divergence, mod_divergence = self.compute_divergence(transition_step.visualization, transition_step.real_next_obs)
             
-            self._update_modulators(transition_step, mod_divergence, observed_bundle.collision)
-            lr_scalar = self.viz_modulators.compute_step_update_weight()
-            modulator_state = self.viz_modulators.get_current_state()
-            
+            if observed_bundle.collision:
+                modulator_state = {
+                    "applied": False,
+                    "skip_reason": "collision",
+                }
+            else:
             # TODO: Decide if more complicated logic for determining whether to train or not is necessary
-            if not observed_bundle.collision:
+                self._update_modulators(transition_step, mod_divergence)
+                lr_scalar = self.viz_modulators.compute_step_update_weight()
+                modulator_state = self.viz_modulators.get_current_state()
+                
                 if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
-                    eval_log = self._run_eval_predict(observed_bundle, transition_step.real_next_obs, save_path_eval)
+                    eval_log = self._run_eval_predict(transition_step.input_bundle, real_obs, save_path_eval)
                     
                 if self.config["training_enabled"]:
                     training_log = self.engine.train_viz_step(transition_step, lr_scalar)
-                    self._update_viz_loss(training_log["base_loss"])
-                    training_log["_viz_loss_slow"], training_log["_viz_loss_fast"] = self._viz_loss_slow, self._viz_loss_fast
+                    self._update_viz_loss(training_log)
             
-            self.engine.update_working_memory(real_obs, observed_bundle.start_pose_str)
-            if not observed_bundle.collision and self.config["add_global_memories"]:
-                self.engine.store_working_memory()
+                if self.config["add_global_memories"]:
+                    self.engine.store_working_memory()
+                
+            self.engine.update_working_memory(
+                real_obs,
+                observed_bundle.start_pose_str,
+                not observed_bundle.collision
+            )
                 
         replan_reason = None
         replanned = False
@@ -153,10 +162,7 @@ class UniWMWrapper:
         if not observed_bundle.source_done and (observed_bundle.collision or divergence > float(self.config["full_replan_threshold"])):
             if observed_bundle.collision:
                 replan_reason = f"collision"
-                    
                 observed_bundle.metadata["prev_action"] = self.last_planned_action
-                if "action_taken" in transition_step.input_bundle.metadata:
-                    observed_bundle.metadata["action_taken"] = transition_step.input_bundle.metadata["action_taken"]
             else:
                 replan_reason = f"divergence>{self.config['full_replan_threshold']:.3f}"
                 
@@ -171,13 +177,13 @@ class UniWMWrapper:
             action=transition_step.action_text,
             context_familiarity=transition_step.context_familiarity,
             context_stability=transition_step.context_stability,
-            viz_used_memory=transition_step.viz_used_memory,
             divergence=divergence,
             replanned=replanned,
             replan_reason=replan_reason,
             modulator_state=modulator_state,
             training_logs=training_log,
             eval_logs=eval_log,
+            step_info=transition_step.logging_info,
             env_info=observed_bundle.metadata,
         )
 
@@ -290,18 +296,18 @@ class UniWMWrapper:
             
         return eval_log
     
-    def _update_viz_loss(self, new_loss: float) -> None:
-        new_loss = max(0.0, new_loss)
+    def _update_viz_loss(self, training_log: dict) -> None:
+        new_loss = max(0.0, float(training_log["base_loss"]))
 
         if self._viz_loss_fast is None or self._viz_loss_slow is None:
-            self._viz_loss_fast = new_loss
-            self._viz_loss_slow = new_loss
+            self._viz_loss_fast = self._viz_loss_slow = new_loss
+            training_log["_viz_loss_slow"] = training_log["_viz_loss_fast"] = new_loss
             return
         
-        self._viz_loss_slow = ema_smoothing(self._viz_loss_slow, new_loss, self.config["viz_loss_slow_ema"])
-        self._viz_loss_fast = ema_smoothing(self._viz_loss_fast, new_loss, self.config["viz_loss_fast_ema"])
+        training_log["_viz_loss_slow"] = self._viz_loss_slow = ema_smoothing(self._viz_loss_slow, new_loss, self.config["viz_loss_slow_ema"])
+        training_log["_viz_loss_fast"] = self._viz_loss_fast = ema_smoothing(self._viz_loss_fast, new_loss, self.config["viz_loss_fast_ema"])
         
-    def _update_modulators(self, pending_step: StepPrediction, divergence: float, is_collision: bool):
+    def _update_modulators(self, pending_step: StepPrediction, divergence: float):
         """ Calculates necessary values to feed to modulators
         
             Complex input values:
@@ -319,9 +325,7 @@ class UniWMWrapper:
         """
         if not self.config["enable_modulators"]:
             return
-        
-        self.viz_modulators.on_collision_or_unsafe(is_collision)
-        
+
         memory_confidence = min(self.engine.memory_count / int(self.config["min_memories_for_confidence"]), 1.0)
         memory_novelty_score = (1.0 - pending_step.context_familiarity) * memory_confidence
         self.viz_modulators.on_memory_novelty(memory_novelty_score)
@@ -336,8 +340,8 @@ class UniWMWrapper:
             self.viz_modulators.on_learning_progress(relative_progress * pending_step.context_stability)
             self.viz_modulators.on_persistent_error(persistent_error)
             
-        if not is_collision and divergence >= 0.0:
+        if divergence >= 0.0:
             self.viz_modulators.on_prediction_mismatch(divergence)
             self.viz_modulators.on_visual_uncertainty(pending_step.viz_entropy)
         
-        self.viz_modulators.ema_update_signals()
+        self.viz_modulators.update_global_signals()

@@ -23,8 +23,6 @@ ACTION_PROMPT_TEMPLATES = [
         "- Current Observation: <image> \n"
         "- Episode's starting pose position: {start_pose_str} \n"
         "Goal: Predict the next action to approach the goal observation"
-        "Previous action feedback (if any):\n"
-        "{action_feedback}"
     ),
     (
         "Task: Navigation Action Prediction\n"
@@ -48,8 +46,6 @@ ACTION_PROMPT_TEMPLATES = [
         "- Current Observation: <image>\n"
         "- Episode's starting pose position: {start_pose_str}\n"
         "Goal: Predict the next action to approach the goal observation"
-        "Previous action feedback (if any):\n"
-        "{action_feedback}"
     )
 ]
 
@@ -101,23 +97,17 @@ def build_action_prompt(
     start_pose_str: str,
     dxy_range: Tuple[float, float],
     dyaw_range: Tuple[float, float],
-    action_feedback: list[str] | None = None,
     prompt_style_idx: int = 0,
 ) -> str:
     if prompt_style_idx > len(ACTION_PROMPT_TEMPLATES):
         prompt_style_idx = 0
-        
-    feedback_str = ""
-    if action_feedback is not None:
-        feedback_str = '\n'.join(action_feedback)
 
     return ACTION_PROMPT_TEMPLATES[prompt_style_idx].format(
         start_pose_str  = start_pose_str,
         dxy_min         = f"{dxy_range[0]:.2f}",
         dxy_max         = f"{dxy_range[1]:.2f}",
         dyaw_min        = f"{dyaw_range[0]:.2f}",
-        dyaw_max        = f"{dyaw_range[1]:.2f}",
-        action_feedback = feedback_str,
+        dyaw_max        = f"{dyaw_range[1]:.2f}"
     )
 
 

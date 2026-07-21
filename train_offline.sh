@@ -1,9 +1,9 @@
 export NCCL_P2P_DISABLE=1
 export CUDA_VISIBLE_DEVICES=0,1
 
-TARGET_GPU=0,1
-CKPT="./output/recon,scand_offline_training/recon,scand_offline_trainingimage_seq_len-784-train-anole-hyper-train1val1lr0.0002-recon,scand-prompt_anole-42/checkpoint-4200"
-DATASET="recon,scand"
+TARGET_GPU=1
+CKPT="./checkpoints/base_ckpt"
+DATASET="go_stanford"
 Run_ID="$DATASET"_offline_training
 
 

@@ -69,7 +69,6 @@ class UniWMEngine:
         self._action_cfg: ActionCfg = ActionCfg()
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
-        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
         self.model: PeftModel | PeftMixedModel = loaded["model"]
 
         if hasattr(self.model, "gradient_checkpointing_enable"):
@@ -147,7 +146,7 @@ class UniWMEngine:
         if self._memory_manager.store_step_memory():
             self.memory_count += 1
             
-    def update_working_memory(self, real_obs: Image.Image, start_pose_str: str):
+    def update_working_memory(self, real_obs: Image.Image, start_pose_str: str, update_context_ema: bool = True):
         self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
         
         action_inputs = self._processor_inputs_from_prompt(
@@ -160,7 +159,7 @@ class UniWMEngine:
         )
         
         self._memory_manager.start_new_step()
-        self._context_stability = self._memory_manager.initialize_step_memory(action_inputs)
+        self._context_stability = self._memory_manager.initialize_step_memory(action_inputs, update_context_ema)
         self._context_familiarity = self._memory_manager.compute_memory_familiarity()
     
     def get_current_context(self):
@@ -227,7 +226,7 @@ class UniWMEngine:
             current = step.visualization
             
             if route_idx < max_steps - 1:
-                self.update_working_memory(current, bundle.start_pose_str)
+                self.update_working_memory(current, bundle.start_pose_str, False)
                 
             if route_idx == max_steps - 1:
                 self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
@@ -269,7 +268,7 @@ class UniWMEngine:
         self.model.train()
         self._optimizer.zero_grad(set_to_none=True)
         
-        memory_kwargs, _ = self._get_viz_kwargs(dict(self.config["training"]["visualization"]), prediction.viz_used_memory)
+        memory_kwargs, _ = self._get_viz_kwargs(dict(self.config["training"]["visualization"]), prediction.logging_info["viz_used_memory"])
 
         with torch.autocast(device_type="cuda", dtype=self.model.dtype):
             outputs = self.model(
@@ -314,31 +313,21 @@ class UniWMEngine:
         if isinstance(input_bundle.action_text, list):
             raise AssertionError("[UNEXPECTED ERROR] any forced actions should be converted to text by this point.")
         
-        action_feedback = None
-        if input_bundle.collision and ("prev_action" in input_bundle.metadata):
-            prev_action = input_bundle.metadata["prev_action"]
-            action_feedback = [
-                f"The previously output action caused a collision: {prev_action}",
-                "Try a radically different action this time. Maybe try only turning in the next action?"
-            ]
-            
-            if "action_taken" in input_bundle.metadata:
-                action_taken = input_bundle.metadata["action_taken"]
-                action_feedback[0] += f" as a direct result of the {action_taken} part of the movement"
-            
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
                 start_pose_str=input_bundle.start_pose_str,
                 dxy_range=self.action_cfg.get_dxy_tuple(),
                 dyaw_range=self.action_cfg.get_dyaw_tuple(),
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"],
-                action_feedback=action_feedback
+                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
             )
         )
         
-        action_text, act_entropy = input_bundle.action_text, 0
+        action_text, raw_action_text, act_entropy = input_bundle.action_text, input_bundle.action_text, 0
         if action_text is None:
-            action_text, act_entropy = self._predict_action(action_inputs)
+            action_text, raw_action_text, act_entropy = self._predict_action(action_inputs)
+            
+            if input_bundle.collision:
+                action_text = self._zero_act_translations(action_text)
 
         viz, viz_entropy, used_memory = None, 0, False
         if not is_stop_action(action_text):
@@ -352,9 +341,18 @@ class UniWMEngine:
             
             viz, viz_entropy, used_memory = self._predict_visualization(visualization_inputs)
             
-        return StepPrediction(input_bundle, action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability, used_memory)
+        step_output = StepPrediction(input_bundle, action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability)
+        step_output.logging_info["raw_action_text"] = raw_action_text
+        step_output.logging_info["viz_used_memory"] = used_memory
+        return step_output
+    
+    def _zero_act_translations(self, action_text) -> str:
+        import re
+        return re.compile(
+            r"(<(?:dx|dy)_(?:pos|neg)_bin_)\d+>"
+        ).sub(r"\g<1>00>", action_text)
 
-    def _predict_action(self, processor_inputs: Any) -> tuple[str, float]:
+    def _predict_action(self, processor_inputs: Any) -> tuple[str, str, float]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
         kwargs = self._memory_manager.get_action_kwargs(
             action_gen_kwargs=dict(self.config["generation"]["action"])
@@ -375,7 +373,7 @@ class UniWMEngine:
         scores = cast(tuple[torch.FloatTensor], outputs.scores)
         generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
     
-        decoded_text, token_position_info = decode_action(self.processor, generated_tokens, action_token_ids)
+        decoded_text, raw_text, token_position_info = decode_action(self.processor, generated_tokens, action_token_ids)
         
         entropy = 0.0
         if not is_stop_action(decoded_text) and len(token_position_info) > 0:
@@ -386,7 +384,7 @@ class UniWMEngine:
             
             entropy = float(entropy_tensor.mean().detach().cpu())
 
-        return decoded_text, entropy
+        return decoded_text, raw_text, entropy
 
     def _predict_visualization(self, processor_inputs: Any) -> tuple[Image.Image | None, float, bool]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
@@ -433,9 +431,9 @@ class UniWMEngine:
     def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
         use_memory = use_memory if use_memory is not None else (
                 self.memory_count >= self.config["memory"]["min_memories"]
-                and self._context_familiarity >= self.config["memory"]["similarity_threshold"]
-                and self._context_familiarity > self._context_stability + self.config["memory"]["stability_margin"]
             )
+        
+        print(f"[ENGINE] Getting visualization kwargs using use_memory set to: {use_memory}")
         
         if not use_memory:
             kwargs.pop("current_step", None)

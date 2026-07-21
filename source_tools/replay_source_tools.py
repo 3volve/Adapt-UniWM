@@ -34,7 +34,6 @@ class ReplayEpisodeAdapter(SourceAdapter):
     def __init__(
         self,
         data_root: str = "eval_data",
-        max_episode_steps: int = 100,
         manifest_path: str = "cfg/eval_dataset_manifest.json",
     ):
         root_dir = Path(__file__).resolve().parent.parent
@@ -44,7 +43,6 @@ class ReplayEpisodeAdapter(SourceAdapter):
         
         self.data_id = "replay"
         self.episode_cursor = 0
-        self.max_episode_steps = max_episode_steps
         self.current_episode: dict[str, Any] | None = None
         self.current_traj: dict[str, Any] | None = None
         self.image_paths: list[Path] = []
@@ -74,9 +72,6 @@ class ReplayEpisodeAdapter(SourceAdapter):
         trajectory_output: list[ReplayOutputBundle] = [self._pack_step(0, None, False)]
         for act_idx, action in enumerate(self.actions):
             trajectory_output.append(self._pack_step(act_idx, action, False))
-            
-            if act_idx >= self.max_episode_steps:
-                break
 
         return trajectory_output
     
@@ -104,9 +99,6 @@ class ReplayEpisodeAdapter(SourceAdapter):
         trajectory_output: list[ReplayOutputBundle] = []
         for act_idx, action in enumerate(next_actions):
             trajectory_output.append(self._pack_step((self.step_index + act_idx), action, done))
-            
-            if act_idx >= self.max_episode_steps:
-                break
             
         return trajectory_output
 
@@ -187,7 +179,7 @@ class ReplayUniWMFormatter(SourceFormatter):
 
     source_mode = "replay"
 
-    def __init__(self, adapter: ReplayEpisodeAdapter | None = None, bin_step: float = 0.01, img_size: int = 448):
+    def __init__(self, bin_step: float = 0.01, img_size: int = 448):
         self.bin_step: float = float(bin_step)
         self.image_size: tuple[int, int] = (int(img_size), int(img_size))
 

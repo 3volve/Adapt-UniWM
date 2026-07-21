@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import math
 from typing import Any
-from runtime_scripts.runtime_utils import validate_config, clamp, ema_decay
+from runtime_scripts.runtime_utils import validate_config, clamp, ema_decay, ema_smoothing
 
 
 REQUIRED_FIELDS: dict[str, list[str]] = {
     "decay_tau": ["ach", "ne"],
     "learning_mods": ["ach_base_weight", "ne_bias", "ne_range", "ne_curve_width"],
     "norm_scalers": ["novelty", "learning_surprise", "learning_progress", "persistent_loss"],
-    "event_strengths": ["pred_mismatch", "mem_novelty", "act_uncertainty", "viz_uncertainty", "learning_surprise", "learning_progress", "persistent_error", "collision"]
+    "event_strengths": ["pred_mismatch", "mem_novelty", "act_uncertainty", "viz_uncertainty", "learning_surprise", "learning_progress", "persistent_error"]
 }
 
 class ModulatorSystem:
@@ -20,11 +20,11 @@ class ModulatorSystem:
     deferred.
     """
     
-    _system_name: str  = "default"
-    _global_ach: float = 0.0
-    _global_ne: float  = 0.0
-    _step_ach: float   = 0.0
-    _step_ne: float    = 0.0
+    _system_name: str         = "default"
+    _global_ach: float | None = None
+    _global_ne: float | None  = None
+    _step_ach: float          = 0.0
+    _step_ne: float           = 0.0
     
     _step_events: dict[str, float] = {}
 
@@ -43,8 +43,8 @@ class ModulatorSystem:
             return
         
         self.step_id: int    = 0
-        self._global_ach = 0.0
-        self._global_ne  = 0.0
+        self._global_ach = None
+        self._global_ne  = None
         self._step_ach   = 0.0
         self._step_ne    = 0.0
         
@@ -149,33 +149,43 @@ class ModulatorSystem:
         self._step_ach += error * self.config["event_strengths"]["persistent_error"][0]
         self._step_ne  += error * self.config["event_strengths"]["persistent_error"][1]
 
-    def on_collision_or_unsafe(self, strength: float = 1.0) -> None:
-        """Record a collision or unsafe-state event for future aggregation."""
-        if not self.enabled or strength == 0.0:
+    def log_collision(self) -> None:
+        """Update logs of a collision."""
+        if not self.enabled:
             return
         
-        self._step_events["collision"] = strength
+        # Discard action uncertainty and other events collected before
+        # the transition outcome became known.
+        self._step_ach = 0.0
+        self._step_ne = 0.0
+        self._step_events = {
+            "collision": 1.0,
+            "update_weight": 0.0,
+        }
         
-        self._step_ach += strength * self.config["event_strengths"]["collision"][0]
-        self._step_ne  += strength * self.config["event_strengths"]["collision"][1]
-        
-    def ema_update_signals(self):
+    def update_global_signals(self):
         if not self.enabled:
             return
         
         self._clip_step_signals()
         
-        self._global_ach = ema_decay(
-            self._global_ach,
-            self._step_ach,
-            self.config["decay_tau"]["ach"]
-        )
+        if self._global_ach is None:
+            self._global_ach = self._step_ach
+        else:
+            self._global_ach = ema_smoothing(
+                self._global_ach,
+                self._step_ach,
+                self.config["decay_tau"]["ach"]
+            )
         
-        self._global_ne = ema_decay(
-            self._global_ne,
-            self._step_ne,
-            self.config["decay_tau"]["ne"]
-        )
+        if self._global_ne is None:
+            self._global_ne = self._step_ne
+        else:
+            self._global_ne = ema_smoothing(
+                self._global_ne,
+                self._step_ne,
+                self.config["decay_tau"]["ne"]
+            )
         
         self._clip_global_signals()
 
@@ -183,10 +193,6 @@ class ModulatorSystem:
         """Compute the current visual update weight from ACh-like and NE-like state."""
         if not self.enabled:
             return 1.0
-
-        if self._step_events.get("collision", 0.0) > 0.0:
-            self._step_events["update_weight"] = 0.0
-            return 0.0
 
         ne_mult = self._compute_ne_mult()
         ach_mult = self._compute_ach_mult()

@@ -13,11 +13,12 @@ engine:
 
   memory_bank_args:
     top_k: 3
-    memory_context_tau: 0.75
+    memory_context_tau: 0.5
+    verbose: false
 
   memory:
-    min_memories: 5
-    similarity_threshold: 0.6
+    min_memories: 3
+    similarity_threshold: 0.5
     stability_margin: 0.05
 
   load_model_cfg:
@@ -63,11 +64,6 @@ engine:
       ignore_index: -100
       log_prefix: "habitat_loss_"
 
-    memory:
-      min_memories: 5
-      similarity_threshold: 0.6
-      stability_margin: 0.05
-
 wrapper:
   max_route_steps: 10
   full_replan_threshold: 0.12
@@ -99,30 +95,25 @@ runner:
     data_path: data/datasets/instance_imagenav/hm3d/instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
     scenes_dir: data/scene_datasets
     seed: 100
-
-  formatter_params:
     bin_step: 0.01
-    linear_deadband: 0.01
-    angular_deadband: 0.01
-    img_size: 448
 
 modulators:
   visualization:
     decay_tau:
-      ach: 0.65
+      ach: 0.5
       ne:  0.6
 
     learning_mods:
-      ach_base_weight: 0.3
-      ne_bias:         0.7
-      ne_range:        [0.1, 1.0]
+      ach_base_weight: 0.5
+      ne_bias:         0.5
+      ne_range:        [0.25, 1.0]
       ne_curve_width:  0.6
     
     norm_scalers:
       novelty:           0.3
       learning_surprise: 0.4
       learning_progress: 0.4
-      persistent_loss:   4.0
+      persistent_loss:   12.0
 
     event_strengths:
       pred_mismatch:     [0.15, 0.25]
@@ -132,4 +123,3 @@ modulators:
       learning_surprise: [0.00, 0.35]
       learning_progress: [0.40, 0.00]
       persistent_error:  [0.20, 0.10]
-      collision:         [0.00, 0.25]

@@ -149,11 +149,11 @@ def decode_action(
     processor: Any,
     tokens: torch.Tensor,
     action_token_ids: list[list[int]],
-) -> tuple[str, list[tuple[int, list[int]]]]:
+) -> tuple[str, str, list[tuple[int, list[int]]]]:
     """Decode action text and locate selected generated action-bin token positions."""
-    decoded_text = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
-    if decoded_text.lower() == "stop":
-        return "stop", []
+    raw_text = processor.batch_decode(tokens, skip_special_tokens=False)[0].strip()
+    if raw_text.lower() == "stop":
+        return "stop", raw_text, []
         
     if tokens.dim() == 2:
         tokens = tokens[0]
@@ -180,7 +180,7 @@ def decode_action(
         
     decoded_text = f"Move by dx: {decoded_tokens[0]}, dy: {decoded_tokens[1]}, dyaw: {decoded_tokens[2]}"
         
-    return decoded_text, selected_token_positions
+    return decoded_text, raw_text, selected_token_positions
 
 def detach_processor_inputs(inputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {

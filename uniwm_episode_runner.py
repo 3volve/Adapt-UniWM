@@ -47,11 +47,6 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         
         # Need to normalize these two to ensure proper generation and conversion
         
-        if self.config["formatter_params"].get("img_size", False):
-            self.config["formatter_params"]["img_size"] = config["engine"]["load_model_cfg"]["img_size"]
-        if self.config["formatter_params"].get("bin_step", False):
-            self.config["formatter_params"]["bin_step"] = config["engine"]["action_token_generation"]["bin_step"]
-            
         validate_config(self.config, REQUIRED_FIELDS)
         self.full_output_path = full_output_path
 
@@ -61,7 +56,12 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             str(full_output_path)
         )
 
-        source_classes = self._load_source_classes(self.config["source_type"])
+        source_classes = self._load_source_classes(
+            self.config["source_type"],
+            float(config["engine"]["action_token_generation"]["bin_step"]),
+            int(config["engine"]["load_model_cfg"]["img_size"])
+        )
+        
         self.adapter: T_Adapter = source_classes[0]
         self.formatter: T_Formatter = source_classes[1]
 
@@ -82,6 +82,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         step_logs: list[dict[str, Any]] = []
         termination_reason = "max_episode_steps"
         steps_executed = 0
+        consecutive_no_ops = 0
 
         # Start running through steps with the returned UniWM Action str to start the loop
         for step_idx in range(self.config["max_episode_steps"]):
@@ -93,17 +94,28 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             # Convert returned actions list[str] to source-friendly version
             converted_actions: list[str] = self.formatter.convert_action(planned_action)
 
-            # Assuming there are any valid actions returned...
-            if len(converted_actions) > 0:
-                step_results = self.adapter.step(converted_actions)
+            # If there aren't any valid actions returned...
+            if len(converted_actions) <= 0:
+                print(f"[RUNNER] UniWM action: [{planned_action}] converted to a no-op. Replanning...")
+                consecutive_no_ops += 1
+                
+                if consecutive_no_ops >= 5:
+                    termination_reason = "repeated_no_op_actions"
+                    break
+                
+                self.wrapper.replan_route(converted_obs, "Empty converted actions")
+                continue
+            
+            consecutive_no_ops = 0
+            step_results = self.adapter.step(converted_actions)
 
-                # Convert adapter output obs to UniWMInputBundle
-                converted_obs = self.formatter.convert_from_source(step_results)
+            # Convert adapter output obs to UniWMInputBundle
+            converted_obs = self.formatter.convert_from_source(step_results)
 
             # Give new obs state to wrapper to update its state
             transition: TransitionRecord = self.wrapper.observe_transition(converted_obs)
-
-            steps_executed = step_idx + 1
+            
+            steps_executed += 1
             if self.config["log_every_step"]:
                 step_log = {
                     "step_idx": step_idx,
@@ -160,7 +172,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
 
-    def _load_source_classes(self, data_type: str) -> tuple[T_Adapter, T_Formatter]:
+    def _load_source_classes(self, data_type: str, bin_step: float, img_size: int) -> tuple[T_Adapter, T_Formatter]:
         source_tools_name = self.config.get("source_file_name")
 
         # Source-tools file default naming should be an allowed simplification
@@ -192,9 +204,11 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         if formatter_cls is None:
             raise AssertionError(f"Unable to find expected formatter class {formatter_class_name} from environment config path '{file_path}'")
 
-        habitat_max_steps = self.config["max_episode_steps"] * 5 # To account for the potential of multiple habitat actions per uniwm step.
-        adapter: T_Adapter = adapter_cls(max_episode_steps=habitat_max_steps, **self.config["adapter_params"])
-        formatter: T_Formatter = formatter_cls(adapter, **self.config["formatter_params"])
+        if self.config["adapter_params"].get("bin_step", False):
+            self.config["adapter_params"]["bin_step"] = bin_step
+
+        adapter: T_Adapter = adapter_cls(**self.config["adapter_params"])
+        formatter: T_Formatter = formatter_cls(bin_step, img_size)
         return adapter, formatter
 
 if __name__ == '__main__':

@@ -13,11 +13,11 @@ engine:
 
   memory_bank_args:
     top_k: 3
-    memory_context_tau: 0.75
+    memory_context_tau: 0.5
 
   memory:
-    min_memories: 5
-    similarity_threshold: 0.6
+    min_memories: 3
+    similarity_threshold: 0.5
     stability_margin: 0.05
 
   load_model_cfg:
@@ -51,7 +51,7 @@ engine:
   training: false
 
 wrapper:
-  max_route_steps: 8
+  max_route_steps: 5
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
@@ -68,7 +68,7 @@ wrapper:
 
 runner:
   source_type: "replay"
-  max_episode_steps: 100
+  max_episode_steps: 50
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: replay_source_tools
@@ -78,9 +78,5 @@ runner:
   adapter_params:
     data_root: eval_data
     manifest_path: cfg/eval_dataset_manifest.json
-
-  formatter_params:
-    bin_step: 0.01
-    img_size: 448
 
 modulators: false

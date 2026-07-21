@@ -301,7 +301,13 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                     
 
                 # Generate a sample for the visualization task
-                if "single_step_visualization" in self.config.modes and split != datasets.Split.TEST:
+                # The final frame remains the goal and Stop target, but is not a
+                # synthetic visualization transition from itself back to itself.
+                if (
+                    "single_step_visualization" in self.config.modes
+                    and split != datasets.Split.TEST
+                    and k < len(all_images) - 1
+                ):
                     sample = self._prepare_visualization_sample(k, len(all_images), all_images,
                                                                 traj_data["image_paths"], actions,
                                                                 traj_data["states_xy_yaw"], trajectory_ranges, range_profile)

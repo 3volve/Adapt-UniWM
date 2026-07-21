@@ -45,7 +45,7 @@ class StepPrediction:
     context_familiarity: float
     context_stability: float
     
-    viz_used_memory: bool
+    logging_info: dict[str, Any] = field(default_factory=dict)
 
     real_input_obs: Image.Image | None = None
     real_next_obs: Image.Image | None = None
@@ -66,13 +66,13 @@ class TransitionRecord:
     action: str
     context_familiarity: float
     context_stability: float
-    viz_used_memory: bool
     divergence: float
     replanned: bool
     replan_reason: str | None
     modulator_state: dict[str, Any] | None = None
     training_logs: dict[str, Any] | None = None
     eval_logs: dict[str, Any] | None = None
+    step_info: dict[str, Any] | None = None
     env_info: dict[str, Any] | None = None
 
     def to_log(self) -> dict[str, Any]:
@@ -82,13 +82,13 @@ class TransitionRecord:
             "action": self.action,
             "context_familiarity": self.context_familiarity,
             "context_stability": self.context_stability,
-            "viz_used_memory": self.viz_used_memory,
             "divergence": self.divergence,
             "replanned": self.replanned,
             "replan_reason": self.replan_reason,
             "modulator_state": None if self.modulator_state is None else dict(self.modulator_state),
             "training_logs": None if self.training_logs is None else dict(self.training_logs),
             "eval_logs": None if self.eval_logs is None else dict(self.eval_logs),
+            "step_info": None if self.step_info is None else dict(self.step_info),
             "env_info": None if self.env_info is None else dict(self.env_info),
         }
 

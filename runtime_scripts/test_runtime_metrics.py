@@ -98,10 +98,11 @@ def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any
         steps = episode_log["steps"]
         divergences = [step["divergence"] for step in steps]
         replans = [int(step["replanned"]) for step in steps]
-        collisions = [step[""] for step in steps]
+        collisions = [int(step["replan_reason"] == "collision") for step in steps]
 
         row["step_count"] = len(steps)
         row["replanned_count"] = sum(replans)
+        row["collisions_count"] = sum(collisions)
         row["divergence_mean"] = sum(divergences) / len(divergences) if divergences else 0.0
         row["divergence_min"] = min(divergences) if divergences else 0.0
         row["divergence_max"] = max(divergences) if divergences else 0.0
@@ -136,7 +137,6 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "action": step["action"],
                 "context_familiarity": step["context_familiarity"],
                 "context_stability": step["context_stability"],
-                "viz_used_memory": int(step["viz_used_memory"]),
                 "divergence": step["divergence"],
                 "replanned": int(step["replanned"]),
                 "replan_reason": step["replan_reason"],
@@ -146,6 +146,7 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row.update(_flatten_numeric_fields(step["modulator_state"], "modulator"))
             row.update(_flatten_numeric_fields(step["training_logs"], "training"))
             row.update(_flatten_numeric_fields(step["eval_logs"], "eval_logs"))
+            row.update(_flatten_numeric_fields(step["step_info"], "step_info"))
             row.update(_flatten_numeric_fields(step["env_info"], "env_info"))
             row.update(_flatten_numeric_fields(step["env_info"].get("metrics", {}), "metrics"))
 

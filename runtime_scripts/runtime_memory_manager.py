@@ -138,7 +138,7 @@ class RuntimeMemoryBankManager:
 
         return sum(top_similarities) / len(top_similarities)
 
-    def initialize_step_memory(self, processor_inputs) -> float:
+    def initialize_step_memory(self, processor_inputs, update_context_ema: bool) -> float:
         if not self.is_enabled or self.model.memory_bank_initialized:
             return 0.0
         
@@ -168,8 +168,9 @@ class RuntimeMemoryBankManager:
                 context_stability = float(similarity.clamp(0.0, 1.0).cpu())
 
                 tau = self.ema_tau
-                self.context_ema = (tau * self.context_ema + (1 - tau) * current_context).detach()
-            else:
+                current_context = (tau * self.context_ema + (1 - tau) * current_context).detach()
+                
+            if update_context_ema:
                 self.context_ema = current_context
                 
         return context_stability

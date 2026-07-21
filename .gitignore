@@ -12,7 +12,7 @@ models/
 cross.zip
 data/
 local_helper_tools/
-eval_data/
+eval_data*/
 *_step_frames/
 
 * copy.py

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import math, torch, os
+import math, torch, os, re
 from typing import Any, cast
 
 from habitat_sim import ActionSpec, ActuationSpec
@@ -104,11 +104,12 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         split: str,
         data_path: str,
         scenes_dir: str,
-        max_episode_steps: int,
         seed: int,
+        bin_step: float = 0.01,
         extra_overrides: list[str] = [],
     ):
         self.reset_src()
+        self.bin_step = float(bin_step)
 
         self.config = get_config(
             config_path=config_path,
@@ -117,7 +118,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
                 f"habitat.dataset.split={split}",
                 f"habitat.dataset.data_path={data_path}",
                 f"habitat.dataset.scenes_dir={scenes_dir}",
-                f"habitat.environment.max_episode_steps={int(max_episode_steps)}",
+                f"habitat.environment.max_episode_steps=0",
                 *extra_overrides,
             ],
         )
@@ -209,11 +210,15 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         
     def _update_action_specs(self) -> None:
         agent_id = self.sim.habitat_config.default_agent_id
-        spec = ActuationSpec(amount=self.sim.habitat_config.forward_step_size)
-        action_specs = { 
-            MOVE_BACKWARD_ID: ActionSpec("move_backward", spec),
-            MOVE_LEFT_ID: ActionSpec("move_left", spec),
-            MOVE_RIGHT_ID: ActionSpec("move_right", spec),
+        linear_spec = ActuationSpec(amount=self.bin_step)
+        angular_spec = ActuationSpec(amount=math.degrees(self.bin_step))
+        action_specs = {
+            HabitatSimActions.move_forward: ActionSpec("move_forward", linear_spec),
+            MOVE_BACKWARD_ID: ActionSpec("move_backward", linear_spec),
+            MOVE_LEFT_ID: ActionSpec("move_left", linear_spec),
+            MOVE_RIGHT_ID: ActionSpec("move_right", linear_spec),
+            HabitatSimActions.turn_left: ActionSpec("turn_left", angular_spec),
+            HabitatSimActions.turn_right: ActionSpec("turn_right", angular_spec),
         }
 
         self.sim.sim_config.agents[agent_id].action_space.update(action_specs)
@@ -259,45 +264,30 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
     START_POSE_TEMPLATE: str = "Starting Point Coordinate: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}\n"
 
     # TODO: bin_step should be set dynamically based on a universal config, not just a default which happens to match up to everything else.
-    def __init__(self, adapter: HabitatEpisodeAdapter, bin_step: float = 0.01, linear_deadband: float = 0.02, angular_deadband: float = 0.02, img_size: int = 448):
-        self.bin_step: float = float(bin_step)
-        self.linear_deadband: float = float(linear_deadband)
-        self.angular_deadband: float = float(angular_deadband)
+    def __init__(self, bin_step: float, img_size: int = 448):
         self.image_size: tuple[int, int] = (int(img_size), int(img_size))
 
-        # hab_cfg = adapter.habitat_config
-        # if hab_cfg is not None:
-        #     turn_step_size: float = hab_cfg.habitat.simulator.turn_angle
-        #     self.right_angle_turn_repeats = round(90 / turn_step_size)
-        #     self.forward_step_size: float = hab_cfg.habitat.simulator.forward_step_size
-
     def convert_action(self, action: str) -> list[str]:
-        dx, dy, dyaw, action = 0.0, 0.0, 0.0, action.strip()
-        is_stop = action.lower() == "stop"
-
-        dx: float = extract_bin_values(action, "dx", self.bin_step)
-        dy: float = extract_bin_values(action, "dy", self.bin_step)
-        dyaw: float = extract_bin_values(action, "dyaw", self.bin_step)
+        is_stop = action.strip().lower() == "stop"
 
         if is_stop:
             return [EXPECTED_HABITAT_ACTIONS["stop"]]
+        
+        dx_steps, dy_steps, dyaw_steps = self._extract_action_steps(action)
 
         all_actions: list[str] = []
-        # Add a forward movement
-        if dx >= self.linear_deadband:
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["forward"])
-        elif dx <= -self.linear_deadband:
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["backward"])
+        
+        if dx_steps:
+            action = "forward" if dx_steps > 0 else "backward"
+            all_actions.extend([EXPECTED_HABITAT_ACTIONS[action]] * abs(dx_steps))
 
-        if dy >= self.linear_deadband:
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["strafe_left"])
-        elif dy <= -self.linear_deadband:
-            all_actions.append(EXPECTED_HABITAT_ACTIONS["strafe_right"])
+        if dy_steps:
+            action = "strafe_left" if dy_steps > 0 else "strafe_right"
+            all_actions.extend([EXPECTED_HABITAT_ACTIONS[action]] * abs(dy_steps))
 
-        # Add a turn movement
-        if abs(dyaw) >= self.angular_deadband:
-            turn_action = EXPECTED_HABITAT_ACTIONS["left"] if dyaw > 0 else EXPECTED_HABITAT_ACTIONS["right"]
-            all_actions.append(turn_action)
+        if dyaw_steps:
+            action = "left" if dyaw_steps > 0 else "right"
+            all_actions.extend([EXPECTED_HABITAT_ACTIONS[action]] * abs(dyaw_steps))
 
         return all_actions
 
@@ -330,6 +320,27 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
             source_done=any(o.done for o in outputs),
             metadata=bundle_metadata,
         )
+        
+    def _extract_action_steps(self, action: str) -> tuple[int, int, int]:
+        match = re.compile(
+            r"^Move by dx: <dx_(?P<dx_sign>pos|neg)_bin_(?P<dx_steps>\d+)>, "
+            r"dy: <dy_(?P<dy_sign>pos|neg)_bin_(?P<dy_steps>\d+)>, "
+            r"dyaw: <dyaw_(?P<dyaw_sign>pos|neg)_bin_(?P<dyaw_steps>\d+)>$"
+        ).fullmatch(action.strip())
+        
+        if match is None:
+            raise ValueError(f"Invalid canonical action: {action!r}")
+
+        def signed_steps(axis: str) -> int:
+            steps = int(match[f"{axis}_steps"])
+            return steps if match[f"{axis}_sign"] == "pos" else -steps
+
+        return (
+            signed_steps("dx"),
+            signed_steps("dy"),
+            signed_steps("dyaw"),
+        )
+
 
     def extract_start_pose(self, episode: InstanceImageGoalNavEpisode | Episode) -> str:
         position: list[float] = episode.start_position
