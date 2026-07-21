@@ -1,23 +1,23 @@
 import os
 import pickle
 import random
+import re
 import numpy as np
 import datasets
 from PIL import Image
-import math
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 
 from scripts.action_utils import (
+    ActionTokenVocabulary,
     calculate_action_delta,
     action_to_text,
-    get_action_ranges,
-    DEFAULT_ACTION_RANGE_PROFILE,
 )
 
 
 class NavigationConfig(datasets.BuilderConfig):
     def __init__(self, tasks, modes, data_dir, **kwargs):
         self.action_range_profile = kwargs.pop("action_range_profile", None)
+        self.action_vocabulary = kwargs.pop("action_vocabulary", None)
         super(NavigationConfig, self).__init__(**kwargs)
         self.tasks = tasks
         self.modes = modes
@@ -37,6 +37,18 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         )
     ]
     DEFAULT_CONFIG_NAME = "processed_navigation"
+
+    @staticmethod
+    def _format_action(action, ranges) -> str:
+        action_text = action_to_text(action, bin_width=ranges["bin_step"])
+        emitted_tokens = set(re.findall(r"<d[^>]+>", action_text))
+        invalid_tokens = emitted_tokens - ranges["allowed_tokens"]
+        if invalid_tokens:
+            raise ValueError(
+                f"Trajectory action {action!r} encodes outside the allowed vocabulary: "
+                f"{sorted(invalid_tokens)}"
+            )
+        return action_text
 
     def _info(self):
         features = datasets.Features({
@@ -155,7 +167,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         current_path = all_image_paths[k]
         next_path = all_image_paths[k + 1] if k + 1 < len_seq else all_image_paths[k]
 
-        current_action = action_to_text(actions[k+1]) if k < len_seq - 1 else "Stop"
+        current_action = self._format_action(actions[k+1], ranges) if k < len_seq - 1 else "Stop"
 
         start_pose = states_xy_yaw[0]  # [x, y, yaw]
         start_pose_str = f"Starting Point Coordinate: x={start_pose[0]:.3f}, y={start_pose[1]:.3f}, yaw={start_pose[2]:.3f}\n"
@@ -184,7 +196,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         }
 
 # ###Key 2
-    def _prepare_reasoning_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
+    def _prepare_reasoning_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         current_img = all_images[k]
@@ -200,27 +212,24 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         
         action_history_text = ""
         for i in range(k):
-            action_history_text += f"{action_to_text(actions[i+1])}"
+            action_history_text += self._format_action(actions[i+1], ranges)
         
-        dxy_range = ranges['dxy']
-        dyaw_range = ranges['dyaw']
-        input_text = build_action_prompt(start_pose_str, dxy_range, dyaw_range)
+        input_text = build_action_prompt(start_pose_str, ranges["dx"], ranges["dy"], ranges["dyaw"])
         
         return {
             "input_text": input_text,
             "input_imgs": [start_img, goal_img, current_img],
             "input_img_paths": [start_path, goal_path, current_path],
             "gt_next_action": "",
-            "label_text": action_to_text(actions[k+1]) if k < len_seq - 1 else "Stop",
+            "label_text": self._format_action(actions[k+1], ranges) if k < len_seq - 1 else "Stop",
             "label_imgs": [],
             "label_img_paths": [],
             "train_task": "action_reasoning",
-            "range_profile": range_profile,
             "coords": states_xy_yaw[:k+1],
             "action_vector": actions[k+1] if k < len_seq - 1 else [0.0, 0.0, 0.0],
         }
     
-    def _prepare_task_level_sample(self, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
+    def _prepare_task_level_sample(self, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         start_path = all_image_paths[0]
@@ -246,22 +255,29 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "label_imgs": [goal_img],
             "label_img_paths": [goal_path],
             "train_task": "task_level_evaluation",
-            "range_profile": range_profile,
             "coords": states_xy_yaw,
             "action_vector": [],
-            "ranges": ranges,
         }
 
     def _generate_examples(self, traj_dirs, split):
         print(f"Current config modes: {self.config.modes}")
+        if self.config.action_vocabulary is None:
+            action_vocabulary = ActionTokenVocabulary.from_manifest("cfg/eval_dataset_manifest.json")
+        else:
+            action_vocabulary = ActionTokenVocabulary(self.config.action_vocabulary)
+        trajectory_ranges = {
+            axis: action_vocabulary.range_for(axis)
+            for axis in ("dx", "dy", "dyaw")
+        }
+        trajectory_ranges["bin_step"] = action_vocabulary.bin_step
+        trajectory_ranges["allowed_tokens"] = set(action_vocabulary.all_tokens)
+
         global_idx = 0
         for traj_dir in traj_dirs:
             # 1. Load and validate data for one trajectory
             traj_data = self._load_and_validate_trajectory(traj_dir)
             if not traj_data:
                 continue
-            range_profile = self.config.action_range_profile or DEFAULT_ACTION_RANGE_PROFILE
-            trajectory_ranges = get_action_ranges(self.config.action_range_profile)
 
             # 2. Prepare the definitive list of actions for this trajectory
             actions = self._prepare_actions(
@@ -279,7 +295,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 print(1)
                 sample = self._prepare_task_level_sample(len(all_images), all_images,
                                                          traj_data["image_paths"], actions,
-                                                         traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
+                                                         traj_data["states_xy_yaw"], trajectory_ranges)
                 sample['task'] = self.config.tasks[0]
                 sample['idx'] = global_idx
                 yield global_idx, sample
@@ -292,7 +308,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 if "action_reasoning" in self.config.modes and split != datasets.Split.TEST:
                     sample = self._prepare_reasoning_sample(k, len(all_images), all_images,
                                                             traj_data["image_paths"], actions,
-                                                            traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
+                                                            traj_data["states_xy_yaw"], trajectory_ranges)
 
                     sample['task'] = self.config.tasks[0]
                     sample['idx'] = global_idx
@@ -310,7 +326,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 ):
                     sample = self._prepare_visualization_sample(k, len(all_images), all_images,
                                                                 traj_data["image_paths"], actions,
-                                                                traj_data["states_xy_yaw"], trajectory_ranges, range_profile)
+                                                                traj_data["states_xy_yaw"], trajectory_ranges)
                     sample['task'] = self.config.tasks[0]
                     sample['idx'] = global_idx
                     yield global_idx, sample

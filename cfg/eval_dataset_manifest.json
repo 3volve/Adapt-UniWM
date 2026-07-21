@@ -1,4 +1,22 @@
 {
+  "action_token_vocabulary": {
+    "coordinate_frame": "agent_relative",
+    "bin_step": 0.01,
+    "axes": {
+      "dx": {
+        "allow_negative": false,
+        "max_bin": 60
+      },
+      "dy": {
+        "allow_negative": true,
+        "max_bin": 20
+      },
+      "dyaw": {
+        "allow_negative": true,
+        "max_bin": 208
+      }
+    }
+  },
   "go_stanford": {
     "episodes": [
       "no1vc_11_0_5",

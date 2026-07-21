@@ -16,7 +16,9 @@ ACTION_PROMPT_TEMPLATES = [
         "- `dyaw pos bin 26`: counterclockwise rotation of +0.26 radians.\n"
         "If the agent reaches the goal or believes it has reached, it should predict 'Stop'.\n"
         "Action Format: \n"
-        "-Range of dx, dy: [{dxy_min}, {dxy_max}], -Range of dyaw: [{dyaw_min}, {dyaw_max}]. -Output format: Move by dx: <dx>, dy: <dy>, dyaw: <dyaw>\n"
+        "- dx is forward-only and cannot be negative.\n"
+        "- Range of dx: [{dx_min}, {dx_max}]. Range of dy: [{dy_min}, {dy_max}]. Range of dyaw: [{dyaw_min}, {dyaw_max}].\n"
+        "- Output format: Move by dx: <dx>, dy: <dy>, dyaw: <dyaw>\n"
         "Inputs:\n"
         "- Start Observation: <image> \n"
         "- Goal Observation: <image> \n"
@@ -35,10 +37,12 @@ ACTION_PROMPT_TEMPLATES = [
         "- Output exactly one line.\n"
         "- Do not explain your reasoning.\n"
         "- Do not output any text before or after the action.\n"
-        "- Valid dx/dy range: [{dxy_min}, {dxy_max}].\n"
+        "- dx is forward-only and cannot be negative.\n"
+        "- Valid dx range: [{dx_min}, {dx_max}].\n"
+        "- Valid dy range: [{dy_min}, {dy_max}].\n"
         "- Valid dyaw range: [{dyaw_min}, {dyaw_max}].\n"
         "Example valid outputs:\n"
-        "- Move by dx: <dx_pos_bin_02>, dy: <dy_neg_bin_00>, dyaw: <dyaw_pos_bin_26>\n"
+        "- Move by dx: <dx_pos_bin_02>, dy: <dy_neg_bin_01>, dyaw: <dyaw_pos_bin_26>\n"
         "- Stop\n"
         "Inputs:\n"
         "- Start Observation: <image>\n"
@@ -95,7 +99,8 @@ VIZ_PROMPT_TEMPLATES = [
 
 def build_action_prompt(
     start_pose_str: str,
-    dxy_range: Tuple[float, float],
+    dx_range: Tuple[float, float],
+    dy_range: Tuple[float, float],
     dyaw_range: Tuple[float, float],
     prompt_style_idx: int = 0,
 ) -> str:
@@ -104,8 +109,10 @@ def build_action_prompt(
 
     return ACTION_PROMPT_TEMPLATES[prompt_style_idx].format(
         start_pose_str  = start_pose_str,
-        dxy_min         = f"{dxy_range[0]:.2f}",
-        dxy_max         = f"{dxy_range[1]:.2f}",
+        dx_min          = f"{dx_range[0]:.2f}",
+        dx_max          = f"{dx_range[1]:.2f}",
+        dy_min          = f"{dy_range[0]:.2f}",
+        dy_max          = f"{dy_range[1]:.2f}",
         dyaw_min        = f"{dyaw_range[0]:.2f}",
         dyaw_max        = f"{dyaw_range[1]:.2f}"
     )

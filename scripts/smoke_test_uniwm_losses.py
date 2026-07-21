@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.action_utils import ActionCfg
+from scripts.action_utils import ActionTokenVocabulary
 from scripts.uniwm_losses import (
     compute_action_token_loss,
     compute_image_codebook_discrepancy_loss,
@@ -82,14 +82,22 @@ def main() -> None:
         "ignore_index": -100,
         "log_prefix": "smoke_",
     }
-    action_cfg = ActionCfg(0.0, 0.0, 0.0, 0.0, 1.0)
+    action_vocabulary = ActionTokenVocabulary({
+        "coordinate_frame": "agent_relative",
+        "bin_step": 1.0,
+        "axes": {
+            "dx": {"allow_negative": False, "max_bin": 0},
+            "dy": {"allow_negative": False, "max_bin": 0},
+            "dyaw": {"allow_negative": False, "max_bin": 0},
+        },
+    })
 
     action_loss = compute_action_token_loss(
         logits,
         labels,
         tokenizer=tokenizer,
         ignore_index=-100,
-        action_config=action_cfg,
+        action_vocabulary=action_vocabulary,
     )
     image_loss = compute_image_codebook_discrepancy_loss(
         model=model,
@@ -105,7 +113,7 @@ def main() -> None:
         tokenizer=tokenizer,
         loss_config=loss_config,
         label_smoother=None,
-        action_config=action_cfg,
+        action_vocabulary=action_vocabulary,
     )
 
     assert action_loss.ndim == 0

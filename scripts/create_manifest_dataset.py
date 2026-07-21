@@ -50,13 +50,18 @@ def load_manifest(path: Path) -> dict[str, dict[str, list[str]]]:
     with path.open("r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    for dataset_name, dataset_info in manifest.items():
+    dataset_entries = {
+        name: info
+        for name, info in manifest.items()
+        if name != "action_token_vocabulary"
+    }
+    for dataset_name, dataset_info in dataset_entries.items():
         if "episodes" not in dataset_info:
             raise ValueError(f"Manifest entry for {dataset_name!r} is missing an 'episodes' key.")
         if not isinstance(dataset_info["episodes"], list):
             raise ValueError(f"Manifest entry for {dataset_name!r} has non-list 'episodes' value.")
 
-    return manifest
+    return dataset_entries
 
 
 def build_episode_index(dataset_root: Path, target_names: set[str]) -> dict[str, Path]:

@@ -22,11 +22,9 @@ from transformers.deepspeed import is_deepspeed_zero3_enabled
 from scripts.training_arguments import WrappedSeq2SeqTrainingArguments
 from scripts.postprocess_logits_utils import split_token_sequence
 from scripts.action_utils import (
+    ActionTokenVocabulary,
     extract_bin_values,
     action_to_text,
-    get_action_ranges,
-    DEFAULT_ACTION_RANGE_PROFILE,
-    ActionCfg,
 )
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.metrics import coords_to_evo_traj, eval_ate_rpe, ImageMetricsCalculator
@@ -340,7 +338,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             ignore_pad_token_for_loss: bool = True,
             wandb_run_dir: Optional[str] = None,
             image_loss_func: Optional[torch.nn.Module],
-            action_cfg: Optional[Dict] = None,
+            action_vocabulary: Optional[Dict] = None,
             loss_config: Optional[Dict] = None,
             **kwargs,
     ):
@@ -361,13 +359,9 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             "log_prefix": "",
         }
 
-        if action_cfg:
-            self.action_range_profile = action_cfg["range_profile"]
-            self.action_cfg = ActionCfg.from_dict(action_cfg)
-        else:
-            print("[WARNING] action_cfg not provided to Trainer. Using default values for loss calculation.")
-            self.action_range_profile = DEFAULT_ACTION_RANGE_PROFILE
-            self.action_cfg = ActionCfg(-2.46, 2.46, -2.82, 2.82, 0.01)
+        if action_vocabulary is None:
+            raise ValueError("CustomizeSeq2SeqTrainer requires an action-token vocabulary.")
+        self.action_vocabulary = ActionTokenVocabulary(action_vocabulary)
     
     def evaluate(
             self,
@@ -705,13 +699,13 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 loss_config["include_image_loss"] = False
 
             loss, loss_components = compute_supervised_uniwm_loss(
+                action_vocabulary=self.action_vocabulary,
                 model=unwrapped_model,
                 outputs=outputs,
                 batch={"labels": labels},
                 tokenizer=self.tokenizer,
                 loss_config=loss_config,
                 label_smoother=self.label_smoother,
-                action_config=self.action_cfg,
             )
 
             if self.state.global_step == self._globalstep_last_logged and self.state.global_step != 0:
@@ -1129,21 +1123,10 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
         all_actions = []
         all_decoded = []
 
-        if raw_item.get('range_profile'):
-            ranges = get_action_ranges(raw_item.get('range_profile'))
-            dxy_range, dyaw_range = ranges['dxy'], ranges['dyaw']
-            bin_step = raw_item.get('bin_step')
-        else:
-            if not self.action_cfg:
-                self.action_cfg = ActionCfg() # Create a default ActionCfg if None were set
-            dxy_range = (self.action_cfg.min_dxy, self.action_cfg.max_dxy)
-            dyaw_range = (self.action_cfg.min_dyaw, self.action_cfg.max_dyaw)
-            bin_step = self.action_cfg.bin_step
-
-
-        range_profile = self.action_range_profile('range_profile')
-        ranges = get_action_ranges(range_profile)
-        print(f"  Using range profile '{range_profile}' with ranges {ranges}")
+        dx_range = self.action_vocabulary.range_for("dx")
+        dy_range = self.action_vocabulary.range_for("dy")
+        dyaw_range = self.action_vocabulary.range_for("dyaw")
+        bin_step = self.action_vocabulary.bin_step
 
         for step in range(max_steps):
             step_log = {"step": step + 1}
@@ -1153,7 +1136,8 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
             # --- Action Prediction ---
             action_prompt = build_action_prompt(
                 start_pose_str=start_pose_str,
-                dxy_range=dxy_range,
+                dx_range=dx_range,
+                dy_range=dy_range,
                 dyaw_range=dyaw_range
             )
             action_inputs = self.tokenizer(text=[action_prompt], images=[start_img, goal_img, current_observation], return_tensors="pt").to(self.args.device)
@@ -1184,9 +1168,13 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
 
             all_actions.append(action_string)
 
-            current_pose[0] += dx
-            current_pose[1] += dy
-            current_pose[2] += dyaw
+            current_yaw = current_pose[2]
+            current_pose[0] += np.cos(current_yaw) * dx - np.sin(current_yaw) * dy
+            current_pose[1] += np.sin(current_yaw) * dx + np.cos(current_yaw) * dy
+            current_pose[2] = np.arctan2(
+                np.sin(current_yaw + dyaw),
+                np.cos(current_yaw + dyaw),
+            )
             predicted_coords.append(list(current_pose))
 
             # Termination condition

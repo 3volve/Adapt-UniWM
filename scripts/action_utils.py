@@ -1,144 +1,94 @@
 import math
 import re
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+
+ACTION_TOKEN_MANIFEST_KEY = "action_token_vocabulary"
+ACTION_TOKEN_CHECKPOINT_FILE = "action_tokens.json"
+ACTION_AXES = ("dx", "dy", "dyaw")
 
 # ===================================================================
-# 1. Action Range Constants
+# 1. Action Token Class
 # ===================================================================
-ACTION_RANGES = {
-    "tartan_drive": {
-        "dxy": (-2.05, 2.05),
-        "dyaw": (-0.17, 0.17)
-    },
-    "recon": {
-        "dxy": (-2.46, 2.46),
-        "dyaw": (-1.87, 1.87)
-    },
-    "scand": {
-        "dxy": (-0.7879, 0.8518),
-        "dyaw": (-0.48, 0.48)
-    },
-    "sacson": {
-        "dxy": (-1.35, 1.35),
-        "dyaw": (-2.82, 2.82)
-    },
-    "stanford": {
-        "dxy": (-0.18, 0.18),
-        "dyaw": (-0.63, 0.63)
-    },
-    "go_stanford": {
-        "dxy": (-0.18, 0.18),
-        "dyaw": (-0.63, 0.63)
-    },
-    "habitat": {
-        "dxy": (-0.25, 0.25),
-        "dyaw": (-0.5236, 0.5236)
-    }
-}
-DEFAULT_ACTION_RANGE_PROFILE = "go_stanford"
+class ActionTokenVocabulary:
+    """The single action-token vocabulary shared by training and inference."""
 
-# ===================================================================
-# 2. Action Calculation Utilities
-# ===================================================================
-
-class ActionCfg:
-    """Convenient action-relevant variable data class"""
-    min_dxy: float
-    max_dxy: float
-    min_dyaw: float
-    max_dyaw: float
-    bin_step: float
-
-    def __init__(self,
-        min_dxy: float | None = None,
-        max_dxy: float | None = None,
-        min_dyaw: float | None = None,
-        max_dyaw: float | None = None,
-        bin_step: float | None = None
-    ):
-        """
-        Convenience data-class that takes in a set of min/max dxy/dyaw and bin_step
-            Will instantiate with values from the DEFAULT_ACTION_RANGE_PROFILE for any values not given.
-        """
-        default_ranges = get_action_ranges(DEFAULT_ACTION_RANGE_PROFILE)
-
-        self.min_dxy = min_dxy or default_ranges["dxy"][0]
-        self.max_dxy = max_dxy or default_ranges["dxy"][1]
-        self.min_dyaw = min_dyaw or default_ranges["dyaw"][0]
-        self.max_dyaw = max_dyaw or default_ranges["dyaw"][1]
-        self.bin_step = bin_step or 0.01
-
-    @staticmethod
-    def from_dict(d: dict[str, float]):
-        return ActionCfg(d["min_dxy"], d["max_dxy"], d["min_dyaw"], d["max_dyaw"], d["bin_step"])
-
-    def get_dxy_tok_params(self) -> tuple[float, float, float]:
-        return self.min_dxy, self.max_dxy, self.bin_step
-
-    def get_dyaw_tok_params(self) -> tuple[float, float, float]:
-        return self.min_dyaw, self.max_dyaw, self.bin_step
-
-    def get_dxy_tuple(self) -> tuple[float, float]:
-        return self.min_dxy, self.max_dxy
-
-    def get_dyaw_tuple(self) -> tuple[float, float]:
-        return self.min_dyaw, self.max_dyaw
-    
-    def generate_tokens(self) -> list[str]:
-        tokens = []
-        dxy_bins_pos = int(math.floor(self.max_dxy / self.bin_step))
-        dxy_bins_neg = int(math.floor(abs(self.min_dxy) / self.bin_step))
-        
-        dyaw_bins_pos = int(math.floor(self.max_dyaw / self.bin_step))
-        dyaw_bins_neg = int(math.floor(abs(self.min_dyaw) / self.bin_step))
-        
-        tokens += [f"<dx_pos_bin_{i:02d}>" for i in range(0, dxy_bins_pos + 1)]
-        tokens += [f"<dx_neg_bin_{i:02d}>" for i in range(0, dxy_bins_neg + 1)]
-        tokens += [f"<dy_pos_bin_{i:02d}>" for i in range(0, dxy_bins_pos + 1)]
-        tokens += [f"<dy_neg_bin_{i:02d}>" for i in range(0, dxy_bins_neg + 1)]
-        tokens += [f"<dyaw_pos_bin_{i:02d}>" for i in range(0, dyaw_bins_pos + 1)]
-        tokens += [f"<dyaw_neg_bin_{i:02d}>" for i in range(0, dyaw_bins_neg + 1)]
-        
-        return tokens
-
-
-def get_action_ranges(range_profile: str | None) -> dict[str, tuple[float, float]]:
-    if range_profile is None:
-        return {
-            "dxy": ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dxy"],
-            "dyaw": ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dyaw"],
+    def __init__(self, spec: Mapping[str, Any]):
+        self.spec = spec
+        self.coordinate_frame = str(spec["coordinate_frame"])
+        self.bin_step = float(spec["bin_step"])
+        self.axes = {
+            axis: {
+                "allow_negative": bool(spec["axes"][axis]["allow_negative"]),
+                "max_bin": int(spec["axes"][axis]["max_bin"]),
+            }
+            for axis in ACTION_AXES
         }
 
-    if range_profile not in ACTION_RANGES:
-        raise KeyError(
-            f"Unknown action range profile '{range_profile}'. "
-            f"Known profiles: {sorted(ACTION_RANGES.keys())}"
-        )
+        expected_tokens = spec.get("tokens_by_axis", False)
+        if not expected_tokens:
+            expected_tokens: dict[str, list[str]] = {}
+            for axis, axis_spec in self.axes.items():
+                max_bin = axis_spec["max_bin"]
+                tokens = [f"<{axis}_pos_bin_{i:02d}>" for i in range(max_bin + 1)]
+                if axis_spec["allow_negative"]:
+                    tokens += [f"<{axis}_neg_bin_{i:02d}>" for i in range(1, max_bin + 1)]
+                expected_tokens[axis] = tokens
+            
+        self.tokens_by_axis = expected_tokens
 
-    return {
-        "dxy": ACTION_RANGES[range_profile]["dxy"],
-        "dyaw": ACTION_RANGES[range_profile]["dyaw"],
-    }
+    @classmethod
+    def from_manifest(cls, manifest_path: str | Path) -> "ActionTokenVocabulary":
+        path = Path(manifest_path)
+        with path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+            
+        return cls(manifest[ACTION_TOKEN_MANIFEST_KEY])
 
-def get_action_config(range_profile: str | None, bin_step: float | None = None) -> ActionCfg:
-    min_dxy = ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dxy"][0]
-    max_dxy = ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dxy"][1]
-    min_dyaw = ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dyaw"][0]
-    max_dyaw = ACTION_RANGES[DEFAULT_ACTION_RANGE_PROFILE]["dyaw"][1]
-    bin_step = bin_step or 0.01
+    @classmethod
+    def from_checkpoint(cls, checkpoint_path: str | Path) -> "ActionTokenVocabulary":
+        path = Path(checkpoint_path)
+        if path.is_dir():
+            path = path / ACTION_TOKEN_CHECKPOINT_FILE
+        with path.open("r", encoding="utf-8") as f:
+            return cls(json.load(f))
 
-    if range_profile not in ACTION_RANGES:
-        raise KeyError(
-            f"Unknown action range profile '{range_profile}'. "
-            f"Known profiles: {sorted(ACTION_RANGES.keys())}"
-        )
+    @property
+    def all_tokens(self) -> list[str]:
+        return [
+            token
+            for axis in ACTION_AXES
+            for token in self.tokens_by_axis[axis]
+        ]
 
-    if range_profile is not None:
-        min_dxy = ACTION_RANGES[range_profile]["dxy"][0]
-        max_dxy = ACTION_RANGES[range_profile]["dxy"][1]
-        min_dyaw = ACTION_RANGES[range_profile]["dyaw"][0]
-        max_dyaw = ACTION_RANGES[range_profile]["dyaw"][1]
+    def range_for(self, axis: str) -> tuple[float, float]:
+        axis_spec = self.axes[axis]
+        maximum = axis_spec["max_bin"] * self.bin_step
+        minimum = -maximum if axis_spec["allow_negative"] else 0.0
+        return minimum, maximum
 
-    return ActionCfg(min_dxy, max_dxy, min_dyaw, max_dyaw, bin_step)
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "coordinate_frame": self.coordinate_frame,
+            "bin_step": self.bin_step,
+            "axes": self.axes,
+            "tokens_by_axis": self.tokens_by_axis,
+        }
+
+    def save(self, output_dir: str | Path) -> Path:
+        output_path = Path(output_dir) / ACTION_TOKEN_CHECKPOINT_FILE
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+            f.write("\n")
+        return output_path
+
+# ===================================================================
+# 2. Action Utilities
+# ===================================================================
+
 
 def calculate_action_delta(current_pos_yaw, next_pos_yaw):
     """Calculates the [dx, dy, dyaw] action vector between two poses."""
@@ -147,17 +97,14 @@ def calculate_action_delta(current_pos_yaw, next_pos_yaw):
     delta_yaw = next_pos_yaw[2] - current_pos_yaw[2]
     return [float(delta_x), float(delta_y), float(delta_yaw)]
 
-# ===================================================================
-# 3. Action Tokenization Toolkit (Encoder, Decoder, Generator)
-# ===================================================================
 def action_to_text(action: list[float] | str, bin_width=0.01, epsilon=1e-5):
     """Encodes a numerical action vector [dx, dy, dyaw] into a token string."""
     if isinstance(action, str):
         return action
 
     def to_bin_token(val, prefix):
-        token_prefix = f"<{prefix}_pos_bin" if val >= 0 else f"<{prefix}_neg_bin"
         idx = int(math.floor(abs(val) / bin_width))
+        token_prefix = f"<{prefix}_pos_bin" if val >= 0 or idx == 0 else f"<{prefix}_neg_bin"
         return f"{token_prefix}_{idx:02d}>"
 
     dx_token = to_bin_token(action[0], "dx")
@@ -166,27 +113,9 @@ def action_to_text(action: list[float] | str, bin_width=0.01, epsilon=1e-5):
 
     return f"Move by dx: {dx_token}, dy: {dy_token}, dyaw: {dyaw_token}"
 
-def generate_bin_tokens(prefix, vmin, vmax, step):
-    """
-    Generates positive, negative, and a zero token.
-    """
-    tokens = []
-    
-    # Calculate and generate positive bins based on vmax
-    if vmax >= 0:
-        nbins_pos = int(math.floor(vmax / step))
-        tokens += [f"<{prefix}_pos_bin_{i:02d}>" for i in range(0, nbins_pos + 1)]
-        
-    # Calculate and generate negative bins based on vmin
-    if vmin < 0:
-        nbins_neg = int(math.floor(abs(vmin) / step))
-        tokens += [f"<{prefix}_neg_bin_{i:02d}>" for i in range(0, nbins_neg + 1)]
-        
-    return tokens
-
 def extract_bin_values(token_str: str, prefix: str, step_val: float) -> float:
-    pos_match = re.search(f"<{prefix}_pos_bin_(\d+)>", token_str)
-    neg_match = re.search(f"<{prefix}_neg_bin_(\d+)>", token_str)
+    pos_match = re.search(rf"<{prefix}_pos_bin_(\d+)>", token_str)
+    neg_match = re.search(rf"<{prefix}_neg_bin_(\d+)>", token_str)
     
     if pos_match:
         bin_val = float(pos_match.group(1))

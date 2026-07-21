@@ -13,7 +13,7 @@ from transformers.utils import is_peft_available
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
 
-from scripts.action_utils import generate_bin_tokens, ActionCfg
+from scripts.action_utils import ACTION_AXES, ActionTokenVocabulary
 
 
 def detach_loss_value(value: Tensor | float | int) -> float:
@@ -65,20 +65,17 @@ def compute_action_token_loss(
     *,
     tokenizer: Any,
     ignore_index: int,
-    action_config: ActionCfg,
+    action_vocabulary: ActionTokenVocabulary,
 ) -> Tensor:
     """
     Compute the action-token cross entropy
     """
     hf_tokenizer = _get_hf_tokenizer(tokenizer)
 
-    dx_tokens = generate_bin_tokens("dx", *action_config.get_dxy_tok_params())
-    dy_tokens = generate_bin_tokens("dy", *action_config.get_dxy_tok_params())
-    dyaw_tokens = generate_bin_tokens("dyaw", *action_config.get_dyaw_tok_params())
-
-    dx_ids = set(hf_tokenizer.convert_tokens_to_ids(dx_tokens))
-    dy_ids = set(hf_tokenizer.convert_tokens_to_ids(dy_tokens))
-    dyaw_ids = set(hf_tokenizer.convert_tokens_to_ids(dyaw_tokens))
+    action_ids = {
+        axis: set(hf_tokenizer.convert_tokens_to_ids(action_vocabulary.tokens_by_axis[axis]))
+        for axis in ACTION_AXES
+    }
 
     shifted_logits = logits[:, :-1, :].contiguous().view(-1, logits.shape[-1])
     shifted_labels = labels[:, 1:].contiguous().view(-1)
@@ -96,9 +93,9 @@ def compute_action_token_loss(
             )
         return None
 
-    dx_loss = compute_bin_ce(dx_ids)
-    dy_loss = compute_bin_ce(dy_ids)
-    dyaw_loss = compute_bin_ce(dyaw_ids)
+    dx_loss = compute_bin_ce(action_ids["dx"])
+    dy_loss = compute_bin_ce(action_ids["dy"])
+    dyaw_loss = compute_bin_ce(action_ids["dyaw"])
 
     # The current trainer computes stop-token loss but does not add it to the total.
     loss_components = [loss for loss in (dx_loss, dy_loss, dyaw_loss) if loss is not None]
@@ -146,14 +143,14 @@ def compute_image_codebook_discrepancy_loss(
     return torch.mean(torch.sum(label_sim_matrix * image_probs.to(torch.bfloat16), dim=-1))
 
 def compute_supervised_uniwm_loss(
+    action_vocabulary: ActionTokenVocabulary,
     *,
     model: Any,
     outputs: Any,
     batch: Mapping[str, Any],
     tokenizer: Any,
     loss_config: dict[str, Any],
-    label_smoother: Any | None = None,
-    action_config: ActionCfg | None = None,
+    label_smoother: Any | None = None
 ) -> tuple[Tensor, dict]:
     """
     Compute the combined UniWM supervised loss.
@@ -182,7 +179,7 @@ def compute_supervised_uniwm_loss(
             labels,
             tokenizer=tokenizer,
             ignore_index=ignore_index,
-            action_config=action_config or ActionCfg(),
+            action_vocabulary=action_vocabulary,
         )
         total_loss = total_loss + float(loss_config["action_loss_weight"]) * action_loss
         components[f"{log_prefix}action_loss"] = detach_loss_value(action_loss)

@@ -12,8 +12,16 @@ from torchvision import transforms
 import distributed as dist
 import torch.hub
 
+from scripts.action_utils import ACTION_AXES, ActionTokenVocabulary
+
 class VisualizationEvaluator():
     def __init__(self, **kwargs):
+        action_vocabulary = kwargs.get("action_vocabulary")
+        self.action_vocabulary = (
+            ActionTokenVocabulary(action_vocabulary)
+            if action_vocabulary is not None
+            else None
+        )
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.lpips_metric = lpips.LPIPS(net='alex').to(self.device)
         
@@ -126,18 +134,20 @@ class VisualizationEvaluator():
             if task == "action_reasoning":
                 pred_text = text_preds[idx]
                 gold_text = label_texts[idx]
+                num_action_total += 1
                 try:
-                    def extract_vals(s):
-                        dx = float(s.split('dx:')[1].split(',')[0].strip())
-                        dy = float(s.split('dy:')[1].split(',')[0].strip())
-                        dyaw = float(s.split('dyaw:')[1].strip())
-                        return dx, dy, dyaw
-                    pred_vals = extract_vals(pred_text)
-                    gold_vals = extract_vals(gold_text)
-                    if all(abs(p - g) <= t for p, g, t in zip(pred_vals, gold_vals, [0.1, 0.1, 0.2])):
+                    pred_vals = self._parse_action(pred_text)
+                    gold_vals = self._parse_action(gold_text)
+                    if pred_vals == "Stop" or gold_vals == "Stop":
+                        is_correct = pred_vals == gold_vals
+                    else:
+                        is_correct = all(
+                            abs(p - g) <= tolerance
+                            for p, g, tolerance in zip(pred_vals, gold_vals, [0.1, 0.1, 0.2])
+                        )
+                    if is_correct:
                         num_action_correct += 1
-                    num_action_total += 1
-                except Exception:
+                except ValueError:
                     continue
             elif task == "single_step_visualization":
                 pred_img_tensor = sketch_preds[idx]
@@ -188,3 +198,28 @@ class VisualizationEvaluator():
         # Compute overall task accuracy: for now, use navigation_simulation_task_acc (can be extended)
         metrics["eval_overall_task_acc"] = metrics["eval_navigation_simulation_task_acc"]
         return metrics
+
+    def _parse_action(self, text):
+        text = text.strip()
+        if text.lower() == "stop":
+            return "Stop"
+        if self.action_vocabulary is None:
+            raise ValueError("Action evaluation requires an action-token vocabulary.")
+
+        match = re.fullmatch(
+            r"Move by dx:\s*(<dx_(?:pos|neg)_bin_\d+>),\s*"
+            r"dy:\s*(<dy_(?:pos|neg)_bin_\d+>),\s*"
+            r"dyaw:\s*(<dyaw_(?:pos|neg)_bin_\d+>)",
+            text,
+        )
+        if match is None:
+            raise ValueError(f"Malformed action output: {text!r}")
+
+        values = []
+        for axis, token in zip(ACTION_AXES, match.groups()):
+            if token not in self.action_vocabulary.tokens_by_axis[axis]:
+                print(f"[UNEXPECTED ERROR] Action output contains disallowed token: {token}")
+            token_match = re.fullmatch(r"<[^_]+_(pos|neg)_bin_(\d+)>", token)
+            sign = 1.0 if token_match.group(1) == "pos" else -1.0
+            values.append(sign * int(token_match.group(2)) * self.action_vocabulary.bin_step)
+        return tuple(values)

@@ -24,9 +24,6 @@ engine:
   load_model_cfg:
     img_size: 448
 
-  action_token_generation:
-    bin_step: 0.01
-
   generation:
     prompt_style_idx: 0
     action:

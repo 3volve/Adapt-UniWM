@@ -11,7 +11,7 @@ import datasets
 datasets.builder.has_sufficient_disk_space = lambda needed_bytes, directory='.': True
 
 
-def load_data(dataset, data_dir, action_range_profile=None):
+def load_data(dataset, data_dir, action_range_profile=None, action_vocabulary=None):
     data_list = []
     dataset_str = dataset[0]
     dataset_names = dataset_str.split(',')
@@ -34,6 +34,7 @@ def load_data(dataset, data_dir, action_range_profile=None):
             modes=['single_step_visualization', 'action_reasoning', 'task_level_evaluation'], 
             data_dir=specific_data_path,
             action_range_profile=selected_range_profile,
+            action_vocabulary=action_vocabulary,
         )
         if os.environ.get('RANK', '0') == '0':
             print(f"Loaded {name}: {len(data['train'])} training samples.")

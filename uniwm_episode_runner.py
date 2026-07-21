@@ -44,6 +44,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         config = load_config(config_path)
         copy_base_config(config_path, full_output_path)
         self.config: dict[str, Any] = config.get("runner", {})
+        engine = UniWMEngine(data_id, config_path) if engine is None else engine
         
         # Need to normalize these two to ensure proper generation and conversion
         
@@ -51,14 +52,14 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self.full_output_path = full_output_path
 
         self.wrapper = UniWMWrapper(
-            UniWMEngine(data_id, config_path) if engine is None else engine,
+            engine,
             config_path,
             str(full_output_path)
         )
 
         source_classes = self._load_source_classes(
             self.config["source_type"],
-            float(config["engine"]["action_token_generation"]["bin_step"]),
+            engine.action_vocabulary.bin_step,
             int(config["engine"]["load_model_cfg"]["img_size"])
         )
         

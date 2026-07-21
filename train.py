@@ -6,8 +6,9 @@ import argparse
 import warnings
 import yaml
 import torch.distributed as dist
+from pathlib import Path
 
-from transformers import EarlyStoppingCallback, StopStringCriteria, set_seed
+from transformers import EarlyStoppingCallback, StopStringCriteria, TrainerCallback, set_seed
 from transformers.generation import StoppingCriteriaList
 
 from scripts.run_config import create_run_name
@@ -15,7 +16,7 @@ from scripts.training_arguments import WrappedSeq2SeqTrainingArguments
 from scripts.load_data import load_data, tokenize_dataset
 from scripts.load_model import load_model
 from scripts.evaluator import VisualizationEvaluator
-from scripts.action_utils import generate_bin_tokens
+from scripts.action_utils import ActionTokenVocabulary
 
 from transformers.utils import logging as hf_logging 
 
@@ -63,6 +64,17 @@ def find_latest_valid_checkpoint(ckpt_dir):
 
     print("[INFO] No valid checkpoint found.")
     return None
+
+
+class SaveActionTokenVocabularyCallback(TrainerCallback):
+    def __init__(self, action_vocabulary: ActionTokenVocabulary):
+        self.action_vocabulary = action_vocabulary
+
+    def on_save(self, args, state, control, **kwargs):
+        if state.is_world_process_zero:
+            checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+            self.action_vocabulary.save(checkpoint_dir)
+        return control
 
 def init(args):
     os.environ[
@@ -196,6 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--init_lora_ckpt', type=str, default=None, help='Initialize trainable LoRA weights from this checkpoint without resuming Trainer state.')
     parser.add_argument('--load_last_checkpoint', action='store_true')
     parser.add_argument('--action_range_profile', type=str, default=None, help='Optional explicit action-range profile to use instead of the dataset default.')
+    parser.add_argument('--action_token_manifest', type=str, default='cfg/eval_dataset_manifest.json', help='Vocabulary source for a fresh training run.')
 
     # training arguments
     parser.add_argument('--do_train', action='store_true')
@@ -251,16 +264,24 @@ if __name__ == '__main__':
     training_args = _add_bfloat16_to_args(args, training_args)
     args.resume_ckpt_path = training_args.load_weights_from
 
-    selected_action_range_profile = args.action_range_profile or training_cfg['action_token_generation'].get('range_profile')
+    action_vocabulary_checkpoint = args.resume_ckpt_path or args.init_lora_ckpt or args.model_ckpt
+    if action_vocabulary_checkpoint:
+        print(f"Loading action-token vocabulary from checkpoint: {action_vocabulary_checkpoint}")
+        action_vocabulary = ActionTokenVocabulary.from_checkpoint(action_vocabulary_checkpoint)
+    else:
+        print(f"Loading action-token vocabulary from manifest: {args.action_token_manifest}")
+        action_vocabulary = ActionTokenVocabulary.from_manifest(args.action_token_manifest)
+
+    selected_action_range_profile = args.action_range_profile
     if selected_action_range_profile:
-        print(f"Using explicit action range profile: {selected_action_range_profile}")
-        training_cfg['action_token_generation']['range_profile'] = selected_action_range_profile
+        print(f"Using explicit dataset range-profile label: {selected_action_range_profile}")
 
     print(f'Preparing the {args.data} dataset... ')
     data = load_data(
         dataset=args.data,
         data_dir=args.data_dir,
         action_range_profile=selected_action_range_profile,
+        action_vocabulary=action_vocabulary.to_dict(),
     )
 
     if len(data) == 2:
@@ -290,36 +311,14 @@ if __name__ == '__main__':
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
-    # def generate_bin_tokens(prefix, vmin, vmax, step):
-    #     nbins = int((vmax - vmin) / step) + 1
-    #     return [f"<{prefix}_bin_{i:02d}>" for i in range(nbins)]
-    
-    bin_tokens = []
-    if args.model_ckpt is None:
-        # --- Read action token settings from the YAML config ---
-        print("Reading action token generation settings from config...")
-        action_cfg = training_cfg['action_token_generation']
-        MIN_DXY = action_cfg['min_dxy']
-        MAX_DXY = action_cfg['max_dxy']
-        MIN_DYAW = action_cfg['min_dyaw']
-        MAX_DYAW = action_cfg['max_dyaw']
-        BIN_STEP = action_cfg['bin_step']
-
-        print(f"DX/DY Range for Vocabulary: [{MIN_DXY}, {MAX_DXY}]")
-        print(f"DYAW Range for Vocabulary: [{MIN_DYAW}, {MAX_DYAW}]")
-        
-        # --- Generate vocabulary of action tokens ---
-        print("Generating vocabulary of action tokens...")
-        
-        bin_tokens += generate_bin_tokens("dx", MIN_DXY, MAX_DXY, BIN_STEP)
-        bin_tokens += generate_bin_tokens("dy", MIN_DXY, MAX_DXY, BIN_STEP)
-        bin_tokens += generate_bin_tokens("dyaw", MIN_DYAW, MAX_DYAW, BIN_STEP)
-        
-        print(f"Generated a total of {len(bin_tokens)} action tokens.")
-
-
+    bin_tokens = action_vocabulary.all_tokens
     existing_vocab = set(processor.tokenizer.get_vocab().keys())
     new_tokens = [t for t in bin_tokens if t not in existing_vocab]
+
+    if action_vocabulary_checkpoint and new_tokens:
+        raise ValueError(
+            f"Checkpoint tokenizer is missing {len(new_tokens)} action tokens recorded in action_tokens.json."
+        )
 
     # new_tokens.append("<IMS>")
     # new_tokens.append("<IME>")
@@ -350,6 +349,10 @@ if __name__ == '__main__':
             else:
                 # Standard model without PEFT
                 model.model.resize_token_embeddings(len(processor.tokenizer))
+
+    action_vocabulary.validate_tokenizer(processor.tokenizer)
+    if training_args.local_rank <= 0:
+        action_vocabulary.save(training_args.output_dir)
 
     # Remove this line - it's causing the error
     # model.model.resize_token_embeddings(len(processor.tokenizer))
@@ -404,7 +407,10 @@ if __name__ == '__main__':
     trainer = trainer_type(
         args=training_args,
         model=model,
-        evaluator=VisualizationEvaluator(args=args),
+        evaluator=VisualizationEvaluator(
+            args=args,
+            action_vocabulary=action_vocabulary.to_dict(),
+        ),
         # We name it "evaluator" while the hugging face call it "Metric",
         # they are all f(predictions: List, references: List of dict) = eval_result: dict
         tokenizer=processor,
@@ -413,9 +419,9 @@ if __name__ == '__main__':
         eval_dataset=tokenized_data['eval'] if 'eval' in tokenized_data.keys() else tokenized_data['test'],
         eval_examples=eval_split if 'eval' in tokenized_data.keys() else test_split,
         wandb_run_dir=wandb.run.dir if "wandb" in training_args.report_to and training_args.local_rank <= 0 else None,
-        # callbacks=[early_stopping_callback],  # currently disabled early stopping for now
+        callbacks=[SaveActionTokenVocabularyCallback(action_vocabulary)],
         image_loss_func=not args.no_perceptual_loss, 
-        action_cfg=training_cfg.get('action_token_generation'),
+        action_vocabulary=action_vocabulary.to_dict(),
     )
 
     # if not dist.is_initialized() or dist.get_rank() == 0:
@@ -432,6 +438,8 @@ if __name__ == '__main__':
     if args.do_train:
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()  # Saves the tokenizer too for easy upload
+        if trainer.is_world_process_zero():
+            action_vocabulary.save(training_args.output_dir)
 
         metrics = train_result.metrics
         max_train_samples = len(tokenized_data['train'])

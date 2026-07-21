@@ -20,10 +20,8 @@ from runtime_scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, Rout
 from scripts.load_model import load_model
 from scripts.prompt_builder import build_action_prompt, build_viz_prompt
 from scripts.action_utils import (
-    generate_bin_tokens,
-    get_action_ranges,
-    get_action_config,
-    ActionCfg
+    ACTION_AXES,
+    ActionTokenVocabulary,
 )
 from runtime_scripts.runtime_utils import (
     decode_action,
@@ -38,7 +36,6 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
     "load_model_args": ["model", "image_seq_length", "device", "use_memory_bank_inference", "update_model_on_save"],
     "memory_bank_args": ["top_k", "memory_context_tau"],
     "memory": ["min_memories", "similarity_threshold", "stability_margin"],
-    "action_token_generation": ["bin_step"],
     "generation": {
         "action": ["multimodal_generation_mode", "current_substep", "max_new_tokens"],
         "visualization": ["multimodal_generation_mode", "current_substep"]
@@ -52,21 +49,16 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
 
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
-    @property
-    def action_cfg(self):
-        return self._action_cfg
-    
-    @action_cfg.setter
-    def action_cfg(self, new_cfg_target: str) -> None:
-        self._action_cfg = get_action_config(new_cfg_target)
-        
 
     def __init__(self, data_id: str, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
+        del data_id
         self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
 
         self.device = self.config["load_model_args"]["device"]
-        self._action_cfg: ActionCfg = ActionCfg()
+        self.action_vocabulary = ActionTokenVocabulary.from_checkpoint(
+            self.config["load_model_args"]["model_ckpt"]
+        )
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
         self.model: PeftModel | PeftMixedModel = loaded["model"]
@@ -83,7 +75,7 @@ class UniWMEngine:
         self.processor = cast(ChameleonProcessor, raw_processor)
         self.tokenizer = cast(PreTrainedTokenizerFast, raw_processor.tokenizer)
         self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
-        self._configure_action_tokenizer(data_id)
+        self._configure_action_tokenizer()
 
         using_memory = self.config["load_model_args"]["use_memory_bank_inference"]
         self._memory_manager = RuntimeMemoryBankManager(
@@ -111,7 +103,7 @@ class UniWMEngine:
     def save_online_training_state(self, output_dir: str | Path) -> Path:
         """Save the current online-adapted weights and optimizer state."""
         if self.config["load_model_args"]["update_model_on_save"]:
-            output_path = self.config["load_model_args"]["model_ckpt"]
+            output_path = Path(self.config["load_model_args"]["model_ckpt"])
         else:
             output_path = Path(output_dir)
 
@@ -121,6 +113,7 @@ class UniWMEngine:
         self.model.save_pretrained(str(output_path))
         if hasattr(self.processor, "save_pretrained"):
             self.processor.save_pretrained(output_path)
+        self.action_vocabulary.save(output_path)
 
         torch.save(
             {
@@ -152,8 +145,9 @@ class UniWMEngine:
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
                 start_pose_str=start_pose_str,
-                dxy_range=self.action_cfg.get_dxy_tuple(),
-                dyaw_range=self.action_cfg.get_dyaw_tuple(),
+                dx_range=self.action_vocabulary.range_for("dx"),
+                dy_range=self.action_vocabulary.range_for("dy"),
+                dyaw_range=self.action_vocabulary.range_for("dyaw"),
                 prompt_style_idx=self.config["generation"]["prompt_style_idx"]
             ),
         )
@@ -281,11 +275,11 @@ class UniWMEngine:
             loss_cfg["action_loss_weight"] = 0.0
 
             loss, components = compute_supervised_uniwm_loss(
+                self.action_vocabulary,
                 model=self.model,
                 outputs=outputs,
-                batch=training_inputs ,
-                tokenizer=self.processor,
-                loss_config=loss_cfg
+                batch=training_inputs,
+                tokenizer=self.processor
             )
 
         grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
@@ -316,8 +310,9 @@ class UniWMEngine:
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
                 start_pose_str=input_bundle.start_pose_str,
-                dxy_range=self.action_cfg.get_dxy_tuple(),
-                dyaw_range=self.action_cfg.get_dyaw_tuple(),
+                dx_range=self.action_vocabulary.range_for("dx"),
+                dy_range=self.action_vocabulary.range_for("dy"),
+                dyaw_range=self.action_vocabulary.range_for("dyaw"),
                 prompt_style_idx=self.config["generation"]["prompt_style_idx"]
             )
         )
@@ -364,11 +359,10 @@ class UniWMEngine:
                 self.model.generate(**processor_inputs, **kwargs)
             )
             
-        action_token_ids = [
-            cast(list[int], self.tokenizer.convert_tokens_to_ids(generate_bin_tokens("dx", *self.action_cfg.get_dxy_tok_params()))),
-            cast(list[int], self.tokenizer.convert_tokens_to_ids(generate_bin_tokens("dy", *self.action_cfg.get_dxy_tok_params()))),
-            cast(list[int], self.tokenizer.convert_tokens_to_ids(generate_bin_tokens("dyaw", *self.action_cfg.get_dyaw_tok_params())))
-        ]
+        action_token_ids = [cast(
+                list[int],
+                self.tokenizer.convert_tokens_to_ids(self.action_vocabulary.tokens_by_axis[axis])
+            ) for axis in ACTION_AXES]
         
         scores = cast(tuple[torch.FloatTensor], outputs.scores)
         generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
@@ -561,41 +555,3 @@ class UniWMEngine:
             entropy = entropy[position_mask]
             
         return entropy.new_zeros(1) if entropy.numel() == 0 else entropy
-
-    def _configure_action_tokenizer(self, data_id: str) -> None:
-        self.action_cfg = data_id
-        self.action_cfg.bin_step = float(self.config["action_token_generation"]["bin_step"])
-
-        existing_vocab = set(self.tokenizer.get_vocab().keys())
-        new_tokens: list[Any] = [token for token in self.action_cfg.generate_tokens() if token not in existing_vocab]
-        if not new_tokens:
-            return
-
-        self.tokenizer.add_tokens(new_tokens, special_tokens=True)
-        tokenizer_size = len(self.tokenizer)
-
-        if hasattr(self.model, "model") and hasattr(self.model.model, "lm_head"):
-            lm_head = self.model.model.lm_head
-            if hasattr(lm_head, "base_layer") or "ModulesToSaveWrapper" in str(type(lm_head)):
-                from peft.utils.other import ModulesToSaveWrapper
-
-                if hasattr(lm_head, "base_layer"):
-                    self.model.model.lm_head = lm_head.base_layer
-                elif hasattr(lm_head, "original_module"):
-                    self.model.model.lm_head = lm_head.original_module
-
-                self.model.model.resize_token_embeddings(tokenizer_size)
-                self.model.model.lm_head = ModulesToSaveWrapper(self.model.model.lm_head, "default")
-                return
-
-        resize = getattr(self.model, "resize_token_embeddings", None)
-        if callable(resize):
-            resize(tokenizer_size)
-            return
-
-        inner_resize = getattr(getattr(self.model, "model", None), "resize_token_embeddings", None)
-        if callable(inner_resize):
-            inner_resize(tokenizer_size)
-            return
-
-        raise AttributeError("Loaded model does not provide resize_token_embeddings().")

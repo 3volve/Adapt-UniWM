@@ -8,7 +8,7 @@ manifest="./eval_dataset_manifest.json"
 
 mkdir -p data && cd data
 
-for split in $(python -c "import json; print(' '.join(json.load(open('../${manifest}')).keys()))"); do
+for split in $(python -c "import json; data=json.load(open('../${manifest}')); print(' '.join(k for k, v in data.items() if 'episodes' in v))"); do
     echo "[DOWNLOAD] ${split}.tar"
     wget -c "https://huggingface.co/datasets/fly1113/UniWM_Dataset/resolve/main/${split}.tar"
 
