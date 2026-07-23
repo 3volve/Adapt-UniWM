@@ -17,6 +17,11 @@ from scripts.load_data import load_data, tokenize_dataset
 from scripts.load_model import load_model
 from scripts.evaluator import VisualizationEvaluator
 from scripts.action_utils import ActionTokenVocabulary
+from scripts.training_statistics import (
+    format_summary,
+    summarize_training_run,
+    write_training_statistics,
+)
 
 from transformers.utils import logging as hf_logging 
 
@@ -67,13 +72,27 @@ def find_latest_valid_checkpoint(ckpt_dir):
 
 
 class SaveActionTokenVocabularyCallback(TrainerCallback):
-    def __init__(self, action_vocabulary: ActionTokenVocabulary):
+    def __init__(self, action_vocabulary):
         self.action_vocabulary = action_vocabulary
 
-    def on_save(self, args, state, control, **kwargs):
+    def on_save(self, args, state, control, model=None, **kwargs):
         if state.is_world_process_zero:
             checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+
+            if model is not None:
+                model.save_pretrained(
+                    checkpoint_dir,
+                    save_embedding_layers=False,
+                )
             self.action_vocabulary.save(checkpoint_dir)
+
+        return control
+
+class SaveTrainingStatisticsCallback(TrainerCallback):
+    def on_save(self, args, state, control, model=None, **kwargs):
+        if state.is_world_process_zero:
+            checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+            write_training_statistics(checkpoint_dir, state)
         return control
 
 def init(args):
@@ -114,6 +133,9 @@ def init(args):
         save_steps=training_cfg['save']['save_steps'] if training_cfg['save']['save_strategy'] == "steps" else 2000,
         save_total_limit=40,
         seed=args.seed,
+        metric_for_best_model="eval_visual_lpips_gain_over_copy",
+        greater_is_better=True,
+        load_best_model_at_end=True,
         # note: for supervised tuning
         #############################
         learning_rate=sup_hyper['lr'] if sup_hyper else 0,
@@ -207,7 +229,6 @@ if __name__ == '__main__':
     parser.add_argument('--model_ckpt', type=str, default=None, help='path of the checkpoint')
     parser.add_argument('--init_lora_ckpt', type=str, default=None, help='Initialize trainable LoRA weights from this checkpoint without resuming Trainer state.')
     parser.add_argument('--load_last_checkpoint', action='store_true')
-    parser.add_argument('--action_range_profile', type=str, default=None, help='Optional explicit action-range profile to use instead of the dataset default.')
     parser.add_argument('--action_token_manifest', type=str, default='cfg/eval_dataset_manifest.json', help='Vocabulary source for a fresh training run.')
 
     # training arguments
@@ -217,6 +238,12 @@ if __name__ == '__main__':
     parser.add_argument('--do_rollout_eval', action='store_true')
     parser.add_argument('--cfg_path', type=str, default='cfg')
     parser.add_argument('--patience', type=int, default=5)
+    parser.add_argument(
+        '--max_eval_samples',
+        type=int,
+        default=None,
+        help='Limit the held-out split for a fast, repeatable checkpoint evaluation.',
+    )
 
     # input format argument
     parser.add_argument('--input_format', type=str, default="anole")
@@ -272,15 +299,10 @@ if __name__ == '__main__':
         print(f"Loading action-token vocabulary from manifest: {args.action_token_manifest}")
         action_vocabulary = ActionTokenVocabulary.from_manifest(args.action_token_manifest)
 
-    selected_action_range_profile = args.action_range_profile
-    if selected_action_range_profile:
-        print(f"Using explicit dataset range-profile label: {selected_action_range_profile}")
-
     print(f'Preparing the {args.data} dataset... ')
     data = load_data(
         dataset=args.data,
         data_dir=args.data_dir,
-        action_range_profile=selected_action_range_profile,
         action_vocabulary=action_vocabulary.to_dict(),
     )
 
@@ -299,7 +321,7 @@ if __name__ == '__main__':
             eval_split = eval_split.select(list(range(min(10, len(eval_split)))))
         test_split = test_split.select(list(range(min(10, len(test_split)))))
 
-    model_processor = load_model(args, training_cfg)
+    model_processor = load_model(args, training_cfg, action_vocabulary)
     model, processor = model_processor['model'], model_processor["processor"]
 
     if hasattr(model, "config"):
@@ -350,7 +372,6 @@ if __name__ == '__main__':
                 # Standard model without PEFT
                 model.model.resize_token_embeddings(len(processor.tokenizer))
 
-    action_vocabulary.validate_tokenizer(processor.tokenizer)
     if training_args.local_rank <= 0:
         action_vocabulary.save(training_args.output_dir)
 
@@ -363,10 +384,12 @@ if __name__ == '__main__':
     eval_split = eval_split.filter(
     lambda ex: ex['train_task'] == 'action_reasoning' or len(ex['label_imgs']) > 0
     )
+    if args.max_eval_samples is not None:
+        eval_split = eval_split.select(range(min(args.max_eval_samples, len(eval_split))))
     test_data_num = (len(test_split) // (training_args.per_device_eval_batch_size * torch.cuda.device_count())) * (training_args.per_device_eval_batch_size * torch.cuda.device_count())
     test_split = test_split.select(list(range(test_data_num)))
 
-    print(f"Eval Num: {eval_data_num}")
+    print(f"Eval Num: {len(eval_split)}")
 
     tokenized_data, max_source_length, max_target_length = tokenize_dataset(
         train_split=train_split,
@@ -381,9 +404,6 @@ if __name__ == '__main__':
 
     training_args.generation_max_new_tokens = max_target_length + 100
     print(f"generation_max_new_tokens: {training_args.generation_max_new_tokens}")
-
-    early_stopping_callback = EarlyStoppingCallback(
-        early_stopping_patience=args.patience)
     label_pad_token_id = -100
     
     # Data collator: 
@@ -401,8 +421,16 @@ if __name__ == '__main__':
         kwargs = dict()
         kwargs['multimodal_generation_mode'] = "interleaved-text-image"     # see L217 in wrapped_visualizer.py
         kwargs['stopping_criteria'] = StoppingCriteriaList([StopStringCriteria(stop_strings=["<reserved08706>", "</s>"], tokenizer=processor.tokenizer)])
+        
+        if 'do_sample' not in kwargs:
+            kwargs['do_sample'] = False
+            
         # used in evaluation during training
         training_args.customize_gen_stopping_criteria = StoppingCriteriaList([StopStringCriteria(stop_strings=["<reserved08706>", "</s>"], tokenizer=processor.tokenizer)])
+
+    run_dir = None
+    if (wandb.run is not None) and ("wandb" == training_args.report_to) and (training_args.local_rank <= 0):
+        run_dir = wandb.run.dir
 
     trainer = trainer_type(
         args=training_args,
@@ -418,8 +446,12 @@ if __name__ == '__main__':
         train_dataset=tokenized_data['train'],
         eval_dataset=tokenized_data['eval'] if 'eval' in tokenized_data.keys() else tokenized_data['test'],
         eval_examples=eval_split if 'eval' in tokenized_data.keys() else test_split,
-        wandb_run_dir=wandb.run.dir if "wandb" in training_args.report_to and training_args.local_rank <= 0 else None,
-        callbacks=[SaveActionTokenVocabularyCallback(action_vocabulary)],
+        wandb_run_dir=run_dir,
+        callbacks=[
+            EarlyStoppingCallback(early_stopping_patience=args.patience),
+            SaveActionTokenVocabularyCallback(action_vocabulary),
+            SaveTrainingStatisticsCallback(),
+        ],
         image_loss_func=not args.no_perceptual_loss, 
         action_vocabulary=action_vocabulary.to_dict(),
     )
@@ -438,7 +470,12 @@ if __name__ == '__main__':
     if args.do_train:
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()  # Saves the tokenizer too for easy upload
+
         if trainer.is_world_process_zero():
+            trainer.model.save_pretrained(
+                training_args.output_dir,
+                save_embedding_layers=False,
+            )
             action_vocabulary.save(training_args.output_dir)
 
         metrics = train_result.metrics
@@ -472,6 +509,9 @@ if __name__ == '__main__':
             **kwargs
         )
         metrics = predict_results.metrics
+        if metrics is None:
+            raise ValueError("predict_results' output metrics cannot be None.")
+        
         max_predict_samples = len(tokenized_data['test'])
         metrics["predict_samples"] = min(max_predict_samples, len(tokenized_data['test']))
 
@@ -489,8 +529,18 @@ if __name__ == '__main__':
             **kwargs
         )
         metrics = predict_results.metrics
+        if metrics is None:
+            raise ValueError("predict_results' output metrics cannot be None.")
+        
         max_predict_samples = len(tokenized_data['test'])
         metrics["predict_samples"] = min(max_predict_samples, len(tokenized_data['test']))
 
         trainer.log_metrics("predict", metrics)
         trainer.save_metrics("predict", metrics)
+        
+    if args.do_train:
+        trainer.save_state()
+        if trainer.is_world_process_zero():
+            write_training_statistics(training_args.output_dir, trainer.state)
+            training_summary = summarize_training_run(training_args.output_dir)
+            print(format_summary(training_summary))

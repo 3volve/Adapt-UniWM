@@ -1,16 +1,9 @@
-import os
-import json
 import torch
 import random
 import copy
 
-import numpy as np
-
 from torch.utils.data import Dataset
 from PIL import Image
-from torchvision import transforms
-from torchvision.transforms.functional import pil_to_tensor
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -20,6 +13,8 @@ except ImportError:
 
 
 class InterleaveAnoleTokenizedDataset(Dataset):
+    VQ_RECONSTRUCTION_COUNTS = [0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3]
+    
     def __init__(self,
                  dataset,
                  model,
@@ -55,13 +50,16 @@ class InterleaveAnoleTokenizedDataset(Dataset):
         label_text = item['label_text']
         label_imgs = item['label_imgs']
 
-        input_imgs = [self.augment_image(img, random.randint(0, 8)) for img in input_imgs]
-
         # # Append GT action text
         # if self.split == 'train' and 'gt_next_action' in item and item['gt_next_action']:
         #     input_text += item['gt_next_action']
 
         if self.split in ['train']:
+            input_imgs = [
+                self.augment_image(img, random.choice(self.VQ_RECONSTRUCTION_COUNTS))
+                for img in input_imgs
+            ]
+            
             tokenized_input = self.processor(
                 [input_text],
                 images=input_imgs if input_imgs else None,

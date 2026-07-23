@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math, shutil
+import math, shutil, re
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,7 +60,7 @@ class UniWMEngine:
             self.config["load_model_args"]["model_ckpt"]
         )
 
-        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"])
+        loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"], self.action_vocabulary)
         self.model: PeftModel | PeftMixedModel = loaded["model"]
 
         if hasattr(self.model, "gradient_checkpointing_enable"):
@@ -75,7 +75,6 @@ class UniWMEngine:
         self.processor = cast(ChameleonProcessor, raw_processor)
         self.tokenizer = cast(PreTrainedTokenizerFast, raw_processor.tokenizer)
         self._image_token_id = self.tokenizer.convert_tokens_to_ids(raw_processor.image_token)
-        self._configure_action_tokenizer()
 
         using_memory = self.config["load_model_args"]["use_memory_bank_inference"]
         self._memory_manager = RuntimeMemoryBankManager(
@@ -109,10 +108,15 @@ class UniWMEngine:
 
         shutil.rmtree(output_path, ignore_errors=True)
         output_path.mkdir(parents=True, exist_ok=True)
-
-        self.model.save_pretrained(str(output_path))
+        
+        self.model.save_pretrained(
+            str(output_path),
+            save_embedding_layers=False,
+        )
+        
         if hasattr(self.processor, "save_pretrained"):
             self.processor.save_pretrained(output_path)
+            
         self.action_vocabulary.save(output_path)
 
         torch.save(
@@ -279,7 +283,8 @@ class UniWMEngine:
                 model=self.model,
                 outputs=outputs,
                 batch=training_inputs,
-                tokenizer=self.processor
+                tokenizer=self.processor,
+                loss_config=loss_cfg
             )
 
         grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
@@ -342,10 +347,14 @@ class UniWMEngine:
         return step_output
     
     def _zero_act_translations(self, action_text) -> str:
-        import re
-        return re.compile(
+        result = re.compile(
             r"(<(?:dx|dy)_(?:pos|neg)_bin_)\d+>"
         ).sub(r"\g<1>00>", action_text)
+        
+        if result.endswith("00>"):
+            result.replace("neg", "pos")
+        
+        return result
 
     def _predict_action(self, processor_inputs: Any) -> tuple[str, str, float]:
         prompt_length = processor_inputs["input_ids"].shape[-1]

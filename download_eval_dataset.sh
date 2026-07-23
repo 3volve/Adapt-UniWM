@@ -4,7 +4,7 @@
 
 set -e
 
-manifest="./eval_dataset_manifest.json"
+manifest="./cfg/eval_dataset_manifest.json"
 
 mkdir -p data && cd data
 

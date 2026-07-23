@@ -98,7 +98,6 @@ class AnoleforConditionalGeneration(ChameleonForConditionalGeneration):
             generation_config=generation_config, 
             logits_processor=logits_processor, 
             multimodal_generation_mode=multimodal_generation_mode,
-            do_sample=True,
             **kwargs
         )
 

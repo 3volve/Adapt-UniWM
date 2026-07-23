@@ -3,18 +3,18 @@ export CUDA_VISIBLE_DEVICES=0,1
 
 TARGET_GPU=1
 CKPT="./checkpoints/base_ckpt"
-DATASET="go_stanford"
+DATASET="go_stanford,sacson"
 Run_ID="$DATASET"_offline_training
 
 
-safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=2 --master_port=20009 train.py \
+safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20009 train.py \
   --model anole \
-  --model_ckpt "$CKPT" \
   --data "$DATASET" \
   --data_dir ./eval_data \
   --decoder_type anole \
   --image_seq_length 784 \
   --input_format anole \
+  --max_eval_samples 50 \
   --output ./output/"$Run_ID" \
   --note "$Run_ID" \
   --report_to none \

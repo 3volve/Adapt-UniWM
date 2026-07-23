@@ -2,6 +2,7 @@ import os
 import pickle
 import random
 import re
+from typing import Any, cast
 import numpy as np
 import datasets
 from PIL import Image
@@ -16,7 +17,6 @@ from scripts.action_utils import (
 
 class NavigationConfig(datasets.BuilderConfig):
     def __init__(self, tasks, modes, data_dir, **kwargs):
-        self.action_range_profile = kwargs.pop("action_range_profile", None)
         self.action_vocabulary = kwargs.pop("action_vocabulary", None)
         super(NavigationConfig, self).__init__(**kwargs)
         self.tasks = tasks
@@ -70,6 +70,9 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
 
     def _split_generators(self, dl_manager):
         data_root = self.config.data_dir
+        if data_root is None:
+            raise ValueError("config data_dir must be set in given NavigationConfig.")
+        
         all_traj_names = sorted([d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))])
         random.seed(42)
         random.shuffle(all_traj_names)
@@ -83,21 +86,21 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         split_point2 = split_point1 + int(total_count * dev_ratio)
         return [
             datasets.SplitGenerator(
-                name=datasets.Split.TRAIN, 
+                name=str(datasets.Split.TRAIN), 
                 gen_kwargs={
                     "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[:split_point1]],
                     "split": datasets.Split.TRAIN 
                 }
             ),
             datasets.SplitGenerator(
-                name=datasets.Split.VALIDATION, 
+                name=str(datasets.Split.VALIDATION), 
                 gen_kwargs={
                     "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[split_point1:split_point2]],
                     "split": datasets.Split.VALIDATION
                 }
             ),
             datasets.SplitGenerator(
-                name=datasets.Split.TEST, 
+                name=str(datasets.Split.TEST), 
                 gen_kwargs={
                     "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[split_point2:total_count]],
                     "split": datasets.Split.TEST
@@ -156,7 +159,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
     
 
 ####Key 1
-    def _prepare_visualization_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges, range_profile):
+    def _prepare_visualization_sample(self, k, len_seq, all_images, all_image_paths, actions, states_xy_yaw, ranges):
         start_img = all_images[0]
         goal_img = all_images[len_seq - 1]
         current_img = all_images[k]
@@ -190,7 +193,6 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             "label_imgs": [next_img],
             "label_img_paths": [next_path],
             "train_task": "single_step_visualization",
-            "range_profile": range_profile,
             "coords": states_xy_yaw[:k+1],
             "action_vector": [],
         }
@@ -260,15 +262,19 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         }
 
     def _generate_examples(self, traj_dirs, split):
-        print(f"Current config modes: {self.config.modes}")
-        if self.config.action_vocabulary is None:
+        config = cast(NavigationDataset.BUILDER_CONFIG_CLASS, self.config)
+        
+        print(f"Current config modes: {config.modes}")
+        if config.action_vocabulary is None:
             action_vocabulary = ActionTokenVocabulary.from_manifest("cfg/eval_dataset_manifest.json")
         else:
-            action_vocabulary = ActionTokenVocabulary(self.config.action_vocabulary)
-        trajectory_ranges = {
+            action_vocabulary = ActionTokenVocabulary(config.action_vocabulary)
+            
+        trajectory_ranges: dict[str, Any] = {
             axis: action_vocabulary.range_for(axis)
             for axis in ("dx", "dy", "dyaw")
         }
+        
         trajectory_ranges["bin_step"] = action_vocabulary.bin_step
         trajectory_ranges["allowed_tokens"] = set(action_vocabulary.all_tokens)
 
@@ -287,16 +293,16 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
 
             # 3. Load all images for the trajectory
             try:
-                all_images = [Image.open(p).convert("RGB").resize((256, 256)) for p in traj_data["image_paths"]]
+                all_images = [Image.open(p).convert("RGB").resize((448, 448)) for p in traj_data["image_paths"]]
             except IOError:
                 continue
             
-            if "task_level_evaluation" in self.config.modes and split == datasets.Split.TEST:
+            if "task_level_evaluation" in config.modes and split == datasets.Split.TEST:
                 print(1)
                 sample = self._prepare_task_level_sample(len(all_images), all_images,
                                                          traj_data["image_paths"], actions,
                                                          traj_data["states_xy_yaw"], trajectory_ranges)
-                sample['task'] = self.config.tasks[0]
+                sample['task'] = config.tasks[0]
                 sample['idx'] = global_idx
                 yield global_idx, sample
                 global_idx += 1
@@ -305,12 +311,12 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             # 4. Generate samples
             for k in range(len(all_images)):
                 # Generate a sample for the reasoning task
-                if "action_reasoning" in self.config.modes and split != datasets.Split.TEST:
+                if "action_reasoning" in config.modes and split != datasets.Split.TEST:
                     sample = self._prepare_reasoning_sample(k, len(all_images), all_images,
                                                             traj_data["image_paths"], actions,
                                                             traj_data["states_xy_yaw"], trajectory_ranges)
 
-                    sample['task'] = self.config.tasks[0]
+                    sample['task'] = config.tasks[0]
                     sample['idx'] = global_idx
                     yield global_idx, sample
                     global_idx += 1
@@ -320,14 +326,14 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 # The final frame remains the goal and Stop target, but is not a
                 # synthetic visualization transition from itself back to itself.
                 if (
-                    "single_step_visualization" in self.config.modes
+                    "single_step_visualization" in config.modes
                     and split != datasets.Split.TEST
                     and k < len(all_images) - 1
                 ):
                     sample = self._prepare_visualization_sample(k, len(all_images), all_images,
                                                                 traj_data["image_paths"], actions,
                                                                 traj_data["states_xy_yaw"], trajectory_ranges)
-                    sample['task'] = self.config.tasks[0]
+                    sample['task'] = config.tasks[0]
                     sample['idx'] = global_idx
                     yield global_idx, sample
                     global_idx += 1

@@ -11,7 +11,7 @@ import datasets
 datasets.builder.has_sufficient_disk_space = lambda needed_bytes, directory='.': True
 
 
-def load_data(dataset, data_dir, action_range_profile=None, action_vocabulary=None):
+def load_data(dataset, data_dir, action_vocabulary=None):
     data_list = []
     dataset_str = dataset[0]
     dataset_names = dataset_str.split(',')
@@ -19,7 +19,6 @@ def load_data(dataset, data_dir, action_range_profile=None, action_vocabulary=No
 
     for name in dataset_names:
         specific_data_path = os.path.join(data_dir, name)
-        selected_range_profile = action_range_profile or name
         
         if not os.path.exists(specific_data_path):
             print(f"Warning: Path not found for dataset '{name}': {specific_data_path}. Skipping.")
@@ -33,7 +32,6 @@ def load_data(dataset, data_dir, action_range_profile=None, action_vocabulary=No
             tasks=['navigation_simulation'], 
             modes=['single_step_visualization', 'action_reasoning', 'task_level_evaluation'], 
             data_dir=specific_data_path,
-            action_range_profile=selected_range_profile,
             action_vocabulary=action_vocabulary,
         )
         if os.environ.get('RANK', '0') == '0':

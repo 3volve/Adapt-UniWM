@@ -27,7 +27,7 @@ engine:
   generation:
     prompt_style_idx: 0
     action:
-      max_new_tokens: 64
+      max_new_tokens: 24
       pad_token_id: 2
       multimodal_generation_mode: text-only
       current_substep: action
@@ -45,6 +45,7 @@ engine:
       return_dict_in_generate: true
       return_legacy_cache: true
       output_scores: true
+      do_sample: false
 
   training:
     hyper_params:
@@ -62,7 +63,7 @@ engine:
       log_prefix: "habitat_loss_"
 
 wrapper:
-  max_route_steps: 5
+  max_route_steps: 1
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
@@ -79,7 +80,7 @@ wrapper:
 
 runner:
   source_type: "habitat"
-  max_episode_steps: 50
+  max_episode_steps: 15
   source_max_episodes: 5
   stop_on_wrapper_done: true
   log_every_step: true

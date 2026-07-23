@@ -1,11 +1,11 @@
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export NCCL_P2P_DISABLE=1
-TARGET_GPU=1
+TARGET_GPU=0
 
 CFG_PATH="cfg/replay_uniwm_cfg.yaml"
-DATASET="sacson"
+DATASET="go_stanford"
 OUTPUT_DIR="./output"
-NUM_EPISODES=10
+NUM_EPISODES=3
 safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20002 uniwm_episode_runner.py \
   --config_path "$CFG_PATH" \
   --data_id "$DATASET" \

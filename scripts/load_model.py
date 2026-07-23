@@ -1,11 +1,11 @@
 import torch
-from peft import LoraConfig
-from peft.mapping import get_peft_model
+from peft import LoraConfig, get_peft_model
 from peft.peft_model import PeftModel
 
 from transformers import AutoProcessor
+from scripts.action_utils import ActionTokenVocabulary
 
-def load_model(args, training_cfg):
+def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
     print("image_seq_length received:", args.image_seq_length)
     model_name = args.model
 
@@ -100,16 +100,29 @@ def load_model(args, training_cfg):
         model.image_token_num = image_token_num
 
         model.get_vis_codebook_sim()
+        
+        action_token_ids, input_module_name, output_module_name = register_action_tokens(
+            model,
+            processor,
+            action_vocabulary,
+            loading_checkpoint=processor_ckpt_path is not None,
+        )
 
-        config = LoraConfig(
+        config = config = LoraConfig(
             r=8,
             lora_alpha=16,
-            target_modules=['q_proj', "k_proj", "v_proj", "o_proj"],
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
             lora_dropout=0.1,
             bias="none",
-            modules_to_save=["lm_head"],
+
+            modules_to_save=None,
+
+            trainable_token_indices={
+                "model.embed_tokens": action_token_ids,
+                "lm_head": action_token_ids,
+            },
         )
-        
+
         if init_lora_ckpt_path:
             print(f"Initializing trainable LoRA from checkpoint: {init_lora_ckpt_path}")
             lora_model = PeftModel.from_pretrained(
@@ -125,10 +138,90 @@ def load_model(args, training_cfg):
             )
         else:
             lora_model = get_peft_model(model, config)
-
+                
         return {
             'processor': processor,
             'model': lora_model
         }
     else:
         raise ValueError("Unsupported model type. ")
+    
+    
+def register_action_tokens(
+    model,
+    processor,
+    action_vocabulary: ActionTokenVocabulary,
+    *,
+    loading_checkpoint: bool,
+) -> tuple[list[int], str, str]:
+    tokenizer = processor.tokenizer
+    allowed_tokens = action_vocabulary.all_tokens
+
+    if len(allowed_tokens) != len(set(allowed_tokens)):
+        raise ValueError("Action vocabulary contains duplicate tokens.")
+
+    existing_vocab = tokenizer.get_vocab()
+    missing_tokens = [
+        token for token in allowed_tokens
+        if token not in existing_vocab
+    ]
+
+    # Checkpoint token IDs are part of its trained model contract. Never add
+    # missing tokens in a potentially different order.
+    if loading_checkpoint and missing_tokens:
+        raise ValueError(
+            f"Checkpoint tokenizer is missing {len(missing_tokens)} action "
+            f"tokens. First missing tokens: {missing_tokens[:5]}"
+        )
+
+    if missing_tokens:
+        added_count = tokenizer.add_tokens(
+            missing_tokens,
+            special_tokens=True,
+        )
+        if added_count != len(missing_tokens):
+            raise RuntimeError(
+                f"Expected to add {len(missing_tokens)} action tokens, "
+                f"but tokenizer added {added_count}."
+            )
+
+    tokenizer_size = len(tokenizer)
+    input_size = model.get_input_embeddings().weight.shape[0]
+    output_size = model.get_output_embeddings().weight.shape[0]
+
+    if input_size != tokenizer_size or output_size != tokenizer_size:
+        model.resize_token_embeddings(tokenizer_size)
+
+    input_size = model.get_input_embeddings().weight.shape[0]
+    output_size = model.get_output_embeddings().weight.shape[0]
+    if input_size != tokenizer_size or output_size != tokenizer_size:
+        raise RuntimeError(
+            "Embedding resize failed: "
+            f"tokenizer={tokenizer_size}, input={input_size}, output={output_size}"
+        )
+
+    resolved_vocab = tokenizer.get_vocab()
+    action_token_ids = [resolved_vocab[token] for token in allowed_tokens]
+
+    if len(action_token_ids) != len(set(action_token_ids)):
+        raise ValueError("Action tokens do not map to unique token IDs.")
+
+    def find_module_name(target_module) -> str:
+        for name, module in model.named_modules():
+            if module is target_module:
+                return name
+        raise RuntimeError("Could not find embedding module name.")
+
+    input_module_name = find_module_name(model.get_input_embeddings())
+    output_module_name = find_module_name(model.get_output_embeddings())
+
+    if input_module_name == output_module_name:
+        raise RuntimeError(
+            "Expected Chameleon input and output embeddings to be untied."
+        )
+
+    print(f"Registered {len(action_token_ids)} action tokens.")
+    print(f"Input action rows:  {input_module_name}")
+    print(f"Output action rows: {output_module_name}")
+
+    return action_token_ids, input_module_name, output_module_name
