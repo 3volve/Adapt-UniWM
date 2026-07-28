@@ -75,5 +75,6 @@ runner:
   adapter_params:
     data_root: eval_data
     manifest_path: cfg/eval_dataset_manifest.json
+    manifest_split: test
 
 modulators: false

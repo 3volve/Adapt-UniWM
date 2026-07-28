@@ -67,6 +67,7 @@ class TransitionRecord:
     context_familiarity: float
     context_stability: float
     divergence: float
+    collision: bool
     replanned: bool
     replan_reason: str | None
     modulator_state: dict[str, Any] | None = None
@@ -83,6 +84,7 @@ class TransitionRecord:
             "context_familiarity": self.context_familiarity,
             "context_stability": self.context_stability,
             "divergence": self.divergence,
+            "collision": self.collision,
             "replanned": self.replanned,
             "replan_reason": self.replan_reason,
             "modulator_state": None if self.modulator_state is None else dict(self.modulator_state),

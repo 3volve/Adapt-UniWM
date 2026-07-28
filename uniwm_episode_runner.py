@@ -72,12 +72,14 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         print("[RUNNER] Starting New Episode")
         # Generate new observation when resetting episode
         step_results: list[T_OutputBundle] = self.adapter.reset_ep()
+        episode_index = len(self._episode_logs)
+        episode_id = step_results[0].episode_id
 
         # convert new observation to UniWMInputBundle
         converted_obs: UniWMInputBundle = self.formatter.convert_from_source(step_results)
 
         # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, step_results[0].episode_id)
+        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, episode_id)
 
         conv_info = converted_obs.metadata
         step_logs: list[dict[str, Any]] = []
@@ -119,6 +121,9 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             steps_executed += 1
             if self.config["log_every_step"]:
                 step_log = {
+                    "data_id": data_id,
+                    "episode_index": episode_index,
+                    "episode_id": episode_id,
                     "step_idx": step_idx,
                     **transition.to_log(),
                     "wrapper_requested_stop": wrapper_requested_stop,
@@ -137,8 +142,9 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
                 break
 
         episode_log = {
-            "episode_index": len(self._episode_logs),
-            "episode_id": step_results[0].episode_id,
+            "episode_index": episode_index,
+            "episode_id": episode_id,
+            "data_id": data_id,
             "adapter_source_mode": self.adapter.source_mode,
             "steps_executed": steps_executed,
             "termination_reason": termination_reason,
@@ -153,7 +159,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self._episode_logs.append(episode_log)
         return episode_log
 
-    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path):
+    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path) -> None:
         """ Leaving in code to parse multiple data_ids, but the system can't actually properly swap action_cfgs between types. Don't try to run with multiple. """
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
@@ -165,10 +171,12 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             
         for id in data_ids:
             self.adapter.reset_src(id)
-            [self.run_episode(id) for _ in range(num_episodes)]
+            for _ in range(num_episodes):
+                self.run_episode(id)
+                save_runner_logs(self.get_logs(), full_output_path)
             
             if self.config["save_model_weights"]:
-                runner.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
+                self.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)
@@ -219,11 +227,17 @@ if __name__ == '__main__':
     # For now, I'm just going to say only this will only work with a single data_id at a time.  I'll deal with splitting and rebuilding the runner per-data_id later if it seems necessary.
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
+    parser.add_argument("--run_dir", type=Path)
     parser.add_argument("--num_episodes", type=int, default=-1)
     args = parser.parse_args()
     print("[RUNNER] Starting New Run")
     
-    run_dir = make_runner_output_dir(args.output_dir, args.data_id)
+    if args.run_dir is None:
+        run_dir = make_runner_output_dir(args.output_dir, args.data_id)
+    else:
+        run_dir = args.run_dir.resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[RUNNER] Output directory: {run_dir}")
 
     runner = UniWMEpisodeRunner(args.config_path, args.data_id, run_dir)
     runner.run_episodes(args.num_episodes, args.data_id, run_dir)

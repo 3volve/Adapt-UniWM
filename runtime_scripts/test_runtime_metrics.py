@@ -87,6 +87,7 @@ def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any
         row: dict[str, Any] = {
             "episode_index": episode_log["episode_index"],
             "episode_id": episode_log["episode_id"],
+            "data_id": episode_log["data_id"],
             "adapter_source_mode": episode_log["adapter_source_mode"],
             "termination_reason": episode_log["termination_reason"],
         }
@@ -98,7 +99,7 @@ def _build_episode_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any
         steps = episode_log["steps"]
         divergences = [step["divergence"] for step in steps]
         replans = [int(step["replanned"]) for step in steps]
-        collisions = [int(step["replan_reason"] == "collision") for step in steps]
+        collisions = [int(step["collision"]) for step in steps]
 
         row["step_count"] = len(steps)
         row["replanned_count"] = sum(replans)
@@ -129,6 +130,7 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             row: dict[str, Any] = {
                 "episode_index": episode_log["episode_index"],
                 "episode_id": episode_log["episode_id"],
+                "data_id": episode_log["data_id"],
                 "adapter_source_mode": episode_log["adapter_source_mode"],
                 "termination_reason": episode_log["termination_reason"],
                 "step_idx": step["step_idx"],
@@ -138,6 +140,7 @@ def _build_step_metric_rows(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "context_familiarity": step["context_familiarity"],
                 "context_stability": step["context_stability"],
                 "divergence": step["divergence"],
+                "collision": int(step["collision"]),
                 "replanned": int(step["replanned"]),
                 "replan_reason": step["replan_reason"],
                 "wrapper_requested_stop": int(step["wrapper_requested_stop"]),

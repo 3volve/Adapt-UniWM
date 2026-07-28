@@ -343,6 +343,8 @@ class UniWMEngine:
             
         step_output = StepPrediction(input_bundle, action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability)
         step_output.logging_info["raw_action_text"] = raw_action_text
+        step_output.logging_info["act_entropy"] = act_entropy
+        step_output.logging_info["viz_entropy"] = viz_entropy
         step_output.logging_info["viz_used_memory"] = used_memory
         return step_output
     

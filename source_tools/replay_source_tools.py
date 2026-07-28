@@ -35,11 +35,13 @@ class ReplayEpisodeAdapter(SourceAdapter):
         self,
         data_root: str = "eval_data",
         manifest_path: str = "cfg/eval_dataset_manifest.json",
+        manifest_split: str = "test",
     ):
         root_dir = Path(__file__).resolve().parent.parent
         self.data_root = root_dir / data_root
         self.manifest_path = root_dir / manifest_path
         self.manifest = json.load(self.manifest_path.open("r", encoding="utf-8"))
+        self.manifest_split = manifest_split
         
         self.data_id = "replay"
         self.episode_cursor = 0
@@ -54,7 +56,7 @@ class ReplayEpisodeAdapter(SourceAdapter):
 
     def reset_ep(self) -> list[ReplayOutputBundle]:
         self.current_traj_dir = self.traj_dirs[self.episode_cursor]
-        self.current_episode_id = self.manifest[self.data_id]["episodes"][self.episode_cursor]
+        self.current_episode_id = self.manifest[self.data_id][self.manifest_split][self.episode_cursor]
         self.episode_cursor += 1
 
         traj_dir = self.current_traj_dir
@@ -78,7 +80,7 @@ class ReplayEpisodeAdapter(SourceAdapter):
     def reset_src(self, data_id: str):
         self.data_id = data_id
         self.traj_dirs: list[Path] = []
-        for episode_id in self.manifest[data_id]["episodes"]:
+        for episode_id in self.manifest[data_id][self.manifest_split]:
             self.traj_dirs.append(Path(f"{self.data_root}/{data_id}/{episode_id}"))
             
         self.episode_cursor = 0

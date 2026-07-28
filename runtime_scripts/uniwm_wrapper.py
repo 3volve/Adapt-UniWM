@@ -178,6 +178,7 @@ class UniWMWrapper:
             context_familiarity=transition_step.context_familiarity,
             context_stability=transition_step.context_stability,
             divergence=divergence,
+            collision=observed_bundle.collision,
             replanned=replanned,
             replan_reason=replan_reason,
             modulator_state=modulator_state,
