@@ -91,11 +91,25 @@ class ActionTokenVocabulary:
 
 
 def calculate_action_delta(current_pos_yaw, next_pos_yaw):
-    """Calculates the [dx, dy, dyaw] action vector between two poses."""
-    delta_x = next_pos_yaw[0] - current_pos_yaw[0]
-    delta_y = next_pos_yaw[1] - current_pos_yaw[1]
-    delta_yaw = next_pos_yaw[2] - current_pos_yaw[2]
-    return [float(delta_x), float(delta_y), float(delta_yaw)]
+    """Calculate agent-relative [dx, dy, dyaw] between two world poses."""
+    current_x, current_y, current_yaw = map(float, current_pos_yaw)
+    next_x, next_y, next_yaw = map(float, next_pos_yaw)
+
+    world_dx = next_x - current_x
+    world_dy = next_y - current_y
+
+    cos_yaw = math.cos(current_yaw)
+    sin_yaw = math.sin(current_yaw)
+
+    # Rotate world displacement into the current agent coordinate frame.
+    agent_dx = cos_yaw * world_dx + sin_yaw * world_dy
+    agent_dy = -sin_yaw * world_dx + cos_yaw * world_dy
+
+    # Keep the rotation difference within [-pi, pi].
+    raw_dyaw = next_yaw - current_yaw
+    agent_dyaw = math.atan2(math.sin(raw_dyaw), math.cos(raw_dyaw))
+
+    return [agent_dx, agent_dy, agent_dyaw]
 
 def action_to_text(action: list[float] | str, bin_width=0.01, epsilon=1e-5):
     """Encodes a numerical action vector [dx, dy, dyaw] into a token string."""

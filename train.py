@@ -304,15 +304,12 @@ if __name__ == '__main__':
         dataset=args.data,
         data_dir=args.data_dir,
         action_vocabulary=action_vocabulary.to_dict(),
+        manifest_path=args.action_token_manifest,
     )
-
-    if len(data) == 2:
-        train_split, eval_split, test_split = data['train'], None, data['test']
-    else:
-        try:
-            train_split, eval_split, test_split = data['train'], data['dev'], data['test']
-        except:
-            train_split, eval_split, test_split = data['train'], data['validation'], data['test']
+    
+    train_split = data["train"]
+    eval_split = data["validation"]
+    test_split = data["test"]
 
     if args.toy:
         print('Only using toy examples for debugging...')
@@ -381,13 +378,9 @@ if __name__ == '__main__':
     eval_split = eval_split.select(list(range(eval_data_num)))
     # eval_split = eval_split.filter(lambda ex: len(ex['label_imgs']) > 0 and ex['train_task'] == 'single_step_visualization')
     # eval_split = eval_split.filter(lambda ex: len(ex['label_imgs']) > 0)
-    eval_split = eval_split.filter(
-    lambda ex: ex['train_task'] == 'action_reasoning' or len(ex['label_imgs']) > 0
-    )
+    
     if args.max_eval_samples is not None:
         eval_split = eval_split.select(range(min(args.max_eval_samples, len(eval_split))))
-    test_data_num = (len(test_split) // (training_args.per_device_eval_batch_size * torch.cuda.device_count())) * (training_args.per_device_eval_batch_size * torch.cuda.device_count())
-    test_split = test_split.select(list(range(test_data_num)))
 
     print(f"Eval Num: {len(eval_split)}")
 

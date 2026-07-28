@@ -1,6 +1,5 @@
 import os
 import pickle
-import random
 import re
 from typing import Any, cast
 import numpy as np
@@ -14,10 +13,10 @@ from scripts.action_utils import (
     action_to_text,
 )
 
-
 class NavigationConfig(datasets.BuilderConfig):
     def __init__(self, tasks, modes, data_dir, **kwargs):
         self.action_vocabulary = kwargs.pop("action_vocabulary", None)
+        self.split_episodes = kwargs.pop("split_episodes", None)
         super(NavigationConfig, self).__init__(**kwargs)
         self.tasks = tasks
         self.modes = modes
@@ -29,7 +28,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
     BUILDER_CONFIGS = [
         NavigationConfig(
             name="processed_navigation",
-            version="1.0.0",
+            version="1.1.0",
             description="Refactored navigation dataset.",
             tasks=["navigation_simulation"],
             modes=["single_step_visualization", "action_reasoning", "task_level_evaluation"],
@@ -69,43 +68,27 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         return datasets.DatasetInfo(features=features)
 
     def _split_generators(self, dl_manager):
-        data_root = self.config.data_dir
-        if data_root is None:
-            raise ValueError("config data_dir must be set in given NavigationConfig.")
-        
-        all_traj_names = sorted([d for d in os.listdir(data_root) if os.path.isdir(os.path.join(data_root, d))])
-        random.seed(42)
-        random.shuffle(all_traj_names)
+        config = cast(NavigationDataset.BUILDER_CONFIG_CLASS, self.config)
+        data_root = config.data_dir if config.data_dir is not None else "./eval_data"
 
-        total_used_ratio = 1  # Use 100% of the data, change to 0.5 to use 50%
-        train_ratio, dev_ratio, test_ratio = 0.9, 0.05, 0.05
-        # total_used_ratio = 0.002  # Use 100% of the data, change to 0.5 to use 50%
-        # train_ratio, dev_ratio, test_ratio = 0.5, 0.3, 0.2
-        total_count = int(len(all_traj_names) * total_used_ratio)
-        split_point1 = int(total_count * train_ratio)
-        split_point2 = split_point1 + int(total_count * dev_ratio)
+        split_values = {
+            "train": datasets.Split.TRAIN,
+            "validation": datasets.Split.VALIDATION,
+            "test": datasets.Split.TEST,
+        }
+
         return [
             datasets.SplitGenerator(
-                name=str(datasets.Split.TRAIN), 
+                name=str(split_value),
                 gen_kwargs={
-                    "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[:split_point1]],
-                    "split": datasets.Split.TRAIN 
-                }
-            ),
-            datasets.SplitGenerator(
-                name=str(datasets.Split.VALIDATION), 
-                gen_kwargs={
-                    "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[split_point1:split_point2]],
-                    "split": datasets.Split.VALIDATION
-                }
-            ),
-            datasets.SplitGenerator(
-                name=str(datasets.Split.TEST), 
-                gen_kwargs={
-                    "traj_dirs": [os.path.join(data_root, name) for name in all_traj_names[split_point2:total_count]],
-                    "split": datasets.Split.TEST
-                }
-            ),
+                    "traj_dirs": [
+                        os.path.join(data_root, episode_id)
+                        for episode_id in config.split_episodes[split_name]
+                    ],
+                    "split": split_value,
+                },
+            )
+            for split_name, split_value in split_values.items()
         ]
 
     def _load_and_validate_trajectory(self, traj_dir):
@@ -116,6 +99,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         try:
             with open(pkl_path, "rb") as f:
                 pkl_data = pickle.load(f)
+                
             
             positions = np.array(pkl_data['position'], dtype=float)
             yaws = np.array(pkl_data['yaw'], dtype=float).reshape(-1, 1)
@@ -134,7 +118,6 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
             states_xy_yaw = np.concatenate([positions, yaws], axis=1).tolist()
 
             return {
-                "pkl_data": pkl_data,
                 "image_paths": image_paths,
                 "traj_len": traj_len,
                 "states_xy_yaw": states_xy_yaw
@@ -142,20 +125,14 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         except (IOError, pickle.UnpicklingError, KeyError, ValueError):
             return None
 
-    def _prepare_actions(self, pkl_data, states_xy_yaw):
-        delta_action_key = "delta"
-        
-        delta_actions = pkl_data.get(delta_action_key)
-        if delta_actions is not None:
-            delta_actions = np.array(delta_actions)
-            if delta_actions.ndim == 1:
-                delta_actions = delta_actions.reshape(-1, 3)
-            # Removed _MAX_STEPS_PER_TRAJ logic
-            return ["input_img"] + delta_actions.tolist()
-
-        numeric_actions = [calculate_action_delta(states_xy_yaw[i], states_xy_yaw[i+1]) for i in range(len(states_xy_yaw) - 1)]
-        numeric_actions.append([0.0, 0.0, 0.0])
-        return ["input_img"] + numeric_actions
+    def _prepare_actions(self, states_xy_yaw):
+        return ["input_img"] + [
+            calculate_action_delta(
+                states_xy_yaw[index],
+                states_xy_yaw[index + 1],
+            )
+            for index in range(len(states_xy_yaw) - 1)
+        ]
     
 
 ####Key 1
@@ -286,10 +263,7 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                 continue
 
             # 2. Prepare the definitive list of actions for this trajectory
-            actions = self._prepare_actions(
-                traj_data["pkl_data"],
-                traj_data["states_xy_yaw"],
-            )
+            actions = self._prepare_actions(traj_data["states_xy_yaw"])
 
             # 3. Load all images for the trajectory
             try:
@@ -321,7 +295,6 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
                     yield global_idx, sample
                     global_idx += 1
                     
-
                 # Generate a sample for the visualization task
                 # The final frame remains the goal and Stop target, but is not a
                 # synthetic visualization transition from itself back to itself.

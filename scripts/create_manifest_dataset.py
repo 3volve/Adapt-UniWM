@@ -45,23 +45,18 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
+SPLITS = ("train", "validation", "test")
+
 
 def load_manifest(path: Path) -> dict[str, dict[str, list[str]]]:
     with path.open("r", encoding="utf-8") as f:
         manifest = json.load(f)
 
-    dataset_entries = {
-        name: info
-        for name, info in manifest.items()
+    return {
+        name: entry
+        for name, entry in manifest.items()
         if name != "action_token_vocabulary"
     }
-    for dataset_name, dataset_info in dataset_entries.items():
-        if "episodes" not in dataset_info:
-            raise ValueError(f"Manifest entry for {dataset_name!r} is missing an 'episodes' key.")
-        if not isinstance(dataset_info["episodes"], list):
-            raise ValueError(f"Manifest entry for {dataset_name!r} has non-list 'episodes' value.")
-
-    return dataset_entries
 
 
 def build_episode_index(dataset_root: Path, target_names: set[str]) -> dict[str, Path]:
@@ -139,44 +134,83 @@ def main() -> None:
 
     grand_total = 0
     missing: dict[str, list[str]] = {}
+    manifest = load_manifest(manifest_path)
+    output_data_dir.mkdir(parents=True, exist_ok=True)
 
-    for dataset_name, dataset_info in manifest.items():
-        requested = list(dataset_info["episodes"])
-        requested_set = set(requested)
+    references_by_dataset = {
+        dataset_name: [
+            reference
+            for split in SPLITS
+            for reference in entry[split]
+        ]
+        for dataset_name, entry in manifest.items()
+    }
 
-        dataset_root = source_data_dir / dataset_name
+    needed_by_source: dict[str, set[str]] = {}
+
+    for dataset_name, references in references_by_dataset.items():
+        for reference in references:
+            if "/" in reference:
+                source, trajectory_id = reference.split("/", 1)
+            else:
+                source, trajectory_id = dataset_name, reference
+
+            needed_by_source.setdefault(source, set()).add(trajectory_id)
+
+    episode_indices: dict[str, dict[str, Path]] = {}
+
+    for source, requested in needed_by_source.items():
+        dataset_root = source_data_dir / source
+
         if not dataset_root.exists():
-            missing[dataset_name] = requested
-            print(f"[MISSING DATASET] {dataset_name}: {dataset_root}")
+            print(f"[MISSING DATASET] {source}: {dataset_root}")
+            episode_indices[source] = {}
             continue
 
-        print(f"[INDEX] {dataset_name}: scanning for {len(requested)} requested episodes...")
-        episode_index = build_episode_index(dataset_root, requested_set)
+        print(f"[INDEX] {source}: scanning for {len(requested)} trajectories")
+        episode_indices[source] = build_episode_index(
+            dataset_root,
+            requested,
+        )
 
+    grand_total = 0
+    missing: dict[str, list[str]] = {
+        dataset_name: []
+        for dataset_name in manifest
+    }
+
+    for dataset_name, references in references_by_dataset.items():
         out_dataset_root = output_data_dir / dataset_name
         out_dataset_root.mkdir(parents=True, exist_ok=True)
 
         linked_count = 0
-        missing[dataset_name] = []
 
-        for episode_name in requested:
-            src = episode_index.get(episode_name)
+        for reference in references:
+            if "/" in reference:
+                source, trajectory_id = reference.split("/", 1)
+            else:
+                source, trajectory_id = dataset_name, reference
+
+            src = episode_indices.get(source, {}).get(trajectory_id)
 
             if src is None:
-                missing[dataset_name].append(episode_name)
+                missing[dataset_name].append(reference)
                 continue
 
-            dst = out_dataset_root / episode_name
+            # Qualified bootstrap references retain their source directory:
+            # eval_data/bootstrap/go_stanford/<trajectory>
+            dst = out_dataset_root / reference
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
             link_or_copy_episode(src, dst, use_copy=args.copy)
             linked_count += 1
 
         grand_total += linked_count
-        print(f"[DONE] {dataset_name}: linked/copied {linked_count}/{len(requested)} episodes")
-
-    print()
-    print(f"[SUMMARY] Created subset at: {output_data_dir}")
-    print(f"[SUMMARY] Total linked/copied episodes: {grand_total}")
-
+        print(
+            f"[DONE] {dataset_name}: "
+            f"linked/copied {linked_count}/{len(references)} trajectories"
+        )
+        
     total_missing = sum(len(v) for v in missing.values())
     if total_missing:
         print()
