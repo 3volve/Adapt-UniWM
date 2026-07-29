@@ -14,6 +14,12 @@ import torch.hub
 
 from scripts.action_utils import ACTION_AXES, ActionTokenVocabulary
 
+ACTION_TOLERANCES = {
+    "dx": 0.08,
+    "dy": 0.02,
+    "dyaw": 0.05,
+}
+
 class VisualizationEvaluator():
     def __init__(self, **kwargs):
         action_vocabulary = kwargs.get("action_vocabulary")
@@ -163,8 +169,8 @@ class VisualizationEvaluator():
                             action_axis_correct[axis] += int(error == 0.0)
                             action_axis_errors[axis].append(error)
                         is_correct = all(
-                            abs(p - g) <= tolerance
-                            for p, g, tolerance in zip(pred_vals, gold_vals, [0.1, 0.1, 0.2])
+                            abs(p - g) <= ACTION_TOLERANCES[axis]
+                            for axis, p, g in zip(ACTION_AXES, pred_vals, gold_vals)
                         )
                     num_action_exact += int(is_exact)
                     if is_correct:

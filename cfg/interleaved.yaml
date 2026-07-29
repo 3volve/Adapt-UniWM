@@ -1,10 +1,10 @@
 hyper:
   seed: 42
   epochs: 10
-  lr: 0.0002
+  lr: 0.00008
   train_batch_size: 1
   val_batch_size: 1
-  grad_accumulation: 2
+  grad_accumulation: 8
 
 model:
   predict_with_generate: True
@@ -13,12 +13,12 @@ model:
 
 eval:
   eval_strategy: "steps"
-  eval_steps: 30000
+  eval_steps: 3000
   metric: "task_acc"
 
 save:
   save_strategy: "steps"
-  save_steps: 30000
+  save_steps: 100
 
 logging:
   logging_step: 200

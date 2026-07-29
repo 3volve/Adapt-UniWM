@@ -135,7 +135,7 @@ def init(args):
         seed=args.seed,
         metric_for_best_model="eval_visual_lpips_gain_over_copy",
         greater_is_better=True,
-        load_best_model_at_end=True,
+        load_best_model_at_end=args.load_best_model_at_end,
         # note: for supervised tuning
         #############################
         learning_rate=sup_hyper['lr'] if sup_hyper else 0,
@@ -236,6 +236,7 @@ if __name__ == '__main__':
     parser.add_argument('--do_single_step_eval', action='store_true')
     parser.add_argument('--do_task_level_eval', action='store_true')
     parser.add_argument('--do_rollout_eval', action='store_true')
+    parser.add_argument('--load_best_model_at_end', action='store_true', default=False)
     parser.add_argument('--cfg_path', type=str, default='cfg')
     parser.add_argument('--patience', type=int, default=5)
     parser.add_argument(
@@ -420,6 +421,14 @@ if __name__ == '__main__':
             
         # used in evaluation during training
         training_args.customize_gen_stopping_criteria = StoppingCriteriaList([StopStringCriteria(stop_strings=["<reserved08706>", "</s>"], tokenizer=processor.tokenizer)])
+        
+    callbacks = [
+        SaveActionTokenVocabularyCallback(action_vocabulary),
+        SaveTrainingStatisticsCallback(),
+    ]
+    
+    if args.load_best_model_at_end:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.patience))
 
     run_dir = None
     if (wandb.run is not None) and ("wandb" == training_args.report_to) and (training_args.local_rank <= 0):
@@ -440,11 +449,7 @@ if __name__ == '__main__':
         eval_dataset=tokenized_data['eval'] if 'eval' in tokenized_data.keys() else tokenized_data['test'],
         eval_examples=eval_split if 'eval' in tokenized_data.keys() else test_split,
         wandb_run_dir=run_dir,
-        callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=args.patience),
-            SaveActionTokenVocabularyCallback(action_vocabulary),
-            SaveTrainingStatisticsCallback(),
-        ],
+        callbacks=callbacks,
         image_loss_func=not args.no_perceptual_loss, 
         action_vocabulary=action_vocabulary.to_dict(),
     )

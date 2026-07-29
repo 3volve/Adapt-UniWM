@@ -584,6 +584,13 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
 
         sketch_dir = f"{self.args.output_dir}/sketch_{stage}"
 
+        def sketch_path(item_position, image_position):
+            dataset_idx = examples[item_position]["idx"]
+            filename = (
+                f"{item_position:06d}_{dataset_idx}_{image_position}_{stage}.png"
+            )
+            return os.path.join(sketch_dir, filename)
+        
         # Save locally.
         if self.is_world_process_zero():
             with open(f"{self.args.output_dir}/predictions_{stage}.json", "w") as f:
@@ -594,7 +601,10 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                             "prediction": predictions[idx],
                             "text": examples[idx]["input_text"],
                             "labels": examples[idx]['label_text'],
-                            "predicted_sketch_paths": [os.path.join(sketch_dir, rf"{str(examples[idx]['idx'])}_{i}_{stage}.png") for i in range(len(sketches[idx]))] if sketches[idx] is not None else None, 
+                            "predicted_sketch_paths": [
+                                sketch_path(idx, i)
+                                for i in range(len(sketches[idx]))
+                            ] if sketches[idx] is not None else None, 
                             "label_img_paths": examples[idx]['label_img_paths'],
                             "input_img_paths": examples[idx]['input_img_paths']
                         }
@@ -614,7 +624,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                     sketch_files_per_item = []
                     if sketches_per_item is not None:
                         for i in range(len(sketches_per_item)):
-                            file_path = os.path.join(sketch_dir, rf"{str(examples[idx]['idx'])}_{i}_{stage}.png")
+                            file_path = sketch_path(idx, i)
                             tensor_img = sketches_per_item[i, :, :, :]
                             print(f"[DEBUG] tensor_img.shape: {tensor_img.shape}")  # (C, H, W)
 
@@ -646,7 +656,10 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                             "prediction": predictions[idx],
                             "text": examples[idx]["input_text"],
                             "labels": examples[idx]['label_text'],
-                            "predicted_sketch_paths": [os.path.join(sketch_dir, rf"{str(examples[idx]['idx'])}_{i}_{stage}.png") for i in range(len(sketches[idx]))] if sketches[idx] is not None else None, 
+                            "predicted_sketch_paths": [
+                                sketch_path(idx, i)
+                                for i in range(len(sketches[idx]))
+                            ] if sketches[idx] is not None else None, 
                             "label_img_path": examples[idx]['label_img_paths'],
                             "input_img_path": examples[idx]['input_img_paths']
                         }
@@ -661,7 +674,7 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 sketch_files_per_item = []
                 if sketches_per_item is not None:
                     for i in range(len(sketches_per_item)):
-                        file_path = os.path.join(sketch_dir, rf"{str(examples[idx]['idx'])}_{i}_{stage}.png")
+                        file_path = sketch_path(idx, i)
                         sketch_files_per_item.append(file_path)
                 sketch_files.append(sketch_files_per_item)
 
