@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Any
 
 import torch, importlib
@@ -13,7 +14,26 @@ from transformers.utils import is_peft_available
 from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
 
-from scripts.action_utils import ACTION_AXES, ActionTokenVocabulary
+from scripts.action_utils import ACTION_AXES, ActionTokenVocabulary, extract_bin_values
+
+
+ACTION_SOFT_TARGET_SIGMA = {
+    "dx": 0.04,
+    "dy": 0.01,
+    "dyaw": 0.025,
+}
+
+
+@lru_cache(maxsize=None)
+def _action_token_values(
+    axis: str,
+    axis_tokens: tuple[str, ...],
+    bin_step: float,
+) -> tuple[float, ...]:
+    return tuple(
+        extract_bin_values(token, axis, bin_step)
+        for token in axis_tokens
+    )
 
 
 def detach_loss_value(value: Tensor | float | int) -> float:
@@ -68,34 +88,61 @@ def compute_action_token_loss(
     action_vocabulary: ActionTokenVocabulary,
 ) -> Tensor:
     """
-    Compute the action-token cross entropy
+    Compute distance-aware soft-target cross entropy for action tokens.
     """
     hf_tokenizer = _get_hf_tokenizer(tokenizer)
-
-    action_ids = {
-        axis: set(hf_tokenizer.convert_tokens_to_ids(action_vocabulary.tokens_by_axis[axis]))
-        for axis in ACTION_AXES
-    }
 
     shifted_logits = logits[:, :-1, :].contiguous().view(-1, logits.shape[-1])
     shifted_labels = labels[:, 1:].contiguous().view(-1)
 
-    def compute_bin_ce(bin_ids: set[int]) -> Tensor | None:
+    def compute_axis_loss(axis: str) -> Tensor | None:
+        axis_tokens = tuple(action_vocabulary.tokens_by_axis[axis])
+        axis_ids = hf_tokenizer.convert_tokens_to_ids(list(axis_tokens))
+        assert len(set(axis_ids)) == len(axis_ids), (
+            f"Action tokens for {axis} must map to unique tokenizer IDs."
+        )
+
+        axis_ids_tensor = torch.tensor(
+            axis_ids,
+            device=shifted_labels.device,
+            dtype=shifted_labels.dtype,
+        )
         mask = torch.isin(
             shifted_labels,
-            torch.tensor(sorted(bin_ids), device=shifted_labels.device),
+            axis_ids_tensor,
         )
-        if mask.any():
-            return F.cross_entropy(
-                shifted_logits[mask],
-                shifted_labels[mask],
-                ignore_index=ignore_index,
-            )
-        return None
+        if not mask.any():
+            return None
 
-    dx_loss = compute_bin_ce(action_ids["dx"])
-    dy_loss = compute_bin_ce(action_ids["dy"])
-    dyaw_loss = compute_bin_ce(action_ids["dyaw"])
+        target_ids = shifted_labels[mask]
+        target_indices = (target_ids[:, None] == axis_ids_tensor[None, :]).to(
+            torch.int64
+        ).argmax(dim=-1)
+
+        axis_values = torch.tensor(
+            _action_token_values(
+                axis,
+                axis_tokens,
+                action_vocabulary.bin_step,
+            ),
+            device=shifted_logits.device,
+            dtype=torch.float32,
+        )
+        target_values = axis_values[target_indices]
+        distances = (
+            axis_values[None, :] - target_values[:, None]
+        ) / ACTION_SOFT_TARGET_SIGMA[axis]
+        soft_targets = F.softmax(-0.5 * distances.square(), dim=-1)
+
+        axis_log_probs = F.log_softmax(
+            shifted_logits[mask][:, axis_ids].float(),
+            dim=-1,
+        )
+        return -(soft_targets * axis_log_probs).sum(dim=-1).mean()
+
+    dx_loss = compute_axis_loss("dx")
+    dy_loss = compute_axis_loss("dy")
+    dyaw_loss = compute_axis_loss("dyaw")
 
     # The current trainer computes stop-token loss but does not add it to the total.
     loss_components = [loss for loss in (dx_loss, dy_loss, dyaw_loss) if loss is not None]

@@ -1138,7 +1138,8 @@ class CustomizeSeq2SeqTrainer(Seq2SeqTrainer):
                 start_pose_str=start_pose_str,
                 dx_range=dx_range,
                 dy_range=dy_range,
-                dyaw_range=dyaw_range
+                dyaw_range=dyaw_range,
+                prior_decoded_actions=all_decoded[-3:]
             )
             action_inputs = self.tokenizer(text=[action_prompt], images=[start_img, goal_img, current_observation], return_tensors="pt").to(self.args.device)
             action_gen_kwargs = manager.get_action_kwargs(action_inputs, action_gen_kwargs, step)

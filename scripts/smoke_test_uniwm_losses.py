@@ -124,10 +124,69 @@ def main() -> None:
     assert "smoke_image_loss" in components
     assert "smoke_total_loss" in components
 
+    distance_tokenizer = FakeTokenizer()
+    distance_vocabulary = ActionTokenVocabulary({
+        "coordinate_frame": "agent_relative",
+        "bin_step": 0.01,
+        "axes": {
+            "dx": {"allow_negative": False, "max_bin": 10},
+            "dy": {"allow_negative": True, "max_bin": 10},
+            "dyaw": {"allow_negative": False, "max_bin": 0},
+        },
+    })
+    distance_tokenizer.convert_tokens_to_ids(distance_vocabulary.all_tokens)
+
+    def action_loss_with_peak(gold_token: str, peak_token: str) -> torch.Tensor:
+        gold_id = distance_tokenizer.convert_tokens_to_ids(gold_token)
+        peak_id = distance_tokenizer.convert_tokens_to_ids(peak_token)
+        distance_labels = torch.tensor([[0, gold_id]], dtype=torch.long)
+        peak_logits = torch.zeros(
+            (1, 2, len(distance_tokenizer.vocab)),
+            dtype=torch.float32,
+        )
+        peak_logits[0, 0, peak_id] = 8.0
+        return compute_action_token_loss(
+            peak_logits,
+            distance_labels,
+            tokenizer=distance_tokenizer,
+            ignore_index=-100,
+            action_vocabulary=distance_vocabulary,
+        )
+
+    correct_loss = action_loss_with_peak(
+        "<dx_pos_bin_02>",
+        "<dx_pos_bin_02>",
+    )
+    neighbor_loss = action_loss_with_peak(
+        "<dx_pos_bin_02>",
+        "<dx_pos_bin_03>",
+    )
+    distant_loss = action_loss_with_peak(
+        "<dx_pos_bin_02>",
+        "<dx_pos_bin_10>",
+    )
+    assert correct_loss < neighbor_loss < distant_loss
+
+    negative_neighbor_loss = action_loss_with_peak(
+        "<dy_pos_bin_00>",
+        "<dy_neg_bin_01>",
+    )
+    negative_distant_loss = action_loss_with_peak(
+        "<dy_pos_bin_00>",
+        "<dy_neg_bin_10>",
+    )
+    assert negative_neighbor_loss < negative_distant_loss
+
     print("uniwm_losses smoke test passed")
     print(f"action_loss={float(action_loss):.6f}")
     print(f"image_loss={float(image_loss):.6f}")
     print(f"total_loss={float(total_loss):.6f}")
+    print(
+        "distance-aware action losses: "
+        f"correct={float(correct_loss):.6f}, "
+        f"neighbor={float(neighbor_loss):.6f}, "
+        f"distant={float(distant_loss):.6f}"
+    )
 
 
 if __name__ == "__main__":

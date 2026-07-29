@@ -24,7 +24,6 @@ engine:
     img_size: 448
     
   generation:
-    prompt_style_idx: 0
     action:
       max_new_tokens: 24
       pad_token_id: 2

@@ -189,11 +189,9 @@ class NavigationDataset(datasets.GeneratorBasedBuilder):
         start_pose = states_xy_yaw[0]  # [x, y, yaw]
         start_pose_str = f"Starting Point Coordinate: x={start_pose[0]:.3f}, y={start_pose[1]:.3f}, yaw={start_pose[2]:.3f}\n"
         
-        action_history_text = ""
-        for i in range(k):
-            action_history_text += self._format_action(actions[i+1], ranges)
+        action_history = [self._format_action(act, ranges) for act in actions[1:k + 1][-3:]]
         
-        input_text = build_action_prompt(start_pose_str, ranges["dx"], ranges["dy"], ranges["dyaw"])
+        input_text = build_action_prompt(start_pose_str, ranges["dx"], ranges["dy"], ranges["dyaw"], action_history)
         
         return {
             "input_text": input_text,

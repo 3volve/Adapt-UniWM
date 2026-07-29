@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, cast
+from collections import deque
 
 from scripts.uniwm_losses import compute_supervised_uniwm_loss
 import torch
@@ -59,6 +60,8 @@ class UniWMEngine:
         self.action_vocabulary = ActionTokenVocabulary.from_checkpoint(
             self.config["load_model_args"]["model_ckpt"]
         )
+        
+        self.prior_actions = deque(maxlen=3)
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"], self.action_vocabulary)
         self.model: PeftModel | PeftMixedModel = loaded["model"]
@@ -133,6 +136,7 @@ class UniWMEngine:
         self._start_tok_obs = self._image_to_vq_bpe_tokens(bundle.start_observation)
         self._goal_tok_obs = self._image_to_vq_bpe_tokens(bundle.goal_observation)
         self.memory_count = 0
+        self.prior_actions.clear()
             
         self.update_working_memory(bundle.current_observation, bundle.start_pose_str)
         
@@ -152,7 +156,7 @@ class UniWMEngine:
                 dx_range=self.action_vocabulary.range_for("dx"),
                 dy_range=self.action_vocabulary.range_for("dy"),
                 dyaw_range=self.action_vocabulary.range_for("dyaw"),
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
+                prior_decoded_actions=list(self.prior_actions),
             ),
         )
         
@@ -163,16 +167,17 @@ class UniWMEngine:
     def get_current_context(self):
         return self._context_familiarity, self._context_stability 
         
-    def _store_state(self) -> tuple[torch.LongTensor, float, float, int]:
+    def _store_state(self) -> tuple[torch.LongTensor, float, float, int, deque]:
         self._memory_manager.cache_step_state()
-        return self._current_tok_obs, self._context_familiarity, self._context_stability, self.memory_count
+        return self._current_tok_obs, self._context_familiarity, self._context_stability, self.memory_count, self.prior_actions.copy()
         
-    def _restore_state(self, tok_obs: torch.LongTensor, familiarity: float, stability: float, mem_count: int):
+    def _restore_state(self, tok_obs: torch.LongTensor, familiarity: float, stability: float, mem_count: int, stored_actions: deque):
         self._memory_manager.load_cached_state()
         self._current_tok_obs = tok_obs
         self._context_familiarity = familiarity
         self._context_stability = stability
         self.memory_count = mem_count
+        self.prior_actions = stored_actions
         
     def eval_step(
             self,
@@ -195,7 +200,7 @@ class UniWMEngine:
             actions = None if len(actions) <= 1 else actions[1:]
 
         steps: list[StepPrediction] = []
-        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions = self._store_state()
         
         predict_range = max_steps
         if actions is not None:
@@ -215,11 +220,11 @@ class UniWMEngine:
             steps.append(step)
                 
             if is_stop_action(step.action_text):
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             
             if step.visualization is None:
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
             current = step.visualization
             
@@ -227,10 +232,10 @@ class UniWMEngine:
                 self.update_working_memory(current, bundle.start_pose_str, False)
                 
             if route_idx == max_steps - 1:
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
             
-        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
         return RoutePrediction(steps=steps, stopped=True, stop_reason="out_of_forced_actions")
 
     def train_viz_step(
@@ -250,8 +255,7 @@ class UniWMEngine:
         visualization_inputs = self._processor_inputs_from_prompt(
             input_text=build_viz_prompt(
                 decoded_action=prediction.action_text,
-                start_pose_str=prediction.input_bundle.start_pose_str,
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
+                start_pose_str=prediction.input_bundle.start_pose_str
             )
         )
 
@@ -318,7 +322,7 @@ class UniWMEngine:
                 dx_range=self.action_vocabulary.range_for("dx"),
                 dy_range=self.action_vocabulary.range_for("dy"),
                 dyaw_range=self.action_vocabulary.range_for("dyaw"),
-                prompt_style_idx=self.config["generation"]["prompt_style_idx"]
+                prior_decoded_actions=list(self.prior_actions),
             )
         )
         
@@ -329,13 +333,14 @@ class UniWMEngine:
             if input_bundle.collision:
                 action_text = self._zero_act_translations(action_text)
 
+        self.prior_actions.append(action_text)
+        
         viz, viz_entropy, used_memory = None, 0, False
         if not is_stop_action(action_text):
             visualization_inputs = self._processor_inputs_from_prompt(
                 input_text=build_viz_prompt(
                     decoded_action=action_text,
-                    start_pose_str=input_bundle.start_pose_str,
-                    prompt_style_idx=self.config["generation"]["prompt_style_idx"],
+                    start_pose_str=input_bundle.start_pose_str
                 )
             )
             
