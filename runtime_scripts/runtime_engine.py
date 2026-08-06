@@ -42,7 +42,7 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
         "visualization": ["multimodal_generation_mode", "current_substep"]
     },
     "training": {
-        "hyper_params": ["initial_lr"], 
+        "hyper_params": ["initial_lr", "max_grad_norm"], 
         "visualization": ["use_cache"], 
         "loss": ["include_action_loss", "include_image_loss", "action_loss_weight", "image_loss_weight", "log_prefix"],
     },
@@ -183,9 +183,9 @@ class UniWMEngine:
             self,
             bundle: UniWMInputBundle,
     ) -> StepPrediction:
-        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count = self._store_state()
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions = self._store_state()
         step = self._predict_step(bundle)
-        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count)
+        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
         return step
 
     def predict_route(
@@ -292,6 +292,7 @@ class UniWMEngine:
             )
 
         grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
+        
         self.model.eval()
         
         log_prefix = self.config["training"]["loss"]["log_prefix"]
@@ -301,7 +302,8 @@ class UniWMEngine:
             "base_loss": components[f"{log_prefix}base_loss"],
             "optimizer_lr": self._optimizer.param_groups[0]["lr"],
             "final_lr": float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler,
-            "grad_norm_applied": grad_norm is not None,
+            "grad_norm": grad_norm,
+            "gradient_clipped": (grad_norm > max_grad_norm) if max_grad_norm is not None else False
         }
 
     def _predict_step(
@@ -332,6 +334,9 @@ class UniWMEngine:
             
             if input_bundle.collision:
                 action_text = self._zero_act_translations(action_text)
+                
+            if action_text.count("pos_bin_00") == 3:
+                action_text = f"{action_text[:-3]}20>"
 
         self.prior_actions.append(action_text)
         
@@ -354,12 +359,12 @@ class UniWMEngine:
         return step_output
     
     def _zero_act_translations(self, action_text) -> str:
-        result = re.compile(
-            r"(<(?:dx|dy)_(?:pos|neg)_bin_)\d+>"
-        ).sub(r"\g<1>00>", action_text)
-        
-        if result.endswith("00>"):
-            result.replace("neg", "pos")
+        ''' Zeroes out the x and y translations in the given action'''
+        result = re.sub(
+            r"<(dx|dy)_(?:pos|neg)_bin_\d+>",
+            r"<\1_pos_bin_00>",
+            action_text,
+        )
         
         return result
 
@@ -423,20 +428,21 @@ class UniWMEngine:
         generated_img = decode_image(self.model, self.processor, generated_tokens)
         return generated_img, entropy_value, used_memory
 
-    def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> torch.Tensor | None:
+    def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> float:
         scaled_loss = update_scale * supervised_loss
         scaled_loss.backward()
 
-        grad_norm = None
+        grad_norm = 0.0
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self._trainable_params,
                 max_norm=max_grad_norm,
-            )
+            ).detach().cpu().item()
 
         self._optimizer.step()
+        
 
-        return grad_norm
+        return float(grad_norm)
         
     def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
         use_memory = use_memory if use_memory is not None else (

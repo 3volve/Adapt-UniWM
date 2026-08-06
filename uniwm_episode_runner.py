@@ -160,16 +160,10 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         return episode_log
 
     def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path) -> None:
-        """ Leaving in code to parse multiple data_ids, but the system can't actually properly swap action_cfgs between types. Don't try to run with multiple. """
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
         
-        data_ids = [data_id]
-        if ',' in data_id:
-            raise NotImplementedError("[UNFINISHED_IMPLEMENTATION] System can't actually properly swap action_cfgs between types yet. Please run them one at a time instead.")
-            data_ids = [id.strip() for id in data_id.split(',')]
-            
-        for id in data_ids:
+        for id in data_id.split(","):
             self.adapter.reset_src(id)
             for _ in range(num_episodes):
                 self.run_episode(id)
@@ -223,8 +217,6 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()    
     parser.add_argument("--config_path", type=str, required=True)
-    
-    # For now, I'm just going to say only this will only work with a single data_id at a time.  I'll deal with splitting and rebuilding the runner per-data_id later if it seems necessary.
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--run_dir", type=Path)

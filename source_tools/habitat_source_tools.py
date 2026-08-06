@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math, torch, os, re, csv
 from dataclasses import dataclass, field
-import math, torch, os, re
-from typing import Any, cast
+from pathlib import Path
+from typing import Any
 
 from habitat_sim import ActionSpec, ActuationSpec
 import numpy as np
@@ -90,6 +91,7 @@ class HabitatOutputBundle(OutputBundle):
     episode: InstanceImageGoalNavEpisode | Episode
     step_index: int
     action_taken: str | None
+    forced_action_context: tuple[str, ...] | None = None
     is_collision: bool = False
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -106,6 +108,8 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         scenes_dir: str,
         seed: int,
         bin_step: float = 0.01,
+        episode_ids: list[str] | None = None,
+        fixed_action_csv: str | None = None,
         extra_overrides: list[str] = [],
     ):
         self.reset_src()
@@ -118,7 +122,6 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
                 f"habitat.dataset.split={split}",
                 f"habitat.dataset.data_path={data_path}",
                 f"habitat.dataset.scenes_dir={scenes_dir}",
-                f"habitat.environment.max_episode_steps=0",
                 *extra_overrides,
             ],
         )
@@ -132,8 +135,22 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             actions.move_backward = OmegaConf.structured(MoveBackwardActionConfig())
             actions.strafe_left = OmegaConf.structured(StrafeLeftActionConfig())
             actions.strafe_right = OmegaConf.structured(StrafeRightActionConfig())
+            
+        dataset = habitat.make_dataset(
+            id_dataset=self.config.habitat.dataset.type,
+            config=self.config.habitat.dataset,
+        )
+        
+        if episode_ids is not None:
+            episodes_by_id = {
+                str(episode.episode_id): episode for episode in dataset.episodes
+            }
+            
+            dataset.episodes = [
+                episodes_by_id[str(episode_id)] for episode_id in episode_ids
+            ]
 
-        self.env = habitat.Env(config=self.config)
+        self.env = habitat.Env(config=self.config, dataset=dataset)
         assert self.env is not None
 
         if not isinstance(self.env.sim, HabitatSim):
@@ -141,6 +158,13 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             
         self.sim: HabitatSim = self.env.sim
         self._update_action_specs()
+        
+        self.fixed_actions_by_episode: dict[str, list[str]] | None = None
+
+        if fixed_action_csv is not None:
+            self.fixed_actions_by_episode = self._load_fixed_actions(
+                fixed_action_csv
+            )
 
     def reset_ep(self) -> list[HabitatOutputBundle]:
         obs: Observations = self.env.reset()
@@ -148,13 +172,40 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.current_episode = self.env.current_episode
         self.step_index = 0
         self.start_obs = obs
+        forced_context = None
 
-        return [self._pack_step(
-            obs=obs,
-            done=bool(self.env.episode_over),
-            action_taken=None,
-            is_collision=False,
-        )]
+        if self.fixed_actions_by_episode is not None:
+            episode_id = str(self.current_episode.episode_id)
+
+            if episode_id not in self.fixed_actions_by_episode:
+                raise ValueError(
+                    f"No fixed actions found for Habitat episode {episode_id}"
+                )
+
+            self.episode_fixed_actions = list(
+                self.fixed_actions_by_episode[episode_id]
+            )
+            self.fixed_action_cursor = 0
+
+            if not self.episode_fixed_actions:
+                raise ValueError(
+                    f"Fixed-action sequence for episode {episode_id} is empty"
+                )
+
+            forced_context = (
+                "",
+                *self.episode_fixed_actions,
+            )
+
+        return [
+            self._pack_step(
+                obs=obs,
+                done=bool(self.env.episode_over),
+                action_taken=None,
+                is_collision=False,
+                forced_action_context=forced_context,
+            )
+        ]
         
     def reset_src(self, data_id: str = "habitat") -> None:
         # TODO: Not high prio, but would like to have this start the episodes from the beginning again.
@@ -163,6 +214,9 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.last_step: HabitatOutputBundle | None = None
         self.start_obs: Observations = Observations({})
         self.goal_image: np.ndarray
+        
+        self.episode_fixed_actions: list[str] | None = None
+        self.fixed_action_cursor = 0
         
         # TODO: The main thing left here is to find the function habitat uses to fully reset the env rather than step the episode.
         # self.current_episode = self.env.
@@ -223,6 +277,63 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
 
         self.sim.sim_config.agents[agent_id].action_space.update(action_specs)
         self.sim.get_agent(agent_id).agent_config.action_space.update(action_specs)
+        
+    @staticmethod
+    def _load_fixed_actions(csv_path: str) -> dict[str, list[str]]:
+        root_dir = Path(__file__).resolve().parent.parent
+        path = Path(csv_path)
+
+        if not path.is_absolute():
+            path = root_dir / path
+
+        with path.open("r", encoding="utf-8", newline="") as file:
+            rows = list(csv.DictReader(file))
+
+        required_columns = {"episode_id", "step_idx", "action"}
+        if not rows:
+            raise ValueError(f"Fixed-action CSV is empty: {path}")
+
+        missing = required_columns - set(rows[0])
+        if missing:
+            raise ValueError(
+                f"Fixed-action CSV {path} is missing columns: {sorted(missing)}"
+            )
+
+        indexed_rows: dict[str, list[tuple[int, str]]] = {}
+
+        for row in rows:
+            episode_id = str(row["episode_id"])
+            step_idx = int(row["step_idx"])
+            action = row["action"].strip()
+
+            if not action:
+                raise ValueError(
+                    f"Empty action for episode {episode_id}, step {step_idx}"
+                )
+
+            indexed_rows.setdefault(episode_id, []).append(
+                (step_idx, action)
+            )
+
+        actions_by_episode: dict[str, list[str]] = {}
+
+        for episode_id, episode_rows in indexed_rows.items():
+            episode_rows.sort(key=lambda item: item[0])
+
+            step_indices = [step for step, _ in episode_rows]
+            expected = list(range(len(step_indices)))
+
+            if step_indices != expected:
+                raise ValueError(
+                    f"Non-contiguous fixed actions for episode {episode_id}: "
+                    f"expected {expected}, got {step_indices}"
+                )
+
+            actions_by_episode[episode_id] = [
+                action for _, action in episode_rows
+            ]
+
+        return actions_by_episode
 
     def _pack_step(
         self,
@@ -231,6 +342,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         done: bool,
         action_taken: str | None,
         is_collision: bool,
+        forced_action_context: tuple[str, ...] | None = None,
     ) -> HabitatOutputBundle:
         episode = self.current_episode
         if episode is None:
@@ -245,6 +357,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             episode=episode,
             step_index=self.step_index,
             action_taken=action_taken,
+            forced_action_context=forced_action_context,
             is_collision=is_collision,
         )
 

@@ -1,5 +1,5 @@
 export NCCL_P2P_DISABLE=1
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=1
 
 TARGET_GPU=0,1
 MANIFEST="./cfg/eval_dataset_manifest.json"
@@ -26,7 +26,7 @@ safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=2 --master_port=20009 tra
   --val_bz 1 \
   --bfloat16
 
-timeout 1
+sleep 1
 
 OUTPUT_FILE="$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
 touch "$OUTPUT_FILE"

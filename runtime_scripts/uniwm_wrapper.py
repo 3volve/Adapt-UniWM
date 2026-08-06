@@ -144,7 +144,8 @@ class UniWMWrapper:
                     eval_log = self._run_eval_predict(transition_step.input_bundle, real_obs, save_path_eval)
                     
                 if self.config["training_enabled"]:
-                    training_log = self.engine.train_viz_step(transition_step, lr_scalar)
+                    training_log = self.engine.train_viz_step(transition_step, lr_scalar,
+                        max_grad_norm=self.engine.config["training"]["hyper_params"]["max_grad_norm"])
                     self._update_viz_loss(training_log)
             
                 if self.config["add_global_memories"]:

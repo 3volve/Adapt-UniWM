@@ -22,7 +22,7 @@ safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20007 tra
   --do_single_step_eval \
   --bfloat16
 
-timeout 1
+sleep 1
 
 OUTPUT_FILE="$HOME/safe_run_gpu_${TARGET_GPU//,/_}.log"
 touch "$OUTPUT_FILE"

@@ -64,7 +64,7 @@ wrapper:
 
 runner:
   source_type: "replay"
-  max_episode_steps: 50
+  max_episode_steps: 25
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: replay_source_tools

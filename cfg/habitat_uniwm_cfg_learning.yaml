@@ -48,7 +48,8 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 5e-4
+      initial_lr: 3e-4
+      max_grad_norm: 1.0
 
     visualization:
       use_cache: false
@@ -62,8 +63,8 @@ engine:
       log_prefix: "habitat_loss_"
 
 wrapper:
-  max_route_steps: 1
-  full_replan_threshold: 0.12
+  max_route_steps: 5
+  full_replan_threshold: 0.18
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true
   log_predicted_obs: true
@@ -72,15 +73,15 @@ wrapper:
   eval_forced_action: false
   training_enabled: true
 
-  enable_modulators: true
+  enable_modulators: false
   min_memories_for_confidence: 5
   viz_loss_slow_ema: 0.95
   viz_loss_fast_ema: 0.6
 
 runner:
   source_type: "habitat"
-  max_episode_steps: 15
-  source_max_episodes: 5
+  max_episode_steps: 25
+  source_max_episodes: 12
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: habitat_source_tools
@@ -88,11 +89,18 @@ runner:
 
   adapter_params:
     config_path: benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml
-    split: val_mini
-    data_path: data/datasets/instance_imagenav/hm3d/instance_imagenav_hm3d_v3/val_mini/val_mini.json.gz
+    split: val
+    data_path: data/datasets/instance_imagenav/hm3d/instance_imagenav_hm3d_v3/val/val.json.gz
     scenes_dir: data/scene_datasets
     seed: 100
     bin_step: 0.01
+    episode_ids: ["827", "352", "817", "338", "346", "997", "743", "39", "449", "66", "887", "404"]
+    fixed_action_csv: null
+
+    extra_overrides:
+      - habitat.environment.max_episode_steps=0
+      - habitat.environment.iterator_options.shuffle=false
+      - habitat.environment.iterator_options.group_by_scene=false
 
 modulators:
   visualization:
