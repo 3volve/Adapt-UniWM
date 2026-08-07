@@ -95,7 +95,7 @@ runner:
     seed: 100
     bin_step: 0.01
     episode_ids: ["827", "352", "817", "338", "346", "997", "743", "39", "449", "66", "887", "404"]
-    fixed_action_csv: null
+    fixed_action_run_dir: null
 
     extra_overrides:
       - habitat.environment.max_episode_steps=0
