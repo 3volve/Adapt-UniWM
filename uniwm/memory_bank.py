@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, List, Tuple
 from .wrapped_visualizer import AnoleforConditionalGeneration
-from .custom_chameleon import ChameleonAttention, ChameleonDecoderLayer, apply_rotary_pos_emb
+from .custom_chameleon import ChameleonFlashAttention2, ChameleonDecoderLayer, apply_rotary_pos_emb
 from transformers.generation.configuration_utils import GenerationConfig
 from transformers.generation.logits_process import LogitsProcessorList
 
@@ -21,7 +21,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-class CustomAnoleAttention(ChameleonAttention):
+class CustomAnoleAttention(ChameleonFlashAttention2):
     """
     Custom attention layer that supports memory bank functionality.
     Based on CustomQwen2VLSdpaAttention from CMMCoT project.
@@ -434,7 +434,7 @@ class CustomAnoleAttention(ChameleonAttention):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         attn_output = self.o_proj(attn_output)
         
-        return attn_output, None, present_key_value
+        return attn_output, None, past_key_value
 
 
 class CustomAnoleDecoderLayer(ChameleonDecoderLayer):
