@@ -6,7 +6,7 @@ TARGET_GPU=1
 CFG_PATH="cfg/replay_uniwm_cfg.yaml"
 DATASET="sacson"
 OUTPUT_DIR="./output"
-NUM_EPISODES=2
+NUM_EPISODES=3
 safe_run --gpu "$TARGET_GPU" torchrun --nproc_per_node=1 --master_port=20002 uniwm_episode_runner.py \
   --config_path "$CFG_PATH" \
   --data_id "$DATASET" \

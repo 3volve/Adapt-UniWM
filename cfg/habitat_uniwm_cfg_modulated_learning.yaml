@@ -48,7 +48,7 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 3e-4
+      initial_lr: 1e-4
       max_grad_norm: 1.0
 
     visualization:
@@ -56,9 +56,9 @@ engine:
 
     loss:
       include_action_loss: true
-      include_image_loss: true
+      include_image_loss: false
       action_loss_weight: 1.0
-      image_loss_weight: 1.0
+      image_loss_weight: 0.0
       ignore_index: -100
       log_prefix: "habitat_loss_"
 
@@ -73,7 +73,7 @@ wrapper:
   eval_forced_action: false
   training_enabled: true
 
-  enable_modulators: false
+  enable_modulators: true
   min_memories_for_confidence: 5
   viz_loss_slow_ema: 0.95
   viz_loss_fast_ema: 0.6
@@ -95,7 +95,7 @@ runner:
     seed: 100
     bin_step: 0.01
     episode_ids: ["827", "352", "817", "338", "346", "997", "743", "39", "449", "66", "887", "404"]
-    fixed_action_run_dir: null
+    fixed_action_run_dir: output/thesis_pipeline_20260804_181441/ablation_no_learning/habitat
 
     extra_overrides:
       - habitat.environment.max_episode_steps=0
