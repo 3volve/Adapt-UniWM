@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
-
-from PIL import Image
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 from runtime_scripts.uniwm_schemas import UniWMInputBundle
 
 

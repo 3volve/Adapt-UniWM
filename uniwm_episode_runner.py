@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import sys
+import argparse, importlib.util, sys
 from pathlib import Path
 from typing import Any, Generic
 
 from runtime_scripts.datasource_schemas import T_OutputBundle, T_Adapter, T_Formatter
+from runtime_scripts.test_runtime_metrics import append_runner_event, save_runner_logs
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
 from runtime_scripts.runtime_engine import UniWMEngine
@@ -17,9 +16,6 @@ from runtime_scripts.runtime_utils import (
     validate_config,
     make_runner_output_dir
 )
-
-from runtime_scripts.test_runtime_metrics import append_runner_event, save_runner_logs
-
 
 REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",

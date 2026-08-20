@@ -5,10 +5,7 @@
 
 # in/output
 output/
-models
-checkpoints/
 zero/
-models/
 cross.zip
 data/
 local_helper_tools/

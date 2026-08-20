@@ -48,7 +48,7 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 1e-4
+      initial_lr: 1e-3
       max_grad_norm: 1.0
 
     visualization:
