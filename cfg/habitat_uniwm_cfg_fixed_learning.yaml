@@ -48,16 +48,16 @@ engine:
 
   training:
     hyper_params:
-      initial_lr: 1e-3
+      initial_lr: 1e-4
       max_grad_norm: 1.0
 
     visualization:
       use_cache: false
 
     loss:
-      include_action_loss: true
+      include_action_loss: false
       include_image_loss: false
-      action_loss_weight: 1.0
+      action_loss_weight: 0.0
       image_loss_weight: 0.0
       ignore_index: -100
       log_prefix: "habitat_loss_"
