@@ -95,7 +95,7 @@ runner:
     seed: 100
     bin_step: 0.01
     episode_ids: ["827", "352", "817", "338", "346", "997", "743", "39", "449", "66", "887", "404"]
-    fixed_action_run_dir: output/thesis_pipeline_20260804_181441/ablation_no_learning/habitat
+    fixed_action_run_dir: thesis_artifacts/habitat_fixed_actions/no_learning
 
     extra_overrides:
       - habitat.environment.max_episode_steps=0

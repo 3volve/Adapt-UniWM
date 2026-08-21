@@ -1,46 +1,127 @@
-<br>
-<p align="center">
+# Adapt-UniWM
 
+**Online world-model adaptation experiments for UniWM**
 
-<h1 align="center">🌍 Towards <ins>Uni</ins>fied <ins>W</ins>orld <ins>M</ins>odels for Visual Navigation via Memory-Augmented Planning and Foresight</h1>
-<p align="center">
-  <a>Yifei Dong<sup>1,*</sup>,</a>
-  <a>Fengyi Wu<sup>1,*</sup>,</a>
-  <a>Guangyu Chen<sup>1,*</sup>,</a>
-  <a>Lingdong Kong<sup>2</sup>,</a>
-  <a>Xu Zhu<sup>1</sup>,</a>
-  <a>Qiyu Hu<sup>1</sup>,</a>
-  <a>Yuxuan Zhou<sup>1</sup>,</a>
-  <a>Jingdong Sun<sup>3</sup>,</a>
-  <a>Jun-Yan He<sup>1</sup>,</a>
-  <a>Qi Dai<sup>4</sup>,</a>
-  <a>Alexander G. Hauptmann<sup>5</sup>,</a>
-  <a>Zhi-Qi Cheng<sup>1,†</sup></a>
-  <br>
-  <sup>1</sup>UW, <sup>2</sup>NUS, <sup>3</sup>Apple, <sup>4</sup>Microsoft Research, <sup>5</sup>CMU
-</p>
-    
-<p align="center">
-  <a href="https://arxiv.org/abs/2510.08713" target="_blank">
-    <img src="https://img.shields.io/badge/ArXiv-2510.08713-red">
-  </a>
-  <a href="https://github.com/F1y1113/UniWM" target="_blank">
-    <img src="https://img.shields.io/badge/Project-UniWM-blue">
-  </a>
-<a href="https://github.com/F1y1113/UniWM" target="_blank">
-    <img src="https://img.shields.io/badge/License-MIT-green">
-</a>
-</p>
+Adapt-UniWM is the research code and reproducibility artifact for Evo Lamont's
+thesis experiment on stability and plasticity during online visual-navigation
+adaptation. It is a research fork of
+[UniWM](https://github.com/F1y1113/UniWM), not the official UniWM repository. It
+adds a closed-loop Habitat runner, online training, a neuromodulator-inspired
+learning controller, fixed-action evaluation, and a source-retention pipeline.
 
-<p align="center">
-  <img src="assists/comparison.png" alt="task" width="660"/>
-</p>
+The published experiment compares three conditions on the same Habitat episodes, drawing actions from the same fixed-action reference:
 
-**UniWM** introduce a unified, memory-augmented world model paradigm integrating egocentric visual foresight and planning within a single multimodal autoregressive backbone. Unlike modular frameworks, UniWM explicitly grounds action decisions in visually imagined outcomes, ensuring tight alignment between visualization and planning. A hierarchical memory mechanism further integrates detailed short-term perceptual cues with longer-term trajectory context, enabling stable, coherent reasoning over extended horizons.
+- **Frozen / no learning:** online parameter updates are disabled.
+- **Fixed learning:** online updates use a fixed learning rule without modulators.
+- **Modulated learning:** the same online learning path is controlled by the neuromodulator-inspired signals.
 
-You are also welcome to explore our previous work, including [**GOViG**](https://github.com/F1y1113/GoViG), which introduces a new task that we leverage multimodal LLM reasoning to generate navigation instructions directly from egocentric visual observations of the initial and goal states and [**HA-VLN**](https://github.com/F1y1113/HA-VLN/), where we introduce HA-VLN 2.0, a unified benchmark coupling discrete (DE) and continuous (CE) navigation paradigms with explicit social-awareness constraints.
+The fixed action reference used by all three configurations is tracked in [`thesis_artifacts/habitat_fixed_actions/no_learning`](thesis_artifacts/habitat_fixed_actions/no_learning/). This replaces the original reference to an ignored local output directory.
 
-## Quick Start
+### Run the published Habitat configurations
+
+After completing the base and Habitat setup below, launch each condition from the repository root. Use a distinct free `--master_port` if runs overlap.
+
+```bash
+torchrun --nproc_per_node=1 --master_port=20001 uniwm_episode_runner.py \
+  --config_path cfg/habitat_uniwm_cfg_no_learning.yaml \
+  --data_id habitat \
+  --run_dir output/thesis/no_learning/habitat
+
+torchrun --nproc_per_node=1 --master_port=20003 uniwm_episode_runner.py \
+  --config_path cfg/habitat_uniwm_cfg_fixed_learning.yaml \
+  --data_id habitat \
+  --run_dir output/thesis/fixed_learning/habitat
+
+torchrun --nproc_per_node=1 --master_port=20005 uniwm_episode_runner.py \
+  --config_path cfg/habitat_uniwm_cfg_modulated_learning.yaml \
+  --data_id habitat \
+  --run_dir output/thesis/modulated_learning/habitat
+```
+
+### Run the complete thesis pipeline
+
+`thesis_testing_tools/run_thesis_pipeline.py` runs the three-stage protocol:
+
+1. **Source pre:** evaluate the common base checkpoint on the source datasets.
+2. **Habitat:** run one online-adaptation condition and save its final adapter.
+3. **Source post:** evaluate that adapted checkpoint on the same source domains
+   to measure retention.
+
+Run one complete pipeline per condition:
+
+```bash
+python thesis_testing_tools/run_thesis_pipeline.py \
+  --habitat-cfg habitat_uniwm_cfg_no_learning.yaml \
+  --habitat-port 20001
+
+python thesis_testing_tools/run_thesis_pipeline.py \
+  --habitat-cfg habitat_uniwm_cfg_fixed_learning.yaml \
+  --habitat-port 20003
+
+python thesis_testing_tools/run_thesis_pipeline.py \
+  --habitat-cfg habitat_uniwm_cfg_modulated_learning.yaml \
+  --habitat-port 20005
+```
+
+Each run is written below `output/thesis_pipeline_<timestamp>/`. The primary
+reproducibility artifacts are:
+
+- `pipeline_manifest.json`: commands, configurations, inputs, and checkpoint flow.
+- `source_pre/thesis_episode_metrics.csv`: source performance before adaptation.
+- `habitat/thesis_episode_metrics.csv`: Habitat navigation, learning, and diagnostic metrics.
+- `habitat/final_ckpt/`: the condition's final PEFT adapter.
+- `source_post/thesis_episode_metrics.csv`: source performance after adaptation.
+- `source_episode_comparison.csv`: paired pre/post source-retention comparison.
+- `pipeline_summary.json`: compact run-level Habitat and retention summary.
+
+The thesis defines and interprets the reported metrics. The README records where
+the implementation produces them so a reader can trace thesis tables back to
+run artifacts without duplicating the manuscript's methods section.
+
+### Record the experiment workstation
+
+The thesis experiments ran on this reference workstation:
+
+| Component | Recorded configuration |
+| --- | --- |
+| OS | 64-bit Linux, kernel `7.0.0-28-generic` |
+| CPU | AMD Ryzen Threadripper PRO 7965WX, 24 cores / 48 threads |
+| System memory | 125 GiB RAM, 8 GiB swap |
+| GPUs | 2× NVIDIA RTX 6000 Ada Generation, 48 GiB VRAM each |
+| NVIDIA stack | driver 580.173.02; CUDA compiler 12.4 |
+| PyTorch stack | Python 3.10.20; PyTorch 2.4.0+cu121; cuDNN 9.1 |
+
+Two concurrent experiment processes occupied approximately 22 GiB on each GPU
+when the report was collected. That is an observation, not a measured peak or a
+guaranteed minimum-memory requirement; a 24 GiB GPU may be borderline depending
+on allocator state and configuration. The published commands use one process
+per condition.
+
+### Fork provenance and licensing status
+
+Adapt-UniWM contains substantial modifications by Evo Lamont; the main additions are summarized above and are visible in this fork's Git history. The upstream UniWM repository does not currently provide a `LICENSE` file, despite previously displaying an MIT badge. Accordingly, this fork does not assert a repository-wide MIT license. Third-party code, datasets, model weights, and Habitat assets remain subject to their respective terms. Resolve the upstream licensing grant and asset redistribution terms before treating a tagged release as redistributable software.
+
+The included PEFT checkpoint descends from Meta Chameleon through GAIR's Anole
+and the Hugging Face conversion `leloy/Anole-7b-v0.1-hf`. GAIR states that the
+Anole weights follow the Chameleon Research License. Releases containing the
+checkpoint must therefore include that license and the attribution in `NOTICE`,
+and are limited to the uses permitted by those terms.
+
+The exact third-party model terms are included in
+[`docs/CHAMELEON_RESEARCH_LICENSE.txt`](docs/CHAMELEON_RESEARCH_LICENSE.txt).
+
+In this repository, provenance means recording what each external artifact is,
+where it came from, why the experiment needs it, and which terms govern reuse:
+
+| Component | Experimental role | Source and redistribution status |
+| --- | --- | --- |
+| UniWM code | Upstream model and navigation implementation | [UniWM](https://github.com/F1y1113/UniWM); no explicit repository license currently published |
+| Thesis base checkpoint | Common starting PEFT adapter for all three conditions | `checkpoints/base_ckpt`; Chameleon → Anole → Hugging Face conversion → UniWM adapter; Chameleon Research License |
+| Source-domain data | Source-pre/source-post retention evaluation | Downloaded directly from the MIT-labeled [UniWM dataset release](https://huggingface.co/datasets/fly1113/UniWM_Dataset) at a pinned revision; not redistributed by this fork |
+| Habitat-Lab and Habitat-Sim | Online navigation environment | Installed from pinned upstream revisions by `scripts/setup_habitat025_uniwm.sh` |
+| HM3D and InstanceImageNav data | Habitat scenes and evaluation episodes | Acquired separately under the providers' access terms; not vendored here |
+
+## Installation
 
 ```bash
 conda env create -f environment.yml
@@ -53,7 +134,7 @@ To update an existing base environment in place:
 conda env update -f environment.yml --prune
 ```
 
-# Optional: Install flash-attn
+### Optional: Install flash-attn
 If your environment supports `flash-attn`, then you can install it separately:
 
 ```bash
@@ -72,17 +153,30 @@ The base `environment.yml` intentionally excludes Habitat. The setup scripts clo
 
 ### Data
 
-We now release a partial dataset for the purpose of debugging and demonstrating the data format. You can find them in [data_samples](data_samples/)
+Source data is intentionally not committed. The source-pre and source-post stages
+use `go_stanford`, `recon`, `sacson`, and `scand` trajectories published in the
+MIT-labeled [UniWM Hugging Face dataset](https://huggingface.co/datasets/fly1113/UniWM_Dataset).
+Download the manifest-selected subset from the pinned upstream revision and
+build the expected `eval_data/` tree with:
+
+```bash
+bash download_eval_dataset.sh
+```
+
+The complete archives are several gigabytes. See
+[`docs/source_data_setup.md`](docs/source_data_setup.md) for provenance, expected
+layout, preprocessing behavior, and which pipeline stages require this data.
 
 ### Training
 
-To train the model on multiple datasets, use the following `torchrun` command. This script supports multi-GPU distributed training (we provide an example in train.sh).
+To train the model on multiple datasets, use the following `torchrun` command.
+The frozen thesis helper is [`thesis_testing_tools/train_offline.sh`](thesis_testing_tools/train_offline.sh).
 
 ```bash
 torchrun --nproc_per_node={GPU_NUM_PER_NODE} train.py \
     --model anole \
     --data go_stanford,scand,sacson,recon \
-    --data_dir /path/to/your/data_samples \
+    --data_dir ./eval_data \
     --decoder_type anole \
     --image_seq_length 784 \
     --input_format anole \
@@ -95,14 +189,16 @@ torchrun --nproc_per_node={GPU_NUM_PER_NODE} train.py \
 
 ### Evaluation
 
-To evaluate a trained model, use the command below. The script supports several evaluation modes, which can be selected by using the appropriate flag (we provide an example in eval.sh).
+To evaluate a trained model, use the command below. The scripts under
+[`thesis_testing_tools`](thesis_testing_tools/) contain the frozen thesis
+examples.
 
 ``` bash
 torchrun --nproc_per_node=<GPU_NUM_PER_NODE> train.py \
     --model anole \
     --model_ckpt /path/to/your/checkpoint \
     --data go_stanford,scand,sacson,recon \
-    --data_dir /path/to/your/data_samples \
+    --data_dir ./eval_data \
     --decoder_type anole \
     --image_seq_length 784 \
     --input_format anole \
@@ -125,17 +221,46 @@ torchrun --nproc_per_node=<GPU_NUM_PER_NODE> train.py \
 
 `--do_rollout_eval`: Generates a full trajectory autoregressively (i.e., the model uses its own previous predictions and ground truth actions as input for the next step) and evaluates the result.
 
-## Contributing
+## Relationship to upstream work
 
-We welcome contributions to this project! Please contact yfeidong@uw.edu or fyiwu@uw.edu.
+Adapt-UniWM extends the official
+[UniWM implementation](https://github.com/F1y1113/UniWM) with the online
+adaptation runner, fixed-action comparison protocol, learning modulators, and
+source-retention pipeline described above. UniWM's original authors and paper
+remain credited through the upstream citation below.
 
-## Acknowledgement
+<p align="center">
+  <img src="assists/comparison.png" alt="UniWM task comparison" width="660"/>
+</p>
 
-We would like to thank [ANOLE](https://arxiv.org/abs/2407.06135) and [MVOT](https://arxiv.org/abs/2501.07542) for their publicly available codebase, which we referenced during the implementation of Anole training.
+The implementation also builds on
+[Anole](https://arxiv.org/abs/2407.06135) and
+[MVOT](https://arxiv.org/abs/2501.07542).
+
+## Scope and limitations
+
+This is research-grade code for reproducing a specific thesis experiment, not a
+general navigation framework or production system. The published configurations
+target the recorded software stack, checkpoint, episode set, and fixed-action
+protocol; results may change with different model conversions, Habitat assets,
+hardware, or dependency versions. Broader methodological limitations and the
+interpretation of results belong in the thesis.
 
 ## 🌟 Citation
 
-If you find this repository or our paper useful, please consider **starring** this repository and **citing** our paper:
+For the adaptation software and thesis experiment, cite the `thesis-final` repository release:
+
+```bibtex
+@software{lamont2026adaptuniwm,
+  author  = {Evo Lamont},
+  title   = {Adapt-UniWM: Online Adaptation Experiments for UniWM},
+  year    = {2026},
+  version = {thesis-final},
+  url     = {https://github.com/3volve/Adapt-UniWM/tree/thesis-final}
+}
+```
+
+Adapt-UniWM is derived from UniWM. Please also cite the upstream paper:
 ```bibtex
 @misc{dong2025unifiedworldmodelsmemoryaugmented,
       title={Unified World Models: Memory-Augmented Planning and Foresight for Visual Navigation}, 

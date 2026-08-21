@@ -102,14 +102,6 @@ On April 17, 2026 in the local `uniwm` environment:
 
 ## Historical Note
 
-The older Habitat 0.2.3 material remains in this repo as a historical guide from the separate `hab23` environment:
-
-- [docs/habitat23_core_setup.md](habitat23_core_setup.md)
-- [envs/habitat23-core.yml](../envs/habitat23-core.yml)
-- [scripts/setup_habitat23_core.sh](../scripts/setup_habitat23_core.sh)
-
-That is no longer the primary target for UniWM.
-
 ## Intentionally Out Of Scope
 
 - `habitat-baselines`

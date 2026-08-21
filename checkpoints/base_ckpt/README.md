@@ -1,202 +1,45 @@
 ---
 base_model: leloy/Anole-7b-v0.1-hf
 library_name: peft
+license: other
+license_name: chameleon-research-license
 ---
 
-# Model Card for Model ID
+# Adapt-UniWM thesis base checkpoint
 
-<!-- Provide a quick summary of what the model is/does. -->
+This directory contains the common PEFT adapter and processor artifacts used by
+the frozen, fixed-learning, and modulated-learning thesis conditions. It does
+not contain the full 7B-parameter base model.
 
+## Provenance and license
 
+Model lineage: Meta Chameleon → GAIR `Anole-7b-v0.1` →
+`leloy/Anole-7b-v0.1-hf` conversion → UniWM fine-tuning. The local
+`adapter_config.json` records the Hugging Face conversion as the base model.
 
-## Model Details
+GAIR states that Anole weights follow the Chameleon Research License. The same
+terms conservatively govern this model-derived adapter. Any release containing
+it must include [`../../docs/CHAMELEON_RESEARCH_LICENSE.txt`](../../docs/CHAMELEON_RESEARCH_LICENSE.txt)
+and the attribution in [`../../NOTICE`](../../NOTICE).
 
-### Model Description
+## Intended use
 
-<!-- Provide a longer summary of what this model is. -->
+This adapter is provided solely to reproduce the noncommercial Adapt-UniWM
+thesis experiments. Load it through this repository's published configurations
+and pipeline; it is not a standalone navigation model. Uses outside those
+allowed by the Chameleon Research License are out of scope.
 
+## Data, evaluation, and limitations
 
+The adapter was inherited from the UniWM research release. Its complete
+fine-tuning history, duration, and energy use are not available in this fork.
+Adapt-UniWM evaluates it on the source domains and Habitat protocol documented
+in the repository README. Reported behavior is specific to the pinned model
+conversion, data manifests, Habitat assets, and software stack, and should not
+be interpreted as a general safety or deployment evaluation.
 
-- **Developed by:** [More Information Needed]
-- **Funded by [optional]:** [More Information Needed]
-- **Shared by [optional]:** [More Information Needed]
-- **Model type:** [More Information Needed]
-- **Language(s) (NLP):** [More Information Needed]
-- **License:** [More Information Needed]
-- **Finetuned from model [optional]:** [More Information Needed]
+## Loading
 
-### Model Sources [optional]
-
-<!-- Provide the basic links for the model. -->
-
-- **Repository:** [More Information Needed]
-- **Paper [optional]:** [More Information Needed]
-- **Demo [optional]:** [More Information Needed]
-
-## Uses
-
-<!-- Address questions around how the model is intended to be used, including the foreseeable users of the model and those affected by the model. -->
-
-### Direct Use
-
-<!-- This section is for the model use without fine-tuning or plugging into a larger ecosystem/app. -->
-
-[More Information Needed]
-
-### Downstream Use [optional]
-
-<!-- This section is for the model use when fine-tuned for a task, or when plugged into a larger ecosystem/app -->
-
-[More Information Needed]
-
-### Out-of-Scope Use
-
-<!-- This section addresses misuse, malicious use, and uses that the model will not work well for. -->
-
-[More Information Needed]
-
-## Bias, Risks, and Limitations
-
-<!-- This section is meant to convey both technical and sociotechnical limitations. -->
-
-[More Information Needed]
-
-### Recommendations
-
-<!-- This section is meant to convey recommendations with respect to the bias, risk, and technical limitations. -->
-
-Users (both direct and downstream) should be made aware of the risks, biases and limitations of the model. More information needed for further recommendations.
-
-## How to Get Started with the Model
-
-Use the code below to get started with the model.
-
-[More Information Needed]
-
-## Training Details
-
-### Training Data
-
-<!-- This should link to a Dataset Card, perhaps with a short stub of information on what the training data is all about as well as documentation related to data pre-processing or additional filtering. -->
-
-[More Information Needed]
-
-### Training Procedure
-
-<!-- This relates heavily to the Technical Specifications. Content here should link to that section when it is relevant to the training procedure. -->
-
-#### Preprocessing [optional]
-
-[More Information Needed]
-
-
-#### Training Hyperparameters
-
-- **Training regime:** [More Information Needed] <!--fp32, fp16 mixed precision, bf16 mixed precision, bf16 non-mixed precision, fp16 non-mixed precision, fp8 mixed precision -->
-
-#### Speeds, Sizes, Times [optional]
-
-<!-- This section provides information about throughput, start/end time, checkpoint size if relevant, etc. -->
-
-[More Information Needed]
-
-## Evaluation
-
-<!-- This section describes the evaluation protocols and provides the results. -->
-
-### Testing Data, Factors & Metrics
-
-#### Testing Data
-
-<!-- This should link to a Dataset Card if possible. -->
-
-[More Information Needed]
-
-#### Factors
-
-<!-- These are the things the evaluation is disaggregating by, e.g., subpopulations or domains. -->
-
-[More Information Needed]
-
-#### Metrics
-
-<!-- These are the evaluation metrics being used, ideally with a description of why. -->
-
-[More Information Needed]
-
-### Results
-
-[More Information Needed]
-
-#### Summary
-
-
-
-## Model Examination [optional]
-
-<!-- Relevant interpretability work for the model goes here -->
-
-[More Information Needed]
-
-## Environmental Impact
-
-<!-- Total emissions (in grams of CO2eq) and additional considerations, such as electricity usage, go here. Edit the suggested text below accordingly -->
-
-Carbon emissions can be estimated using the [Machine Learning Impact calculator](https://mlco2.github.io/impact#compute) presented in [Lacoste et al. (2019)](https://arxiv.org/abs/1910.09700).
-
-- **Hardware Type:** [More Information Needed]
-- **Hours used:** [More Information Needed]
-- **Cloud Provider:** [More Information Needed]
-- **Compute Region:** [More Information Needed]
-- **Carbon Emitted:** [More Information Needed]
-
-## Technical Specifications [optional]
-
-### Model Architecture and Objective
-
-[More Information Needed]
-
-### Compute Infrastructure
-
-[More Information Needed]
-
-#### Hardware
-
-[More Information Needed]
-
-#### Software
-
-[More Information Needed]
-
-## Citation [optional]
-
-<!-- If there is a paper or blog post introducing the model, the APA and Bibtex information for that should go in this section. -->
-
-**BibTeX:**
-
-[More Information Needed]
-
-**APA:**
-
-[More Information Needed]
-
-## Glossary [optional]
-
-<!-- If relevant, include terms and calculations in this section that can help readers understand the model or model card. -->
-
-[More Information Needed]
-
-## More Information [optional]
-
-[More Information Needed]
-
-## Model Card Authors [optional]
-
-[More Information Needed]
-
-## Model Card Contact
-
-[More Information Needed]
-### Framework versions
-
-- PEFT 0.15.2
+Use the repository installation and execution instructions in
+[`../../README.md`](../../README.md). PEFT 0.15.2 was used for the published
+artifact.

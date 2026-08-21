@@ -1,0 +1,14 @@
+Adapt-UniWM includes or depends on model materials derived from Chameleon.
+
+Chameleon is licensed under the Chameleon Research License, Copyright (c) Meta
+Platforms, Inc. All Rights Reserved.
+
+The Adapt-UniWM checkpoint is a PEFT adapter trained from the Hugging Face
+conversion leloy/Anole-7b-v0.1-hf. That model identifies itself as a conversion
+of GAIR/Anole-7b-v0.1, whose authors state that the model weights follow the
+Chameleon Research License.
+
+Adapt-UniWM is derived from UniWM (https://github.com/F1y1113/UniWM) and contains
+substantial modifications by Evo Lamont. UniWM does not currently publish
+repository-wide license text; this notice does not grant rights to upstream
+UniWM code or data.

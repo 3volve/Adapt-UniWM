@@ -98,13 +98,7 @@ def link_or_copy_episode(src: Path, dst: Path, use_copy: bool) -> None:
     if use_copy:
         shutil.copytree(src, dst)
     else:
-        # Relative symlinks keep the output folder more portable if the repo moves as a unit.
-        rel_src = Path("../" * len(dst.parent.relative_to(dst.anchor).parts)) / src
-        try:
-            dst.symlink_to(src, target_is_directory=True)
-        except OSError:
-            # Fall back to absolute symlink. This is usually fine on Linux workstations.
-            dst.symlink_to(src, target_is_directory=True)
+        dst.symlink_to(src, target_is_directory=True)
 
 
 def main() -> None:
@@ -132,8 +126,6 @@ def main() -> None:
     manifest = load_manifest(manifest_path)
     output_data_dir.mkdir(parents=True, exist_ok=True)
 
-    grand_total = 0
-    missing: dict[str, list[str]] = {}
     manifest = load_manifest(manifest_path)
     output_data_dir.mkdir(parents=True, exist_ok=True)
 
