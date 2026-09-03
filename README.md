@@ -38,6 +38,28 @@ torchrun --nproc_per_node=1 --master_port=20005 uniwm_episode_runner.py \
   --run_dir output/thesis/modulated_learning/habitat
 ```
 
+The Habitat no-learning configuration also records the controller-derived
+learning-rate schedule without taking optimizer steps. It writes
+`learning_rate_schedule.json` and the deterministically within-episode-shuffled
+`learning_rate_schedule_shuffled.json` in the Habitat run directory.
+
+To train with either saved schedule, use a learning configuration with
+modulators disabled and point `input_path` at that Habitat run directory:
+
+```yaml
+wrapper:
+  training_enabled: true
+  enable_modulators: false
+  learning_rate_schedule:
+    mode: replay
+    input_path: output/thesis/no_learning/habitat
+    shuffled: false  # Set true for the within-episode-shuffled schedule.
+```
+
+Configurations that do not record or replay a schedule use
+`learning_rate_schedule: false`. Replay requires the configured base learning
+rate to match the one recorded in the schedule.
+
 ### Run the complete thesis pipeline
 
 `thesis_testing_tools/run_thesis_pipeline.py` runs the three-stage protocol:
@@ -46,6 +68,29 @@ torchrun --nproc_per_node=1 --master_port=20005 uniwm_episode_runner.py \
 2. **Habitat:** run one online-adaptation condition and save its final adapter.
 3. **Source post:** evaluate that adapted checkpoint on the same source domains
    to measure retention.
+
+For the paired core experiment, queue all six conditions for one seed with:
+
+```bash
+python thesis_testing_tools/run_thesis_pipeline.py \
+  --all-conditions \
+  --seed 100 \
+  --fixed-mean-lr 6.25e-5 \
+  --habitat-action-run thesis_artifacts/habitat_fixed_actions/no_learning
+```
+
+`--fixed-mean-lr` must be the preregistered Full-controller mean estimated from
+the development stream; the held-out batch does not recompute it. The batch
+runs source-pre once, starts every C0-C5 Habitat condition from the same initial
+checkpoint, and runs a separate source-post evaluation for C1-C5. Because C0
+does not update the model, its source-post metrics are reused exactly from
+source-pre without launching another model process. C0 records both aligned and
+within-episode-shuffled learning-rate schedules, which C3 and C4 consume from
+C0's Habitat output directory.
+
+The batch is written below `output/thesis_seed_<seed>_<timestamp>/`.
+`seed_manifest.json` records the full planned queue and generated configuration
+paths, while `seed_summary.json` links the completed per-condition summaries.
 
 Run one complete pipeline per condition:
 

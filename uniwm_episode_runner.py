@@ -112,7 +112,11 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             converted_obs = self.formatter.convert_from_source(step_results)
 
             # Give new obs state to wrapper to update its state
-            transition: TransitionRecord = self.wrapper.observe_transition(converted_obs)
+            transition: TransitionRecord = self.wrapper.observe_transition(
+                converted_obs,
+                data_id=data_id,
+                step_idx=step_idx,
+            )
             
             steps_executed += 1
             if self.config["log_every_step"]:
@@ -164,9 +168,12 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
             for _ in range(num_episodes):
                 self.run_episode(id)
                 save_runner_logs(self.get_logs(), full_output_path)
+                self.wrapper.save_learning_rate_schedule()
             
             if self.config["save_model_weights"]:
                 self.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
+
+        self.wrapper.finalize_learning_rate_schedule()
 
     def get_logs(self) -> list[dict[str, Any]]:
         return list(self._episode_logs)

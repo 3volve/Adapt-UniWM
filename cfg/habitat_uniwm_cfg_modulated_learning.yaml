@@ -74,6 +74,7 @@ wrapper:
   training_enabled: true
 
   enable_modulators: true
+  learning_rate_schedule: false
   min_memories_for_confidence: 5
   viz_loss_slow_ema: 0.95
   viz_loss_fast_ema: 0.6

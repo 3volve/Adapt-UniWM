@@ -244,13 +244,67 @@ class UniWMEngine:
         lr_scaler: float,
         loss_scaler: float = 1.0,
         max_grad_norm: float | None = None,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """Note: Make sure you are calling the UniWMEngine.init_working_memory() when you want to store a prior step into global memory and update the observation in working KV memory used by the model."""
-        
+
+        for group in self._optimizer.param_groups:
+            group["lr"] = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
+
+        self.model.train()
+        self._optimizer.zero_grad(set_to_none=True)
+        loss, components = self._compute_viz_step_loss(prediction)
+
+        grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
+        self.model.eval()
+
+        log_prefix = self.config["training"]["loss"]["log_prefix"]
+        effective_lr = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
+
+        return {
+            **components,
+            "base_loss": components[f"{log_prefix}base_loss"],
+            "lr_scalar": lr_scaler,
+            "optimizer_lr": self._optimizer.param_groups[0]["lr"],
+            "final_lr": effective_lr,
+            "effective_learning_rate": effective_lr,
+            "grad_norm": grad_norm,
+            "gradient_clipped": (grad_norm > max_grad_norm) if max_grad_norm is not None else False,
+            "optimizer_step": True,
+        }
+
+    def record_viz_step(
+        self,
+        prediction: StepPrediction,
+        lr_scaler: float,
+    ) -> dict[str, Any]:
+        """Compute the online visualization loss without updating parameters."""
+        self.model.train()
+        with torch.no_grad():
+            _, components = self._compute_viz_step_loss(prediction)
+        self.model.eval()
+
+        log_prefix = self.config["training"]["loss"]["log_prefix"]
+        effective_lr = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
+        return {
+            **components,
+            "base_loss": components[f"{log_prefix}base_loss"],
+            "lr_scalar": lr_scaler,
+            "optimizer_lr": None,
+            "final_lr": effective_lr,
+            "effective_learning_rate": effective_lr,
+            "grad_norm": None,
+            "gradient_clipped": False,
+            "optimizer_step": False,
+        }
+
+    def _compute_viz_step_loss(
+        self,
+        prediction: StepPrediction,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         if prediction.real_input_obs is None:
-            raise ValueError("[UNEXPECTED ERROR] Wrapper failed to set a real input observation on the StepPrediction passed into train_viz_step")
+            raise ValueError("[UNEXPECTED ERROR] Wrapper failed to set a real input observation on the StepPrediction passed into a visualization loss step")
         if prediction.real_next_obs is None:
-            raise ValueError("[UNEXPECTED ERROR] Wrapper failed to set a real predicted visualization on the StepPrediction passed into train_viz_step")
+            raise ValueError("[UNEXPECTED ERROR] Wrapper failed to set a real predicted visualization on the StepPrediction passed into a visualization loss step")
 
         visualization_inputs = self._processor_inputs_from_prompt(
             input_text=build_viz_prompt(
@@ -258,31 +312,26 @@ class UniWMEngine:
                 start_pose_str=prediction.input_bundle.start_pose_str
             )
         )
-
         training_inputs: Mapping[str, Any] = self._build_image_batch(
             viz_inputs=visualization_inputs,
             target_viz_tokens=self._image_to_vq_bpe_tokens(prediction.real_next_obs)
         )
-
-        for group in self._optimizer.param_groups:
-            group["lr"] = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
-
-        self.model.train()
-        self._optimizer.zero_grad(set_to_none=True)
-        
-        memory_kwargs, _ = self._get_viz_kwargs(dict(self.config["training"]["visualization"]), prediction.logging_info["viz_used_memory"])
+        memory_kwargs, _ = self._get_viz_kwargs(
+            dict(self.config["training"]["visualization"]),
+            prediction.logging_info["viz_used_memory"],
+        )
 
         with torch.autocast(device_type="cuda", dtype=self.model.dtype):
             outputs = self.model(
-                **{key: value for key, value in training_inputs .items() if key != "labels"},
+                **{key: value for key, value in training_inputs.items() if key != "labels"},
                 **memory_kwargs
             )
-            
+
             loss_cfg = self.config["training"]["loss"].copy()
             loss_cfg["include_action_loss"] = False
             loss_cfg["action_loss_weight"] = 0.0
 
-            loss, components = compute_supervised_uniwm_loss(
+            return compute_supervised_uniwm_loss(
                 self.action_vocabulary,
                 model=self.model,
                 outputs=outputs,
@@ -290,21 +339,6 @@ class UniWMEngine:
                 tokenizer=self.processor,
                 loss_config=loss_cfg
             )
-
-        grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
-        
-        self.model.eval()
-        
-        log_prefix = self.config["training"]["loss"]["log_prefix"]
-
-        return {
-            **components,
-            "base_loss": components[f"{log_prefix}base_loss"],
-            "optimizer_lr": self._optimizer.param_groups[0]["lr"],
-            "final_lr": float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler,
-            "grad_norm": grad_norm,
-            "gradient_clipped": (grad_norm > max_grad_norm) if max_grad_norm is not None else False
-        }
 
     def _predict_step(
         self,

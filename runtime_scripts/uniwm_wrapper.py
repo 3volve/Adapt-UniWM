@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from runtime_scripts.runtime_engine import UniWMEngine
+from runtime_scripts.learning_rate_schedule import LearningRateSchedule
 from runtime_scripts.modulator_system import ModulatorSystem
 from runtime_scripts.uniwm_schemas import (
     UniWMInputBundle,
@@ -51,8 +52,41 @@ class UniWMWrapper:
         validate_config(self.config, REQUIRED_FIELDS)
         self.output_path = absolute_output_path
         self.forced_actions = False
-        
-        modulators_enabled = self.config["training_enabled"] and self.config["enable_modulators"]
+
+        engine_training = engine.config["training"]
+        initial_lr = (
+            None
+            if engine_training is False
+            else float(engine_training["hyper_params"]["initial_lr"])
+        )
+        self.learning_rate_schedule = LearningRateSchedule(
+            self.config.get("learning_rate_schedule", False),
+            output_dir=absolute_output_path,
+            initial_lr=initial_lr,
+        )
+        if self.learning_rate_schedule.is_recording:
+            if self.config["training_enabled"]:
+                raise ValueError(
+                    "Schedule record mode requires wrapper.training_enabled=false"
+                )
+            if not self.config["enable_modulators"]:
+                raise ValueError(
+                    "Schedule record mode requires wrapper.enable_modulators=true"
+                )
+        if self.learning_rate_schedule.is_replaying:
+            if not self.config["training_enabled"]:
+                raise ValueError(
+                    "Schedule replay mode requires wrapper.training_enabled=true"
+                )
+            if self.config["enable_modulators"]:
+                raise ValueError(
+                    "Schedule replay mode requires wrapper.enable_modulators=false"
+                )
+
+        modulators_enabled = self.config["enable_modulators"] and (
+            self.config["training_enabled"]
+            or self.learning_rate_schedule.is_recording
+        )
         mod_config = None if not modulators_enabled else root_config["modulators"]["visualization"]
         self.viz_modulators = ModulatorSystem(modulators_enabled, mod_config)
         
@@ -100,7 +134,10 @@ class UniWMWrapper:
 
     def observe_transition(
         self,
-        observed_bundle: UniWMInputBundle
+        observed_bundle: UniWMInputBundle,
+        *,
+        data_id: str,
+        step_idx: int,
     ) -> TransitionRecord:
         if self.ready_to_act or not self.pending_step or (self.pending_step_idx < 0):
             print(f"Failing with values: ({self.ready_to_act}, {'exists' if self.pending_step else 'none'}, {self.pending_step_idx})")
@@ -122,10 +159,28 @@ class UniWMWrapper:
         transition_step.real_next_obs = real_obs
         
         divergence = 0
-        training_log: dict[str, Any] | None = None
+        update_log: dict[str, Any] | None = None
         eval_log: dict[str, Any] | None = None
         modulator_state: dict[str, Any] | None = None
-        if transition_step and not is_stop_action(transition_step.action_text):
+        stop_action = is_stop_action(transition_step.action_text)
+        update_eligible = not stop_action and not observed_bundle.collision
+        skip_reason = (
+            "stop_action"
+            if stop_action
+            else ("collision" if observed_bundle.collision else None)
+        )
+        replayed_lr_scalar = self.learning_rate_schedule.replay_transition(
+            data_id=data_id,
+            episode_id=self.episode_id,
+            step_idx=step_idx,
+            action=transition_step.action_text,
+            collision=observed_bundle.collision,
+            update_eligible=update_eligible,
+            skip_reason=skip_reason,
+        )
+
+        lr_scalar: float | None = None
+        if transition_step and not stop_action:
             divergence, mod_divergence = self.compute_divergence(transition_step.visualization, transition_step.real_next_obs)
             
             if observed_bundle.collision:
@@ -135,17 +190,35 @@ class UniWMWrapper:
                 }
             else:
             # TODO: Decide if more complicated logic for determining whether to train or not is necessary
-                self._update_modulators(transition_step, mod_divergence)
-                lr_scalar = self.viz_modulators.compute_step_update_weight()
-                modulator_state = self.viz_modulators.get_current_state()
+                if self.learning_rate_schedule.is_replaying:
+                    if replayed_lr_scalar is None:
+                        raise AssertionError(
+                            "Eligible replay transition did not provide an LR scalar"
+                        )
+                    lr_scalar = replayed_lr_scalar
+                    modulator_state = {
+                        "applied": False,
+                        "skip_reason": "learning_rate_schedule_replay",
+                        "lr_scalar": lr_scalar,
+                    }
+                else:
+                    self._update_modulators(transition_step, mod_divergence)
+                    lr_scalar = self.viz_modulators.compute_step_update_weight()
+                    modulator_state = self.viz_modulators.get_current_state()
                 
                 if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
                     eval_log = self._run_eval_predict(transition_step.input_bundle, real_obs, save_path_eval)
-                    
+
+                if lr_scalar is None:
+                    raise AssertionError("Eligible transition did not produce an LR scalar")
                 if self.config["training_enabled"]:
-                    training_log = self.engine.train_viz_step(transition_step, lr_scalar,
+                    update_log = self.engine.train_viz_step(transition_step, lr_scalar,
                         max_grad_norm=self.engine.config["training"]["hyper_params"]["max_grad_norm"])
-                    self._update_viz_loss(training_log)
+                elif self.learning_rate_schedule.is_recording:
+                    update_log = self.engine.record_viz_step(transition_step, lr_scalar)
+
+                if update_log is not None:
+                    self._update_viz_loss(update_log)
             
                 if self.config["add_global_memories"]:
                     self.engine.store_working_memory()
@@ -155,6 +228,17 @@ class UniWMWrapper:
                 observed_bundle.start_pose_str,
                 not observed_bundle.collision
             )
+
+        self.learning_rate_schedule.record_transition(
+            data_id=data_id,
+            episode_id=self.episode_id,
+            step_idx=step_idx,
+            action=transition_step.action_text,
+            collision=observed_bundle.collision,
+            update_eligible=update_eligible,
+            skip_reason=skip_reason,
+            lr_scalar=lr_scalar,
+        )
                 
         replan_reason = None
         replanned = False
@@ -182,7 +266,7 @@ class UniWMWrapper:
             replanned=replanned,
             replan_reason=replan_reason,
             modulator_state=modulator_state,
-            training_logs=training_log,
+            training_logs=update_log,
             eval_logs=eval_log,
             step_info=transition_step.logging_info,
             env_info=observed_bundle.metadata,
@@ -192,6 +276,13 @@ class UniWMWrapper:
         self.ready_to_act = True
         self.pending_step, self.pending_step_idx = None, -1
         return record
+
+    def save_learning_rate_schedule(self) -> None:
+        self.learning_rate_schedule.save()
+
+    def finalize_learning_rate_schedule(self) -> None:
+        self.learning_rate_schedule.save()
+        self.learning_rate_schedule.assert_fully_consumed()
 
     def replan_route(self, current_bundle: UniWMInputBundle, reason: str) -> None:
         if current_bundle.source_done:

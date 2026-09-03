@@ -55,10 +55,10 @@ engine:
       use_cache: false
 
     loss:
-      include_action_loss: true
-      include_image_loss: true
-      action_loss_weight: 1.0
-      image_loss_weight: 1.0
+      include_action_loss: false
+      include_image_loss: false
+      action_loss_weight: 0.0
+      image_loss_weight: 0.0
       ignore_index: -100
       log_prefix: "habitat_loss_"
 
@@ -73,7 +73,10 @@ wrapper:
   eval_forced_action: false
   training_enabled: false
 
-  enable_modulators: false
+  enable_modulators: true
+  learning_rate_schedule:
+    mode: record
+    shuffled_seed: 20260827
   min_memories_for_confidence: 5
   viz_loss_slow_ema: 0.95
   viz_loss_fast_ema: 0.6

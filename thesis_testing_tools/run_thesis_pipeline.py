@@ -9,7 +9,7 @@ source-pre reference for an additional Habitat -> source-post follow-up.
 
 from __future__ import annotations
 
-import argparse, csv, json, os, subprocess, time
+import argparse, csv, json, math, os, subprocess, time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -18,6 +18,9 @@ from typing import Any, Callable, Mapping
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPLAY_CONFIG = REPO_ROOT / "cfg" / "replay_uniwm_cfg.yaml"
 HABITAT_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg.yaml"
+FROZEN_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_no_learning.yaml"
+FIXED_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_fixed_learning.yaml"
+FULL_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_modulated_learning.yaml"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "output"
 BASE_CHECKPOINT = REPO_ROOT / "checkpoints" / "base_ckpt"
 
@@ -31,6 +34,15 @@ ENV_OVERRIDES = {
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     "NCCL_P2P_DISABLE": "1",
 }
+
+CORE_CONDITIONS: tuple[tuple[str, str], ...] = (
+    ("c0_frozen", "C0 Frozen / schedule record"),
+    ("c1_fixed_base", "C1 Fixed-Base"),
+    ("c2_fixed_mean", "C2 Fixed-Mean"),
+    ("c3_aligned_replay", "C3 Aligned Replay"),
+    ("c4_shuffled_replay", "C4 Time-Shuffled Replay"),
+    ("c5_full", "C5 Full Online Controller"),
+)
 
 
 MetricCalculator = Callable[[Path, Path], Mapping[str, float]]
@@ -193,6 +205,82 @@ def write_habitat_fixed_action_config(
     lines[fixed_action_line] = (
         f"{indentation}fixed_action_run_dir: {replacement}\n"
     )
+
+    destination.write_text("".join(lines), encoding="utf-8")
+
+
+def _replace_yaml_scalar(
+    lines: list[str],
+    key: str,
+    replacement: str,
+) -> None:
+    line_index = next(
+        index
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith(f"{key}:")
+    )
+    indentation = lines[line_index][
+        : len(lines[line_index]) - len(lines[line_index].lstrip())
+    ]
+    lines[line_index] = f"{indentation}{key}: {replacement}\n"
+
+
+def write_seed_source_config(
+    destination: Path,
+    initial_checkpoint: Path,
+) -> None:
+    lines = REPLAY_CONFIG.read_text(encoding="utf-8").splitlines(keepends=True)
+    _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
+    destination.write_text("".join(lines), encoding="utf-8")
+
+
+def write_seed_habitat_config(
+    source_config: Path,
+    destination: Path,
+    *,
+    initial_checkpoint: Path,
+    seed: int,
+    habitat_action_run: Path | None,
+    fixed_mean_lr: float | None = None,
+    schedule_input_dir: Path | None = None,
+    shuffled_schedule: bool = False,
+    schedule_shuffle_seed: int | None = None,
+    save_model_weights: bool = True,
+) -> None:
+    lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
+    _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
+    _replace_yaml_scalar(lines, "seed", str(seed))
+    _replace_yaml_scalar(
+        lines,
+        "save_model_weights",
+        "true" if save_model_weights else "false",
+    )
+
+    if habitat_action_run is not None:
+        _replace_yaml_scalar(
+            lines,
+            "fixed_action_run_dir",
+            json.dumps(str(habitat_action_run.resolve())),
+        )
+    if fixed_mean_lr is not None:
+        _replace_yaml_scalar(lines, "initial_lr", repr(float(fixed_mean_lr)))
+    if schedule_shuffle_seed is not None:
+        _replace_yaml_scalar(lines, "shuffled_seed", str(schedule_shuffle_seed))
+    if schedule_input_dir is not None:
+        schedule_line = next(
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip().startswith("learning_rate_schedule:")
+        )
+        indentation = lines[schedule_line][
+            : len(lines[schedule_line]) - len(lines[schedule_line].lstrip())
+        ]
+        lines[schedule_line:schedule_line + 1] = [
+            f"{indentation}learning_rate_schedule:\n",
+            f"{indentation}  mode: replay\n",
+            f"{indentation}  input_path: {json.dumps(str(schedule_input_dir.resolve()))}\n",
+            f"{indentation}  shuffled: {'true' if shuffled_schedule else 'false'}\n",
+        ]
 
     destination.write_text("".join(lines), encoding="utf-8")
 
@@ -671,6 +759,350 @@ def _planned_stage(
     return stage
 
 
+def run_seed_batch(
+    *,
+    seed: int,
+    fixed_mean_lr: float,
+    initial_checkpoint: Path = BASE_CHECKPOINT,
+    habitat_action_run: Path | None = None,
+    schedule_shuffle_seed: int = 20260827,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    timestamp: str | None = None,
+    subprocess_runner: SubprocessRunner | None = None,
+    metric_calculator: MetricCalculator | None = None,
+) -> Path:
+    """Run all C0-C5 conditions for one paired experimental seed."""
+    if not math.isfinite(fixed_mean_lr) or fixed_mean_lr <= 0.0:
+        raise ValueError("fixed_mean_lr must be a positive finite number")
+    if isinstance(seed, bool):
+        raise ValueError("seed must be an integer")
+
+    timestamp = (
+        datetime.now().strftime("%Y%m%d_%H%M%S")
+        if timestamp is None
+        else timestamp
+    )
+    initial_checkpoint = Path(initial_checkpoint).resolve()
+    seed_dir = (
+        Path(output_root) / f"thesis_seed_{int(seed)}_{timestamp}"
+    ).resolve()
+    seed_dir.mkdir(parents=True, exist_ok=False)
+
+    source_pre_dir = seed_dir / "source_pre"
+    source_pre_config = seed_dir / "source_pre_config.yaml"
+    write_seed_source_config(source_pre_config, initial_checkpoint)
+    source_pre_command = build_torchrun_command(
+        source_pre_config,
+        SOURCE_DATA_IDS,
+        source_pre_dir,
+        SOURCE_EPISODES,
+        REPLAY_PORT,
+    )
+
+    condition_plans: list[dict[str, Any]] = []
+    c0_habitat_dir = seed_dir / CORE_CONDITIONS[0][0] / "habitat"
+    for condition_id, condition_name in CORE_CONDITIONS:
+        condition_dir = seed_dir / condition_id
+        condition_dir.mkdir()
+        habitat_dir = condition_dir / "habitat"
+        habitat_config = condition_dir / "habitat_config.yaml"
+        final_checkpoint = habitat_dir / "final_ckpt"
+
+        if condition_id == "c0_frozen":
+            source_config = FROZEN_CONFIG
+        elif condition_id == "c5_full":
+            source_config = FULL_CONFIG
+        else:
+            source_config = FIXED_CONFIG
+
+        write_seed_habitat_config(
+            source_config,
+            habitat_config,
+            initial_checkpoint=initial_checkpoint,
+            seed=int(seed),
+            habitat_action_run=habitat_action_run,
+            fixed_mean_lr=(
+                fixed_mean_lr if condition_id == "c2_fixed_mean" else None
+            ),
+            schedule_input_dir=(
+                c0_habitat_dir
+                if condition_id in ("c3_aligned_replay", "c4_shuffled_replay")
+                else None
+            ),
+            shuffled_schedule=condition_id == "c4_shuffled_replay",
+            schedule_shuffle_seed=(
+                schedule_shuffle_seed if condition_id == "c0_frozen" else None
+            ),
+            save_model_weights=condition_id != "c0_frozen",
+        )
+        habitat_command = build_torchrun_command(
+            habitat_config,
+            HABITAT_DATA_ID,
+            habitat_dir,
+            HABITAT_EPISODES,
+            HABITAT_PORT,
+        )
+
+        source_post_dir = condition_dir / "source_post"
+        source_post_config = condition_dir / "source_post_config.yaml"
+        source_post_command = None
+        if condition_id != "c0_frozen":
+            write_seed_source_config(source_post_config, final_checkpoint)
+            source_post_command = build_torchrun_command(
+                source_post_config,
+                SOURCE_DATA_IDS,
+                source_post_dir,
+                SOURCE_EPISODES,
+                REPLAY_PORT,
+            )
+
+        condition_plans.append(
+            {
+                "condition_id": condition_id,
+                "condition_name": condition_name,
+                "condition_dir": condition_dir,
+                "habitat_dir": habitat_dir,
+                "habitat_config": habitat_config,
+                "habitat_command": habitat_command,
+                "final_checkpoint": final_checkpoint,
+                "source_post_dir": source_post_dir,
+                "source_post_config": (
+                    None if source_post_command is None else source_post_config
+                ),
+                "source_post_command": source_post_command,
+            }
+        )
+
+    seed_manifest = {
+        "created_at": datetime.now().astimezone().isoformat(),
+        "run_type": "core_condition_seed_batch",
+        "seed": int(seed),
+        "seed_dir": str(seed_dir),
+        "initial_checkpoint": str(initial_checkpoint),
+        "fixed_mean_learning_rate": float(fixed_mean_lr),
+        "schedule_shuffle_seed": int(schedule_shuffle_seed),
+        "source_pre": _planned_stage(
+            "source_pre",
+            SOURCE_DATA_IDS,
+            source_pre_config,
+            source_pre_dir,
+            source_pre_command,
+            initial_checkpoint,
+        ),
+        "conditions": [
+            {
+                "condition_id": plan["condition_id"],
+                "condition_name": plan["condition_name"],
+                "condition_dir": str(plan["condition_dir"]),
+                "habitat_config": str(plan["habitat_config"]),
+                "habitat_command": plan["habitat_command"],
+                "source_post_config": (
+                    None
+                    if plan["source_post_config"] is None
+                    else str(plan["source_post_config"])
+                ),
+                "source_post_command": plan["source_post_command"],
+                "source_post_reused_from_source_pre": (
+                    plan["condition_id"] == "c0_frozen"
+                ),
+            }
+            for plan in condition_plans
+        ],
+        "habitat_action_reference_run": (
+            None
+            if habitat_action_run is None
+            else str(habitat_action_run.resolve())
+        ),
+        "environment_overrides": ENV_OVERRIDES,
+    }
+    with (seed_dir / "seed_manifest.json").open("w", encoding="utf-8") as handle:
+        json.dump(seed_manifest, handle, indent=2)
+
+    calculate_metrics = (
+        AlexNetVisualMetricCalculator()
+        if metric_calculator is None
+        else metric_calculator
+    )
+    seed_started = time.perf_counter()
+
+    source_pre_record = run_stage(
+        "source_pre",
+        source_pre_command,
+        source_pre_dir,
+        source_pre_config,
+        SOURCE_DATA_IDS,
+        subprocess_runner,
+    )
+    source_pre_record["input_checkpoint_path"] = str(initial_checkpoint)
+    source_pre_rows = collect_stage_episode_metrics(
+        source_pre_dir,
+        SOURCE_DATA_IDS,
+        "eval",
+        calculate_metrics,
+    )
+    source_pre_record["thesis_episode_metrics"] = str(
+        source_pre_dir / "thesis_episode_metrics.csv"
+    )
+
+    condition_summaries: list[dict[str, Any]] = []
+    for plan in condition_plans:
+        condition_started = time.perf_counter()
+        condition_id = str(plan["condition_id"])
+        condition_dir = Path(plan["condition_dir"])
+        habitat_dir = Path(plan["habitat_dir"])
+        final_checkpoint = Path(plan["final_checkpoint"])
+        stage_records = [
+            {
+                "name": "source_pre",
+                "status": "reused",
+                "run_dir": str(source_pre_dir),
+                "thesis_episode_metrics": str(
+                    source_pre_dir / "thesis_episode_metrics.csv"
+                ),
+            }
+        ]
+
+        habitat_record = run_stage(
+            "habitat",
+            plan["habitat_command"],
+            habitat_dir,
+            plan["habitat_config"],
+            HABITAT_DATA_ID,
+            subprocess_runner,
+        )
+        habitat_record["input_checkpoint_path"] = str(initial_checkpoint)
+        if condition_id != "c0_frozen":
+            habitat_record["output_checkpoint_path"] = str(final_checkpoint)
+        stage_records.append(habitat_record)
+        habitat_rows = collect_stage_episode_metrics(
+            habitat_dir,
+            HABITAT_DATA_ID,
+            "pred",
+            calculate_metrics,
+        )
+        habitat_record["thesis_episode_metrics"] = str(
+            habitat_dir / "thesis_episode_metrics.csv"
+        )
+
+        source_post_dir = Path(plan["source_post_dir"])
+        source_post_command = plan["source_post_command"]
+        if source_post_command is None:
+            source_post_dir.mkdir()
+            source_post_rows = [dict(row) for row in source_pre_rows]
+            _write_csv(
+                source_post_dir / "thesis_episode_metrics.csv",
+                source_post_rows,
+            )
+            reuse_record = {
+                "name": "source_post",
+                "status": "reused",
+                "run_dir": str(source_post_dir),
+                "source_pre_reference": str(source_pre_dir),
+                "reason": "C0 performed no optimizer steps",
+                "thesis_episode_metrics": str(
+                    source_post_dir / "thesis_episode_metrics.csv"
+                ),
+            }
+            with (source_post_dir / "reuse_manifest.json").open(
+                "w", encoding="utf-8"
+            ) as handle:
+                json.dump(reuse_record, handle, indent=2)
+            stage_records.append(reuse_record)
+        else:
+            source_post_record = run_stage(
+                "source_post",
+                source_post_command,
+                source_post_dir,
+                plan["source_post_config"],
+                SOURCE_DATA_IDS,
+                subprocess_runner,
+            )
+            source_post_record["input_checkpoint_path"] = str(final_checkpoint)
+            stage_records.append(source_post_record)
+            source_post_rows = collect_stage_episode_metrics(
+                source_post_dir,
+                SOURCE_DATA_IDS,
+                "eval",
+                calculate_metrics,
+            )
+            source_post_record["thesis_episode_metrics"] = str(
+                source_post_dir / "thesis_episode_metrics.csv"
+            )
+
+        comparison_rows = compare_source_episodes(
+            source_pre_rows,
+            source_post_rows,
+        )
+        _write_csv(
+            condition_dir / "source_episode_comparison.csv",
+            comparison_rows,
+        )
+
+        condition_summary = build_pipeline_summary(
+            seed_dir,
+            condition_dir,
+            source_pre_dir,
+            stage_records,
+            source_pre_rows,
+            habitat_rows,
+            source_post_rows,
+            comparison_rows,
+            time.perf_counter() - condition_started,
+            "seed_condition",
+        )
+        condition_summary.update(
+            {
+                "condition_id": condition_id,
+                "condition_name": plan["condition_name"],
+                "seed": int(seed),
+                "initial_checkpoint": str(initial_checkpoint),
+                "source_post_reused_from_source_pre": (
+                    source_post_command is None
+                ),
+            }
+        )
+        if source_post_command is None:
+            condition_summary["artifacts"]["habitat_checkpoint"] = None
+            condition_summary["artifacts"]["post_replay_config"] = None
+        with (condition_dir / "pipeline_summary.json").open(
+            "w", encoding="utf-8"
+        ) as handle:
+            json.dump(condition_summary, handle, indent=2)
+        condition_summaries.append(condition_summary)
+
+    batch_summary = {
+        "status": "completed",
+        "run_type": "core_condition_seed_batch",
+        "seed": int(seed),
+        "seed_dir": str(seed_dir),
+        "initial_checkpoint": str(initial_checkpoint),
+        "fixed_mean_learning_rate": float(fixed_mean_lr),
+        "schedule_shuffle_seed": int(schedule_shuffle_seed),
+        "duration_seconds": time.perf_counter() - seed_started,
+        "source_pre": source_pre_record,
+        "conditions": [
+            {
+                "condition_id": summary["condition_id"],
+                "condition_name": summary["condition_name"],
+                "result_dir": summary["result_dir"],
+                "summary": str(
+                    Path(summary["result_dir"]) / "pipeline_summary.json"
+                ),
+                "source_post_reused_from_source_pre": summary[
+                    "source_post_reused_from_source_pre"
+                ],
+            }
+            for summary in condition_summaries
+        ],
+    }
+    with (seed_dir / "seed_summary.json").open(
+        "w", encoding="utf-8"
+    ) as handle:
+        json.dump(batch_summary, handle, indent=2)
+
+    return seed_dir
+
+
 def run_pipeline(
     *,
     existing_run: Path | None = None,
@@ -963,6 +1395,38 @@ def run_pipeline(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--all-conditions",
+        action="store_true",
+        help="Run the paired C0-C5 condition batch for one seed.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Adapter/Habitat seed for an all-conditions batch.",
+    )
+    parser.add_argument(
+        "--fixed-mean-lr",
+        type=float,
+        help="Frozen effective learning rate for the C2 Fixed-Mean condition.",
+    )
+    parser.add_argument(
+        "--initial-checkpoint",
+        type=Path,
+        default=BASE_CHECKPOINT,
+        help="Common checkpoint from which every condition starts.",
+    )
+    parser.add_argument(
+        "--schedule-shuffle-seed",
+        type=int,
+        default=20260827,
+        help="Seed used for C0's within-episode shuffled schedule.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=DEFAULT_OUTPUT_ROOT,
+    )
+    parser.add_argument(
         "--existing-run",
         type=Path,
         help="Reuse source_pre from an existing thesis pipeline run.",
@@ -1000,11 +1464,45 @@ def main() -> None:
         HABITAT_PORT = args.habitat_port
         REPLAY_PORT = args.habitat_port + 1
 
-    result_dir = run_pipeline(
-        existing_run=args.existing_run,
-        source_post_checkpoint=args.source_post_checkpoint,
-        habitat_action_run=args.habitat_action_run,
-    )
+    if args.all_conditions:
+        incompatible = [
+            name
+            for name, value in (
+                ("--existing-run", args.existing_run),
+                ("--source-post-checkpoint", args.source_post_checkpoint),
+                ("--habitat-cfg", args.habitat_cfg),
+            )
+            if value is not None
+        ]
+        if incompatible:
+            parser.error(
+                "--all-conditions cannot be combined with "
+                + ", ".join(incompatible)
+            )
+        if args.seed is None:
+            parser.error("--all-conditions requires --seed")
+        if args.fixed_mean_lr is None:
+            parser.error("--all-conditions requires --fixed-mean-lr")
+
+        result_dir = run_seed_batch(
+            seed=args.seed,
+            fixed_mean_lr=args.fixed_mean_lr,
+            initial_checkpoint=args.initial_checkpoint,
+            habitat_action_run=args.habitat_action_run,
+            schedule_shuffle_seed=args.schedule_shuffle_seed,
+            output_root=args.output_root,
+        )
+    else:
+        if args.seed is not None or args.fixed_mean_lr is not None:
+            parser.error(
+                "--seed and --fixed-mean-lr require --all-conditions"
+            )
+        result_dir = run_pipeline(
+            existing_run=args.existing_run,
+            source_post_checkpoint=args.source_post_checkpoint,
+            habitat_action_run=args.habitat_action_run,
+            output_root=args.output_root,
+        )
     print(f"[THESIS PIPELINE] Finished: {result_dir}")
 
 
