@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from thesis_testing_tools.run_thesis_pipeline import (
@@ -8,11 +9,17 @@ from thesis_testing_tools.run_thesis_pipeline import (
     HABITAT_DATA_ID,
     SOURCE_DATA_IDS,
     run_seed_batch,
+    smoke_test_result,
+    _episode_diagnostic_metrics,
 )
 
 
 class SeedBatchPipelineTests(unittest.TestCase):
-    def test_runs_one_source_pre_and_condition_specific_followups(self) -> None:
+    @patch(
+        "thesis_testing_tools.run_thesis_pipeline._captured_command",
+        return_value={"available": False, "error": "not queried in unit tests"},
+    )
+    def test_runs_one_source_pre_and_condition_specific_followups(self, _capture) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary_directory:
             temporary_path = Path(temporary_directory)
             output_root = temporary_path / "output"
@@ -51,6 +58,11 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 fixed_mean_lr=6.25e-5,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
+                source_episodes=1,
+                habitat_episodes=1,
+                max_episode_steps=2,
+                max_route_steps=1,
+                smoke_test=True,
                 output_root=output_root,
                 timestamp="test",
                 subprocess_runner=fake_runner,
@@ -95,6 +107,19 @@ class SeedBatchPipelineTests(unittest.TestCase):
                     source_pre_dirs,
                 )
 
+            for command in calls:
+                self.assertEqual(
+                    command[command.index("--num_episodes") + 1],
+                    "1",
+                )
+
+            source_pre_config = (seed_dir / "source_pre_config.yaml").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("max_episode_steps: 2", source_pre_config)
+            self.assertIn("max_route_steps: 1", source_pre_config)
+            self.assertIn("eval_dataset_manifest.json", source_pre_config)
+
             c0_config = (
                 seed_dir / "c0_frozen" / "habitat_config.yaml"
             ).read_text(encoding="utf-8")
@@ -103,6 +128,18 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertIn("shuffled_seed: 77", c0_config)
             self.assertIn("save_model_weights: false", c0_config)
             self.assertIn("seed: 321", c0_config)
+            self.assertIn("max_episode_steps: 2", c0_config)
+            self.assertIn("max_route_steps: 1", c0_config)
+            self.assertIn("fixed_action_run_dir: null", c0_config)
+
+            c1_config = (
+                seed_dir / "c1_fixed_base" / "habitat_config.yaml"
+            ).read_text(encoding="utf-8")
+            self.assertIn(
+                "fixed_action_run_dir: "
+                + json.dumps(str((seed_dir / "c0_frozen" / "habitat").resolve())),
+                c1_config,
+            )
 
             c2_config = (
                 seed_dir / "c2_fixed_mean" / "habitat_config.yaml"
@@ -158,14 +195,98 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 (seed_dir / "seed_manifest.json").read_text(encoding="utf-8")
             )
             self.assertEqual(len(manifest["conditions"]), 6)
+            self.assertTrue(manifest["workload"]["smoke_test"])
+            self.assertEqual(manifest["workload"]["habitat_episodes"], 1)
             self.assertTrue(
                 manifest["conditions"][0]["source_post_reused_from_source_pre"]
             )
+            self.assertIsNone(
+                manifest["conditions"][0]["habitat_action_reference_run"]
+            )
+            for condition in manifest["conditions"][1:]:
+                self.assertEqual(
+                    condition["habitat_action_reference_run"],
+                    str((seed_dir / "c0_frozen" / "habitat").resolve()),
+                )
             self.assertTrue((seed_dir / "seed_summary.json").is_file())
+            summary = json.loads((seed_dir / "seed_summary.json").read_text())
+            self.assertEqual(summary["status"], "inconclusive")
+            self.assertIn(
+                "c1_fixed_base/habitat: no optimizer updates",
+                summary["smoke_test_result"]["missing_coverage"],
+            )
+            provenance = json.loads(
+                (seed_dir / "provenance.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(provenance["workload"]["smoke_test"])
+            self.assertIn("git", provenance)
+            self.assertIn("initial_checkpoint", provenance)
+            self.assertEqual(len(provenance["output_checkpoints"]), 5)
 
     def test_rejects_invalid_fixed_mean_learning_rate(self) -> None:
         with self.assertRaisesRegex(ValueError, "positive finite"):
             run_seed_batch(seed=1, fixed_mean_lr=0.0)
+
+    def test_rejects_invalid_smoke_workload(self) -> None:
+        with self.assertRaisesRegex(ValueError, "source_episodes"):
+            run_seed_batch(seed=1, fixed_mean_lr=1e-4, source_episodes=0)
+
+    def test_optimizer_count_uses_explicit_update_flag(self) -> None:
+        rows = _episode_diagnostic_metrics({"steps": [
+            {"replanned": False, "training_logs": {
+                "optimizer_step": updated, "final_lr": 1e-4,
+            }}
+            for updated in (False, True, False)
+        ]})
+        self.assertEqual(rows["optimizer_step_count"], 1)
+
+    def test_smoke_coverage(self) -> None:
+        def metric_row(data_id):
+            return {
+                "data_id": data_id, "optimizer_step_count": 1,
+                "prediction_available_count": 1,
+                "mae": 0.2, "ssim": 0.8, "lpips": 0.3,
+            }
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            schedule_path = Path(directory) / "schedule.json"
+            for case in (
+                "passed", "no_update", "missing_source", "invalid_metric",
+                "constant_rates", "different_episodes", "missing_schedule",
+            ):
+                with self.subTest(case=case):
+                    stages = {"source_pre": [
+                        metric_row(data_id) for data_id in SOURCE_DATA_IDS.split(",")
+                    ]}
+                    for condition_id, _ in CORE_CONDITIONS:
+                        stages[f"{condition_id}/habitat"] = [metric_row(HABITAT_DATA_ID)]
+                        if condition_id != "c0_frozen":
+                            stages[f"{condition_id}/source_post"] = [
+                                metric_row(data_id) for data_id in SOURCE_DATA_IDS.split(",")
+                            ]
+                    entries = [
+                        {"data_id": "habitat", "episode_id": "827",
+                         "update_eligible": True, "effective_learning_rate": rate}
+                        for rate in (1e-4, 2e-4)
+                    ]
+                    if case == "no_update":
+                        stages["c1_fixed_base/habitat"][0]["optimizer_step_count"] = 0
+                    elif case == "missing_source":
+                        stages["c2_fixed_mean/source_post"].pop()
+                    elif case == "invalid_metric":
+                        stages["source_pre"][0]["lpips"] = float("nan")
+                    elif case == "constant_rates":
+                        entries[1]["effective_learning_rate"] = 1e-4
+                    elif case == "different_episodes":
+                        entries[1]["episode_id"] = "352"
+                    schedule_path.write_text(json.dumps({"entries": entries}))
+                    if case == "missing_schedule":
+                        schedule_path.unlink()
+                    result = smoke_test_result(stages, schedule_path)
+                    self.assertEqual(
+                        result["status"], "passed" if case == "passed" else "inconclusive"
+                    )
+                    self.assertEqual(len(result["missing_coverage"]), 0 if case == "passed" else 1)
 
 
 if __name__ == "__main__":

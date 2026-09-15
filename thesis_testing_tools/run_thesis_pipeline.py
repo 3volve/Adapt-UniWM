@@ -9,7 +9,7 @@ source-pre reference for an additional Habitat -> source-post follow-up.
 
 from __future__ import annotations
 
-import argparse, csv, json, math, os, subprocess, time
+import argparse, csv, hashlib, json, math, os, platform, subprocess, sys, time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -17,6 +17,8 @@ from typing import Any, Callable, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPLAY_CONFIG = REPO_ROOT / "cfg" / "replay_uniwm_cfg.yaml"
+DEVELOPMENT_MANIFEST = REPO_ROOT / "cfg" / "eval_dataset_manifest.json"
+HELDOUT_MANIFEST = REPO_ROOT / "cfg" / "thesis_heldout_manifest.json"
 HABITAT_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg.yaml"
 FROZEN_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_no_learning.yaml"
 FIXED_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_fixed_learning.yaml"
@@ -47,6 +49,123 @@ CORE_CONDITIONS: tuple[tuple[str, str], ...] = (
 
 MetricCalculator = Callable[[Path, Path], Mapping[str, float]]
 SubprocessRunner = Callable[..., Any]
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_fingerprint(path: Path) -> dict[str, Any]:
+    path = Path(path).resolve()
+    if path.is_file():
+        return {
+            "path": str(path),
+            "type": "file",
+            "bytes": path.stat().st_size,
+            "sha256": sha256_file(path),
+        }
+    if not path.is_dir():
+        return {"path": str(path), "type": "missing"}
+
+    files = []
+    total_bytes = 0
+    tree_digest = hashlib.sha256()
+    for file_path in sorted(item for item in path.rglob("*") if item.is_file()):
+        relative_path = file_path.relative_to(path).as_posix()
+        size = file_path.stat().st_size
+        file_hash = sha256_file(file_path)
+        files.append(
+            {
+                "relative_path": relative_path,
+                "bytes": size,
+                "sha256": file_hash,
+            }
+        )
+        total_bytes += size
+        tree_digest.update(
+            f"{relative_path}\0{size}\0{file_hash}\n".encode("utf-8")
+        )
+    return {
+        "path": str(path),
+        "type": "directory",
+        "bytes": total_bytes,
+        "file_count": len(files),
+        "tree_sha256": tree_digest.hexdigest(),
+        "files": files,
+    }
+
+
+def _captured_command(command: list[str]) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"available": False, "error": str(exc)}
+    return {
+        "available": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def run_provenance(
+    *,
+    initial_checkpoint: Path,
+    source_manifest: Path,
+    generated_configs: list[Path],
+    workload: dict[str, Any],
+) -> dict[str, Any]:
+    commit = _captured_command(["git", "rev-parse", "HEAD"])
+    branch = _captured_command(["git", "branch", "--show-current"])
+    status = _captured_command(["git", "status", "--short"])
+    gpu = _captured_command(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,name,memory.total,driver_version,pci.bus_id",
+            "--format=csv,noheader,nounits",
+        ]
+    )
+    input_paths = [
+        Path(__file__),
+        REPLAY_CONFIG,
+        FROZEN_CONFIG,
+        FIXED_CONFIG,
+        FULL_CONFIG,
+        source_manifest,
+        HELDOUT_MANIFEST,
+        *generated_configs,
+    ]
+    return {
+        "recorded_at": datetime.now().astimezone().isoformat(),
+        "git": {
+            "commit": commit.get("stdout") if commit.get("returncode") == 0 else None,
+            "branch": branch.get("stdout") if branch.get("returncode") == 0 else None,
+            "dirty": bool(status.get("stdout")),
+            "status_short": status.get("stdout", "").splitlines(),
+        },
+        "system": {
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "python": sys.version,
+            "python_executable": sys.executable,
+            "gpu_query": gpu,
+        },
+        "workload": workload,
+        "inputs": [artifact_fingerprint(path) for path in input_paths],
+        "initial_checkpoint": artifact_fingerprint(initial_checkpoint),
+        "output_checkpoints": [],
+    }
 
 
 class AlexNetVisualMetricCalculator:
@@ -228,9 +347,18 @@ def _replace_yaml_scalar(
 def write_seed_source_config(
     destination: Path,
     initial_checkpoint: Path,
+    *,
+    source_manifest: Path = DEVELOPMENT_MANIFEST,
+    max_episode_steps: int | None = None,
+    max_route_steps: int | None = None,
 ) -> None:
     lines = REPLAY_CONFIG.read_text(encoding="utf-8").splitlines(keepends=True)
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
+    _replace_yaml_scalar(lines, "manifest_path", json.dumps(str(source_manifest)))
+    if max_episode_steps is not None:
+        _replace_yaml_scalar(lines, "max_episode_steps", str(max_episode_steps))
+    if max_route_steps is not None:
+        _replace_yaml_scalar(lines, "max_route_steps", str(max_route_steps))
     destination.write_text("".join(lines), encoding="utf-8")
 
 
@@ -246,6 +374,8 @@ def write_seed_habitat_config(
     shuffled_schedule: bool = False,
     schedule_shuffle_seed: int | None = None,
     save_model_weights: bool = True,
+    max_episode_steps: int | None = None,
+    max_route_steps: int | None = None,
 ) -> None:
     lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
@@ -255,13 +385,20 @@ def write_seed_habitat_config(
         "save_model_weights",
         "true" if save_model_weights else "false",
     )
+    if max_episode_steps is not None:
+        _replace_yaml_scalar(lines, "max_episode_steps", str(max_episode_steps))
+    if max_route_steps is not None:
+        _replace_yaml_scalar(lines, "max_route_steps", str(max_route_steps))
 
-    if habitat_action_run is not None:
-        _replace_yaml_scalar(
-            lines,
-            "fixed_action_run_dir",
-            json.dumps(str(habitat_action_run.resolve())),
-        )
+    _replace_yaml_scalar(
+        lines,
+        "fixed_action_run_dir",
+        (
+            "null"
+            if habitat_action_run is None
+            else json.dumps(str(habitat_action_run.resolve()))
+        ),
+    )
     if fixed_mean_lr is not None:
         _replace_yaml_scalar(lines, "initial_lr", repr(float(fixed_mean_lr)))
     if schedule_shuffle_seed is not None:
@@ -380,6 +517,10 @@ def _episode_diagnostic_metrics(episode_log: dict[str, Any]) -> dict[str, Any]:
         "soft_spl": final_metrics.get("soft_spl"),
         "final_distance_to_goal": final_metrics.get("distance_to_goal"),
         "runner_transition_count": len(steps),
+        "optimizer_step_count": sum(
+            _nested(step, "training_logs", "optimizer_step") is True
+            for step in steps
+        ),
         "habitat_primitive_step_count": final_metrics.get("num_steps"),
         "collision_transition_count": sum(bool(value) for value in collisions),
         "replan_count": sum(bool(step["replanned"]) for step in steps),
@@ -759,13 +900,66 @@ def _planned_stage(
     return stage
 
 
+def smoke_test_result(
+    stage_rows: dict[str, list[dict[str, Any]]],
+    schedule_path: Path,
+) -> dict[str, Any]:
+    """Check coverage of completed stages, not scientific performance."""
+    missing = []
+    expected_stages = {"source_pre": SOURCE_DATA_IDS.split(",")}
+    for condition_id, _ in CORE_CONDITIONS:
+        expected_stages[f"{condition_id}/habitat"] = [HABITAT_DATA_ID]
+        if condition_id != "c0_frozen":
+            expected_stages[f"{condition_id}/source_post"] = SOURCE_DATA_IDS.split(",")
+            if not any(
+                row["optimizer_step_count"] > 0
+                for row in stage_rows[f"{condition_id}/habitat"]
+            ):
+                missing.append(f"{condition_id}/habitat: no optimizer updates")
+
+    for stage, data_ids in expected_stages.items():
+        for data_id in data_ids:
+            if not any(
+                row["data_id"] == data_id
+                and row["prediction_available_count"] > 0
+                and all(
+                    row[metric] is not None and math.isfinite(row[metric])
+                    for metric in ("mae", "ssim", "lpips")
+                )
+                for row in stage_rows[stage]
+            ):
+                missing.append(f"{stage}/{data_id}: no valid visual metrics")
+
+    if not schedule_path.is_file():
+        missing.append("c0_frozen: recorded learning-rate schedule is missing")
+    else:
+        schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+        rates_by_episode: dict[tuple[str, str], set[float]] = {}
+        for entry in schedule["entries"]:
+            if entry["update_eligible"]:
+                key = (entry["data_id"], entry["episode_id"])
+                rates_by_episode.setdefault(key, set()).add(entry["effective_learning_rate"])
+        if not any(len(rates) >= 2 for rates in rates_by_episode.values()):
+            missing.append(
+                "c0_frozen: shuffled replay needs two eligible transitions "
+                "with different learning rates in the same episode"
+            )
+    return {"status": "inconclusive" if missing else "passed", "missing_coverage": missing}
+
+
 def run_seed_batch(
     *,
     seed: int,
     fixed_mean_lr: float,
     initial_checkpoint: Path = BASE_CHECKPOINT,
+    source_manifest: Path = DEVELOPMENT_MANIFEST,
     habitat_action_run: Path | None = None,
     schedule_shuffle_seed: int = 20260827,
+    source_episodes: int = SOURCE_EPISODES,
+    habitat_episodes: int = HABITAT_EPISODES,
+    max_episode_steps: int | None = None,
+    max_route_steps: int | None = None,
+    smoke_test: bool = False,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     timestamp: str | None = None,
     subprocess_runner: SubprocessRunner | None = None,
@@ -776,6 +970,18 @@ def run_seed_batch(
         raise ValueError("fixed_mean_lr must be a positive finite number")
     if isinstance(seed, bool):
         raise ValueError("seed must be an integer")
+    for name, value in (
+        ("source_episodes", source_episodes),
+        ("habitat_episodes", habitat_episodes),
+    ):
+        if isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    for name, value in (
+        ("max_episode_steps", max_episode_steps),
+        ("max_route_steps", max_route_steps),
+    ):
+        if value is not None and (isinstance(value, bool) or value <= 0):
+            raise ValueError(f"{name} must be a positive integer when provided")
 
     timestamp = (
         datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -783,6 +989,7 @@ def run_seed_batch(
         else timestamp
     )
     initial_checkpoint = Path(initial_checkpoint).resolve()
+    source_manifest = Path(source_manifest).resolve()
     seed_dir = (
         Path(output_root) / f"thesis_seed_{int(seed)}_{timestamp}"
     ).resolve()
@@ -790,12 +997,18 @@ def run_seed_batch(
 
     source_pre_dir = seed_dir / "source_pre"
     source_pre_config = seed_dir / "source_pre_config.yaml"
-    write_seed_source_config(source_pre_config, initial_checkpoint)
+    write_seed_source_config(
+        source_pre_config,
+        initial_checkpoint,
+        source_manifest=source_manifest,
+        max_episode_steps=max_episode_steps,
+        max_route_steps=max_route_steps,
+    )
     source_pre_command = build_torchrun_command(
         source_pre_config,
         SOURCE_DATA_IDS,
         source_pre_dir,
-        SOURCE_EPISODES,
+        source_episodes,
         REPLAY_PORT,
     )
 
@@ -815,12 +1028,17 @@ def run_seed_batch(
         else:
             source_config = FIXED_CONFIG
 
+        condition_action_run = (
+            habitat_action_run
+            if habitat_action_run is not None
+            else (None if condition_id == "c0_frozen" else c0_habitat_dir)
+        )
         write_seed_habitat_config(
             source_config,
             habitat_config,
             initial_checkpoint=initial_checkpoint,
             seed=int(seed),
-            habitat_action_run=habitat_action_run,
+            habitat_action_run=condition_action_run,
             fixed_mean_lr=(
                 fixed_mean_lr if condition_id == "c2_fixed_mean" else None
             ),
@@ -834,12 +1052,14 @@ def run_seed_batch(
                 schedule_shuffle_seed if condition_id == "c0_frozen" else None
             ),
             save_model_weights=condition_id != "c0_frozen",
+            max_episode_steps=max_episode_steps,
+            max_route_steps=max_route_steps,
         )
         habitat_command = build_torchrun_command(
             habitat_config,
             HABITAT_DATA_ID,
             habitat_dir,
-            HABITAT_EPISODES,
+            habitat_episodes,
             HABITAT_PORT,
         )
 
@@ -847,12 +1067,18 @@ def run_seed_batch(
         source_post_config = condition_dir / "source_post_config.yaml"
         source_post_command = None
         if condition_id != "c0_frozen":
-            write_seed_source_config(source_post_config, final_checkpoint)
+            write_seed_source_config(
+                source_post_config,
+                final_checkpoint,
+                source_manifest=source_manifest,
+                max_episode_steps=max_episode_steps,
+                max_route_steps=max_route_steps,
+            )
             source_post_command = build_torchrun_command(
                 source_post_config,
                 SOURCE_DATA_IDS,
                 source_post_dir,
-                SOURCE_EPISODES,
+                source_episodes,
                 REPLAY_PORT,
             )
 
@@ -870,8 +1096,38 @@ def run_seed_batch(
                     None if source_post_command is None else source_post_config
                 ),
                 "source_post_command": source_post_command,
+                "habitat_action_reference_run": condition_action_run,
             }
         )
+
+    generated_configs = [source_pre_config]
+    for plan in condition_plans:
+        generated_configs.append(Path(plan["habitat_config"]))
+        if plan["source_post_config"] is not None:
+            generated_configs.append(Path(plan["source_post_config"]))
+    workload = {
+        "smoke_test": bool(smoke_test),
+        "seed": int(seed),
+        "fixed_mean_learning_rate": float(fixed_mean_lr),
+        "schedule_shuffle_seed": int(schedule_shuffle_seed),
+        "conditions": [condition_id for condition_id, _ in CORE_CONDITIONS],
+        "source_data_ids": SOURCE_DATA_IDS.split(","),
+        "source_episodes_per_data_id": source_episodes,
+        "habitat_episodes": habitat_episodes,
+        "max_episode_steps": max_episode_steps,
+        "max_route_steps": max_route_steps,
+    }
+    provenance = run_provenance(
+        initial_checkpoint=initial_checkpoint,
+        source_manifest=source_manifest,
+        generated_configs=generated_configs,
+        workload=workload,
+    )
+    provenance_path = seed_dir / "provenance.json"
+    provenance_path.write_text(
+        json.dumps(provenance, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     seed_manifest = {
         "created_at": datetime.now().astimezone().isoformat(),
@@ -879,8 +1135,11 @@ def run_seed_batch(
         "seed": int(seed),
         "seed_dir": str(seed_dir),
         "initial_checkpoint": str(initial_checkpoint),
+        "source_manifest": str(source_manifest),
         "fixed_mean_learning_rate": float(fixed_mean_lr),
         "schedule_shuffle_seed": int(schedule_shuffle_seed),
+        "workload": workload,
+        "provenance": str(provenance_path),
         "source_pre": _planned_stage(
             "source_pre",
             SOURCE_DATA_IDS,
@@ -904,6 +1163,11 @@ def run_seed_batch(
                 "source_post_command": plan["source_post_command"],
                 "source_post_reused_from_source_pre": (
                     plan["condition_id"] == "c0_frozen"
+                ),
+                "habitat_action_reference_run": (
+                    None
+                    if plan["habitat_action_reference_run"] is None
+                    else str(Path(plan["habitat_action_reference_run"]).resolve())
                 ),
             }
             for plan in condition_plans
@@ -944,6 +1208,7 @@ def run_seed_batch(
         source_pre_dir / "thesis_episode_metrics.csv"
     )
 
+    smoke_stage_rows = {"source_pre": source_pre_rows}
     condition_summaries: list[dict[str, Any]] = []
     for plan in condition_plans:
         condition_started = time.perf_counter()
@@ -1029,6 +1294,8 @@ def run_seed_batch(
                 source_post_dir / "thesis_episode_metrics.csv"
             )
 
+        smoke_stage_rows[f"{condition_id}/habitat"] = habitat_rows
+        smoke_stage_rows[f"{condition_id}/source_post"] = source_post_rows
         comparison_rows = compare_source_episodes(
             source_pre_rows,
             source_post_rows,
@@ -1056,6 +1323,8 @@ def run_seed_batch(
                 "condition_name": plan["condition_name"],
                 "seed": int(seed),
                 "initial_checkpoint": str(initial_checkpoint),
+                "workload": workload,
+                "provenance": str(provenance_path),
                 "source_post_reused_from_source_pre": (
                     source_post_command is None
                 ),
@@ -1076,8 +1345,11 @@ def run_seed_batch(
         "seed": int(seed),
         "seed_dir": str(seed_dir),
         "initial_checkpoint": str(initial_checkpoint),
+        "source_manifest": str(source_manifest),
         "fixed_mean_learning_rate": float(fixed_mean_lr),
         "schedule_shuffle_seed": int(schedule_shuffle_seed),
+        "workload": workload,
+        "provenance": str(provenance_path),
         "duration_seconds": time.perf_counter() - seed_started,
         "source_pre": source_pre_record,
         "conditions": [
@@ -1095,6 +1367,26 @@ def run_seed_batch(
             for summary in condition_summaries
         ],
     }
+    if smoke_test:
+        result = smoke_test_result(
+            smoke_stage_rows, c0_habitat_dir / "learning_rate_schedule.json"
+        )
+        batch_summary["smoke_test_result"] = result
+        if result["status"] == "inconclusive":
+            batch_summary["status"] = "inconclusive"
+        print(f"[THESIS SMOKE TEST] {result['status'].upper()}")
+        for reason in result["missing_coverage"]:
+            print(f"  - {reason}")
+
+    provenance["output_checkpoints"] = [
+        artifact_fingerprint(Path(plan["final_checkpoint"]))
+        for plan in condition_plans
+        if plan["condition_id"] != "c0_frozen"
+    ]
+    provenance_path.write_text(
+        json.dumps(provenance, indent=2) + "\n",
+        encoding="utf-8",
+    )
     with (seed_dir / "seed_summary.json").open(
         "w", encoding="utf-8"
     ) as handle:
@@ -1416,6 +1708,12 @@ def main() -> None:
         help="Common checkpoint from which every condition starts.",
     )
     parser.add_argument(
+        "--source-manifest",
+        type=Path,
+        default=DEVELOPMENT_MANIFEST,
+        help="Source trajectory manifest used by source-pre and source-post.",
+    )
+    parser.add_argument(
         "--schedule-shuffle-seed",
         type=int,
         default=20260827,
@@ -1426,6 +1724,19 @@ def main() -> None:
         type=Path,
         default=DEFAULT_OUTPUT_ROOT,
     )
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help=(
+            "Mark the run as a non-evidentiary smoke test and default to one "
+            "episode per source, one Habitat episode, two episode steps, and "
+            "one route step."
+        ),
+    )
+    parser.add_argument("--source-episodes", type=int)
+    parser.add_argument("--habitat-episodes", type=int)
+    parser.add_argument("--max-episode-steps", type=int)
+    parser.add_argument("--max-route-steps", type=int)
     parser.add_argument(
         "--existing-run",
         type=Path,
@@ -1484,18 +1795,59 @@ def main() -> None:
         if args.fixed_mean_lr is None:
             parser.error("--all-conditions requires --fixed-mean-lr")
 
+        source_episodes = (
+            args.source_episodes
+            if args.source_episodes is not None
+            else (1 if args.smoke_test else SOURCE_EPISODES)
+        )
+        habitat_episodes = (
+            args.habitat_episodes
+            if args.habitat_episodes is not None
+            else (1 if args.smoke_test else HABITAT_EPISODES)
+        )
+        max_episode_steps = (
+            args.max_episode_steps
+            if args.max_episode_steps is not None
+            else (2 if args.smoke_test else None)
+        )
+        max_route_steps = (
+            args.max_route_steps
+            if args.max_route_steps is not None
+            else (1 if args.smoke_test else None)
+        )
+
         result_dir = run_seed_batch(
             seed=args.seed,
             fixed_mean_lr=args.fixed_mean_lr,
             initial_checkpoint=args.initial_checkpoint,
+            source_manifest=args.source_manifest,
             habitat_action_run=args.habitat_action_run,
             schedule_shuffle_seed=args.schedule_shuffle_seed,
+            source_episodes=source_episodes,
+            habitat_episodes=habitat_episodes,
+            max_episode_steps=max_episode_steps,
+            max_route_steps=max_route_steps,
+            smoke_test=args.smoke_test,
             output_root=args.output_root,
         )
     else:
-        if args.seed is not None or args.fixed_mean_lr is not None:
+        all_condition_only = {
+            "--seed": args.seed,
+            "--fixed-mean-lr": args.fixed_mean_lr,
+            "--smoke-test": args.smoke_test or None,
+            "--source-episodes": args.source_episodes,
+            "--habitat-episodes": args.habitat_episodes,
+            "--max-episode-steps": args.max_episode_steps,
+            "--max-route-steps": args.max_route_steps,
+        }
+        incompatible = [
+            name
+            for name, value in all_condition_only.items()
+            if value is not None
+        ]
+        if incompatible:
             parser.error(
-                "--seed and --fixed-mean-lr require --all-conditions"
+                ", ".join(incompatible) + " require --all-conditions"
             )
         result_dir = run_pipeline(
             existing_run=args.existing_run,

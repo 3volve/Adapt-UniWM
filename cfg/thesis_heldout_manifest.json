@@ -1,0 +1,109 @@
+{
+  "action_token_vocabulary": {
+    "coordinate_frame": "agent_relative",
+    "bin_step": 0.01,
+    "axes": {
+      "dx": {
+        "allow_negative": false,
+        "max_bin": 60
+      },
+      "dy": {
+        "allow_negative": true,
+        "max_bin": 20
+      },
+      "dyaw": {
+        "allow_negative": true,
+        "max_bin": 208
+      }
+    }
+  },
+  "habitat": {
+    "adapter": "habitat",
+    "dataset": "instance_imagenav_hm3d_v3",
+    "dataset_split": "val",
+    "test": [
+      "0",
+      "17",
+      "40",
+      "64",
+      "108",
+      "121",
+      "147",
+      "159",
+      "191",
+      "212",
+      "228",
+      "286",
+      "302",
+      "317",
+      "332",
+      "359",
+      "418",
+      "473",
+      "488",
+      "529",
+      "574",
+      "605",
+      "619",
+      "634",
+      "661",
+      "699",
+      "769",
+      "778",
+      "829",
+      "940"
+    ]
+  },
+  "go_stanford": {
+    "adapter": "replay",
+    "test": [
+      "no11vc_14_0_0",
+      "no5vc_33_0_0",
+      "no6vcF_10_0_3",
+      "sim2h_0_0_1",
+      "no28vcF_11_0_4",
+      "sim1hF_0_15_0",
+      "no2vc_176_0_0",
+      "no24vc_17_0_13"
+    ]
+  },
+  "recon": {
+    "adapter": "replay",
+    "test": [
+      "jackal_2019-09-09-18-15-05_5_r00_1",
+      "jackal_2019-09-17-18-40-44_4_r00_0",
+      "jackal_2019-12-19-13-36-43_2_r02_0",
+      "jackal_2019-12-21-15-14-38_4_r00_1",
+      "jackal_2019-08-29-14-35-17_0_r00_0",
+      "jackal_2019-08-02-17-14-37_38_r00_2",
+      "jackal_2019-08-29-16-47-35_33_r04_0",
+      "jackal_2019-08-15-19-07-30_6_r01_2"
+    ]
+  },
+  "sacson": {
+    "adapter": "replay",
+    "test": [
+      "Feb-09-2023-bww8-intloss_00000045_2_0",
+      "Nov-17-2022-bww8_00000005_4_8",
+      "Feb-15-2023-cory1_00000000_4_13",
+      "Feb-03-2023-bww8-intloss_00000013_1_0",
+      "Feb-15-2023-bww1_00000011_0_11",
+      "Feb-16-2023-cory1-intloss_00000013_8_5",
+      "Feb-13-2023-bww8-intloss_00000005_6_0",
+      "Dec-12-2022-bww8_00000035_0_0"
+    ]
+  },
+  "scand": {
+    "adapter": "replay",
+    "test": [
+      "random_mdps_A_Jackal_Sanjac_Rec_Sat_Nov_13_91_0_10",
+      "random_mdps_A_Spot_AHG_GDC_Tue_Nov_9_41_15_0",
+      "random_mdps_A_Spot_Jester_Jester_Wed_Nov_10_63_3_0",
+      "random_mdps_B_Spot_JCL_JCL_Mon_Nov_15_108_1_1",
+      "random_mdps_A_Spot_Dobie_Littlefield_Wed_Nov_10_58_0_12",
+      "random_mdps_B_Spot_GDC_AHG_Mon_Nov_15_116_0_14",
+      "random_mdps_B_Spot_Cola_Cola_Sat_Nov_13_97_1_3",
+      "random_mdps_A_Spot_Welch_Union_Thu_Nov_11_71_0_1"
+    ]
+  }
+}
