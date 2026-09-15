@@ -224,7 +224,20 @@ if __name__ == '__main__':
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--run_dir", type=Path)
     parser.add_argument("--num_episodes", type=int, default=-1)
+    parser.add_argument("--seed", type=int,
+                        help="Seed Python, NumPy and PyTorch before model initialization.")
     args = parser.parse_args()
+    if args.seed is not None:
+        if not 0 <= args.seed < 2**32:
+            parser.error("--seed must be in [0, 2**32)")
+        import random
+        import numpy as np
+        import torch
+
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)  # Seeds CPU and CUDA generators.
+        print(f"[RUNNER] Random seed: {args.seed}")
     print("[RUNNER] Starting New Run")
     
     if args.run_dir is None:

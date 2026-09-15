@@ -229,6 +229,8 @@ def build_torchrun_command(
     run_dir: Path,
     num_episodes: int,
     master_port: int,
+    *,
+    seed: int | None = None,
 ) -> list[str]:
     return [
         "torchrun",
@@ -243,6 +245,7 @@ def build_torchrun_command(
         str(run_dir),
         "--num_episodes",
         str(num_episodes),
+        *([] if seed is None else ["--seed", str(seed)]),
     ]
 
 
@@ -976,6 +979,8 @@ def run_seed_batch(
     source_episodes: int = SOURCE_EPISODES,
     habitat_episodes: int = HABITAT_EPISODES,
     max_episode_steps: int | None = None,
+    source_max_episode_steps: int | None = None,
+    habitat_max_episode_steps: int | None = None,
     max_route_steps: int | None = None,
     smoke_test: bool = False,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -985,8 +990,8 @@ def run_seed_batch(
 ) -> Path:
     """Run all C0-C5 conditions for one paired experimental seed."""
     fixed_mean_lr = None  # Resolved after C0 records its schedule.
-    if isinstance(seed, bool):
-        raise ValueError("seed must be an integer")
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
+        raise ValueError("seed must be an integer in [0, 2**32)")
     for name, value in (
         ("source_episodes", source_episodes),
         ("habitat_episodes", habitat_episodes),
@@ -995,10 +1000,27 @@ def run_seed_batch(
             raise ValueError(f"{name} must be a positive integer")
     for name, value in (
         ("max_episode_steps", max_episode_steps),
+        ("source_max_episode_steps", source_max_episode_steps),
+        ("habitat_max_episode_steps", habitat_max_episode_steps),
         ("max_route_steps", max_route_steps),
     ):
         if value is not None and (isinstance(value, bool) or value <= 0):
             raise ValueError(f"{name} must be a positive integer when provided")
+
+    # Stage-specific limits override the shared limit; otherwise use the YAML default.
+    def step_limit(override: int | None, config: Path) -> int:
+        if override is not None:
+            return override
+        if max_episode_steps is not None:
+            return max_episode_steps
+        return int(next(
+            line.split(":", 1)[1].split("#", 1)[0].strip()
+            for line in config.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("max_episode_steps:")
+        ))
+
+    source_max_episode_steps = step_limit(source_max_episode_steps, REPLAY_CONFIG)
+    habitat_max_episode_steps = step_limit(habitat_max_episode_steps, FROZEN_CONFIG)
 
     timestamp = (
         datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1018,7 +1040,7 @@ def run_seed_batch(
         source_pre_config,
         initial_checkpoint,
         source_manifest=source_manifest,
-        max_episode_steps=max_episode_steps,
+        max_episode_steps=source_max_episode_steps,
         max_route_steps=max_route_steps,
     )
     source_pre_command = build_torchrun_command(
@@ -1027,6 +1049,7 @@ def run_seed_batch(
         source_pre_dir,
         source_episodes,
         REPLAY_PORT,
+        seed=seed,
     )
 
     condition_plans: list[dict[str, Any]] = []
@@ -1066,7 +1089,7 @@ def run_seed_batch(
                 schedule_shuffle_seed if condition_id == "c0_frozen" else None
             ),
             save_model_weights=condition_id != "c0_frozen",
-            max_episode_steps=max_episode_steps,
+            max_episode_steps=habitat_max_episode_steps,
             max_route_steps=max_route_steps,
         )
         if condition_id == "c2_fixed_mean":
@@ -1079,6 +1102,7 @@ def run_seed_batch(
             habitat_dir,
             habitat_episodes,
             HABITAT_PORT,
+            seed=seed,
         )
 
         source_post_dir = condition_dir / "source_post"
@@ -1089,7 +1113,7 @@ def run_seed_batch(
                 source_post_config,
                 final_checkpoint,
                 source_manifest=source_manifest,
-                max_episode_steps=max_episode_steps,
+                max_episode_steps=source_max_episode_steps,
                 max_route_steps=max_route_steps,
             )
             source_post_command = build_torchrun_command(
@@ -1098,6 +1122,7 @@ def run_seed_batch(
                 source_post_dir,
                 source_episodes,
                 REPLAY_PORT,
+                seed=seed,
             )
 
         condition_plans.append(
@@ -1134,6 +1159,9 @@ def run_seed_batch(
         "source_episodes_per_data_id": source_episodes,
         "habitat_episodes": habitat_episodes,
         "max_episode_steps": max_episode_steps,
+        "source_max_episode_steps": source_max_episode_steps,
+        "habitat_max_episode_steps": habitat_max_episode_steps,
+        "model_random_seed": seed,
         "max_route_steps": max_route_steps,
     }
     provenance = run_provenance(
@@ -1771,6 +1799,10 @@ def main() -> None:
     parser.add_argument("--source-episodes", type=int)
     parser.add_argument("--habitat-episodes", type=int)
     parser.add_argument("--max-episode-steps", type=int)
+    parser.add_argument("--source-max-episode-steps", type=int,
+                        help="Source step limit; overrides --max-episode-steps and smoke defaults.")
+    parser.add_argument("--habitat-max-episode-steps", type=int,
+                        help="Habitat step limit; overrides --max-episode-steps and smoke defaults.")
     parser.add_argument("--max-route-steps", type=int)
     parser.add_argument(
         "--existing-run",
@@ -1858,6 +1890,8 @@ def main() -> None:
             source_episodes=source_episodes,
             habitat_episodes=habitat_episodes,
             max_episode_steps=max_episode_steps,
+            source_max_episode_steps=args.source_max_episode_steps,
+            habitat_max_episode_steps=args.habitat_max_episode_steps,
             max_route_steps=max_route_steps,
             smoke_test=args.smoke_test,
             output_root=args.output_root,
@@ -1869,6 +1903,8 @@ def main() -> None:
             "--source-episodes": args.source_episodes,
             "--habitat-episodes": args.habitat_episodes,
             "--max-episode-steps": args.max_episode_steps,
+            "--source-max-episode-steps": args.source_max_episode_steps,
+            "--habitat-max-episode-steps": args.habitat_max_episode_steps,
             "--max-route-steps": args.max_route_steps,
         }
         incompatible = [

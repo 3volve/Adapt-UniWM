@@ -1,5 +1,8 @@
 import json
 import hashlib
+import argparse
+import ast
+import types
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -74,6 +77,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 source_episodes=1,
                 habitat_episodes=1,
                 max_episode_steps=2,
+                habitat_max_episode_steps=8,
                 max_route_steps=1,
                 smoke_test=True,
                 output_root=output_root,
@@ -121,6 +125,10 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 )
 
             for command in calls:
+                self.assertEqual(command[command.index("--seed") + 1], "321")
+                config = Path(command[command.index("--config_path") + 1]).read_text()
+                steps = 8 if command[command.index("--data_id") + 1] == HABITAT_DATA_ID else 2
+                self.assertIn(f"max_episode_steps: {steps}", config)
                 self.assertEqual(
                     command[command.index("--num_episodes") + 1],
                     "1",
@@ -141,7 +149,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertIn("shuffled_seed: 77", c0_config)
             self.assertIn("save_model_weights: false", c0_config)
             self.assertIn("seed: 321", c0_config)
-            self.assertIn("max_episode_steps: 2", c0_config)
+            self.assertIn("max_episode_steps: 8", c0_config)
             self.assertIn("max_route_steps: 1", c0_config)
             self.assertIn("fixed_action_run_dir: null", c0_config)
 
@@ -209,6 +217,9 @@ class SeedBatchPipelineTests(unittest.TestCase):
             )
             self.assertEqual(len(manifest["conditions"]), 6)
             self.assertTrue(manifest["workload"]["smoke_test"])
+            self.assertEqual(manifest["workload"]["source_max_episode_steps"], 2)
+            self.assertEqual(manifest["workload"]["habitat_max_episode_steps"], 8)
+            self.assertEqual(manifest["workload"]["model_random_seed"], 321)
             self.assertEqual(manifest["workload"]["habitat_episodes"], 1)
             self.assertTrue(
                 manifest["conditions"][0]["source_post_reused_from_source_pre"]
@@ -276,6 +287,48 @@ class SeedBatchPipelineTests(unittest.TestCase):
     def test_rejects_invalid_smoke_workload(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_episodes"):
             run_seed_batch(seed=1, source_episodes=0)
+        for name in ("source_max_episode_steps", "habitat_max_episode_steps"):
+            with self.assertRaisesRegex(ValueError, name):
+                run_seed_batch(seed=1, **{name: 0})
+        for seed in (-1, 2**32, True):
+            with self.assertRaisesRegex(ValueError, "seed"):
+                run_seed_batch(seed=seed)
+
+    def test_cli_forwards_stage_limits(self) -> None:
+        from thesis_testing_tools.run_thesis_pipeline import main
+        with patch("sys.argv", ["pipeline", "--all-conditions", "--seed", "100",
+                                "--smoke-test", "--source-max-episode-steps", "3",
+                                "--habitat-max-episode-steps", "8"]), patch(
+            "thesis_testing_tools.run_thesis_pipeline.run_seed_batch"
+        ) as run:
+            main()
+        self.assertEqual(run.call_args.kwargs["source_max_episode_steps"], 3)
+        self.assertEqual(run.call_args.kwargs["habitat_max_episode_steps"], 8)
+        self.assertEqual(run.call_args.kwargs["max_episode_steps"], 2)
+
+    def test_runner_seeds_before_model_initialization(self) -> None:
+        # Execute the actual CLI block without importing the unavailable ML stack.
+        path = Path(__file__).resolve().parent.parent / "uniwm_episode_runner.py"
+        tree = ast.parse(path.read_text())
+        block = ast.Module(body=tree.body[-1].body, type_ignores=[])
+        events = []
+        fake_numpy = types.SimpleNamespace(random=types.SimpleNamespace(
+            seed=lambda seed: events.append(("numpy", seed))))
+        fake_torch = types.SimpleNamespace(manual_seed=lambda seed: events.append(("torch", seed)))
+        def runner(*args):
+            events.append(("model", None))
+            return types.SimpleNamespace(run_episodes=lambda *a: None, get_logs=lambda: [])
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory, patch(
+            "sys.argv", ["runner", "--config_path", "unused.yaml", "--run_dir", directory,
+                         "--seed", "321"]
+        ), patch.dict("sys.modules", {"numpy": fake_numpy, "torch": fake_torch}), patch(
+            "random.seed", side_effect=lambda seed: events.append(("python", seed))
+        ):
+            exec(compile(block, str(path), "exec"), {
+                "argparse": argparse, "Path": Path, "UniWMEpisodeRunner": runner,
+                "save_runner_logs": lambda *a: None,
+            })
+        self.assertEqual(events, [("python", 321), ("numpy", 321), ("torch", 321), ("model", None)])
 
     def test_optimizer_count_uses_explicit_update_flag(self) -> None:
         rows = _episode_diagnostic_metrics({"steps": [

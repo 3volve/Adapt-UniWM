@@ -94,6 +94,18 @@ The batch is written below `output/thesis_seed_<seed>_<timestamp>/`.
 `seed_manifest.json` records the full planned queue and generated configuration
 paths, while `seed_summary.json` links the completed per-condition summaries.
 
+For debug runs, `--source-max-episode-steps` and `--habitat-max-episode-steps`
+override the shared `--max-episode-steps` limit independently, including its
+two-step smoke default. Without a shared or stage-specific override, source
+uses the replay config limit and Habitat uses the frozen config limit for all
+conditions. Resolved limits are recorded in the workload metadata.
+
+The batch passes `--seed` to every runner process, including source evaluation.
+Before model initialization, the runner seeds Python, NumPy and PyTorch (CPU
+and CUDA). Seeds must be integers from 0 through 2**32 - 1. Dropout remains
+enabled during training; strict deterministic GPU algorithms are not forced.
+The model seed is recorded in workload metadata and stage commands.
+
 Run one complete pipeline per condition:
 
 ```bash
