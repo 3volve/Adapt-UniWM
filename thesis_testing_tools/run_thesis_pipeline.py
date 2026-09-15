@@ -369,7 +369,6 @@ def write_seed_habitat_config(
     initial_checkpoint: Path,
     seed: int,
     habitat_action_run: Path | None,
-    fixed_mean_lr: float | None = None,
     schedule_input_dir: Path | None = None,
     shuffled_schedule: bool = False,
     schedule_shuffle_seed: int | None = None,
@@ -399,8 +398,6 @@ def write_seed_habitat_config(
             else json.dumps(str(habitat_action_run.resolve()))
         ),
     )
-    if fixed_mean_lr is not None:
-        _replace_yaml_scalar(lines, "initial_lr", repr(float(fixed_mean_lr)))
     if schedule_shuffle_seed is not None:
         _replace_yaml_scalar(lines, "shuffled_seed", str(schedule_shuffle_seed))
     if schedule_input_dir is not None:
@@ -947,10 +944,31 @@ def smoke_test_result(
     return {"status": "inconclusive" if missing else "passed", "missing_coverage": missing}
 
 
+def recorded_mean_learning_rate(schedule_path: Path) -> float:
+    """Average C0's effective rates over eligible updates, across all episodes."""
+    schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+    rates = []
+    for index, entry in enumerate(schedule["entries"]):
+        if not entry["update_eligible"]:
+            continue
+        rate = entry["effective_learning_rate"]
+        if (
+            isinstance(rate, bool) or not isinstance(rate, (int, float))
+            or not math.isfinite(rate) or rate <= 0
+        ):
+            raise ValueError(
+                f"{schedule_path}: entry {index} effective_learning_rate "
+                f"must be positive and finite, got {rate!r}"
+            )
+        rates.append(rate)
+    if not rates:
+        raise ValueError(f"{schedule_path}: cannot calculate C2 LR: no eligible C0 updates")
+    return math.fsum(rate / len(rates) for rate in rates)
+
+
 def run_seed_batch(
     *,
     seed: int,
-    fixed_mean_lr: float,
     initial_checkpoint: Path = BASE_CHECKPOINT,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
     habitat_action_run: Path | None = None,
@@ -966,8 +984,7 @@ def run_seed_batch(
     metric_calculator: MetricCalculator | None = None,
 ) -> Path:
     """Run all C0-C5 conditions for one paired experimental seed."""
-    if not math.isfinite(fixed_mean_lr) or fixed_mean_lr <= 0.0:
-        raise ValueError("fixed_mean_lr must be a positive finite number")
+    fixed_mean_lr = None  # Resolved after C0 records its schedule.
     if isinstance(seed, bool):
         raise ValueError("seed must be an integer")
     for name, value in (
@@ -1039,9 +1056,6 @@ def run_seed_batch(
             initial_checkpoint=initial_checkpoint,
             seed=int(seed),
             habitat_action_run=condition_action_run,
-            fixed_mean_lr=(
-                fixed_mean_lr if condition_id == "c2_fixed_mean" else None
-            ),
             schedule_input_dir=(
                 c0_habitat_dir
                 if condition_id in ("c3_aligned_replay", "c4_shuffled_replay")
@@ -1055,6 +1069,10 @@ def run_seed_batch(
             max_episode_steps=max_episode_steps,
             max_route_steps=max_route_steps,
         )
+        if condition_id == "c2_fixed_mean":
+            lines = habitat_config.read_text(encoding="utf-8").splitlines(keepends=True)
+            _replace_yaml_scalar(lines, "initial_lr", "null # pending C0 schedule mean")
+            habitat_config.write_text("".join(lines), encoding="utf-8")
         habitat_command = build_torchrun_command(
             habitat_config,
             HABITAT_DATA_ID,
@@ -1108,7 +1126,8 @@ def run_seed_batch(
     workload = {
         "smoke_test": bool(smoke_test),
         "seed": int(seed),
-        "fixed_mean_learning_rate": float(fixed_mean_lr),
+        "fixed_mean_learning_rate": fixed_mean_lr,
+        "fixed_mean_learning_rate_source": str(c0_habitat_dir / "learning_rate_schedule.json"),
         "schedule_shuffle_seed": int(schedule_shuffle_seed),
         "conditions": [condition_id for condition_id, _ in CORE_CONDITIONS],
         "source_data_ids": SOURCE_DATA_IDS.split(","),
@@ -1136,7 +1155,7 @@ def run_seed_batch(
         "seed_dir": str(seed_dir),
         "initial_checkpoint": str(initial_checkpoint),
         "source_manifest": str(source_manifest),
-        "fixed_mean_learning_rate": float(fixed_mean_lr),
+        "fixed_mean_learning_rate": fixed_mean_lr,
         "schedule_shuffle_seed": int(schedule_shuffle_seed),
         "workload": workload,
         "provenance": str(provenance_path),
@@ -1239,6 +1258,27 @@ def run_seed_batch(
         if condition_id != "c0_frozen":
             habitat_record["output_checkpoint_path"] = str(final_checkpoint)
         stage_records.append(habitat_record)
+        if condition_id == "c0_frozen":
+            schedule_path = c0_habitat_dir / "learning_rate_schedule.json"
+            fixed_mean_lr = recorded_mean_learning_rate(schedule_path)
+            c2_config = seed_dir / "c2_fixed_mean" / "habitat_config.yaml"
+            lines = c2_config.read_text(encoding="utf-8").splitlines(keepends=True)
+            _replace_yaml_scalar(lines, "initial_lr", repr(fixed_mean_lr))
+            c2_config.write_text("".join(lines), encoding="utf-8")
+            workload["fixed_mean_learning_rate"] = fixed_mean_lr
+            seed_manifest["fixed_mean_learning_rate"] = fixed_mean_lr
+            (seed_dir / "seed_manifest.json").write_text(
+                json.dumps(seed_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+            provenance["inputs"] = [
+                artifact_fingerprint(c2_config) if item["path"] == str(c2_config)
+                else item for item in provenance["inputs"]
+            ]
+            provenance["inputs"].append(artifact_fingerprint(schedule_path))
+            provenance_path.write_text(
+                json.dumps(provenance, indent=2) + "\n", encoding="utf-8"
+            )
+            print(f"[THESIS PIPELINE] C2 mean LR from eligible C0 updates: {fixed_mean_lr}")
         habitat_rows = collect_stage_episode_metrics(
             habitat_dir,
             HABITAT_DATA_ID,
@@ -1697,11 +1737,6 @@ def main() -> None:
         help="Adapter/Habitat seed for an all-conditions batch.",
     )
     parser.add_argument(
-        "--fixed-mean-lr",
-        type=float,
-        help="Frozen effective learning rate for the C2 Fixed-Mean condition.",
-    )
-    parser.add_argument(
         "--initial-checkpoint",
         type=Path,
         default=BASE_CHECKPOINT,
@@ -1792,8 +1827,6 @@ def main() -> None:
             )
         if args.seed is None:
             parser.error("--all-conditions requires --seed")
-        if args.fixed_mean_lr is None:
-            parser.error("--all-conditions requires --fixed-mean-lr")
 
         source_episodes = (
             args.source_episodes
@@ -1818,7 +1851,6 @@ def main() -> None:
 
         result_dir = run_seed_batch(
             seed=args.seed,
-            fixed_mean_lr=args.fixed_mean_lr,
             initial_checkpoint=args.initial_checkpoint,
             source_manifest=args.source_manifest,
             habitat_action_run=args.habitat_action_run,
@@ -1833,7 +1865,6 @@ def main() -> None:
     else:
         all_condition_only = {
             "--seed": args.seed,
-            "--fixed-mean-lr": args.fixed_mean_lr,
             "--smoke-test": args.smoke_test or None,
             "--source-episodes": args.source_episodes,
             "--habitat-episodes": args.habitat_episodes,

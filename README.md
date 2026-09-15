@@ -75,12 +75,14 @@ For the paired core experiment, queue all six conditions for one seed with:
 python thesis_testing_tools/run_thesis_pipeline.py \
   --all-conditions \
   --seed 100 \
-  --fixed-mean-lr 6.25e-5 \
   --habitat-action-run thesis_artifacts/habitat_fixed_actions/no_learning
 ```
 
-`--fixed-mean-lr` must be the preregistered Full-controller mean estimated from
-the development stream; the held-out batch does not recompute it. The batch
+C2 automatically uses the arithmetic mean of C0's recorded effective learning
+rates over eligible updates across all episodes. Collisions and stop transitions
+marked ineligible are excluded; a schedule with no eligible updates stops the
+batch with an error. This is the mean of the frozen-reference controller schedule,
+not the learning controller's schedule. C2's config and the run metadata are finalized after C0 completes. The batch
 runs source-pre once, starts every C0-C5 Habitat condition from the same initial
 checkpoint, and runs a separate source-post evaluation for C1-C5. Because C0
 does not update the model, its source-post metrics are reused exactly from

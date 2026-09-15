@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from thesis_testing_tools.run_thesis_pipeline import (
     HABITAT_DATA_ID,
     SOURCE_DATA_IDS,
     run_seed_batch,
+    recorded_mean_learning_rate,
     smoke_test_result,
     _episode_diagnostic_metrics,
 )
@@ -32,6 +34,18 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 run_dir = Path(command[command.index("--run_dir") + 1])
                 data_id = command[command.index("--data_id") + 1]
                 run_dir.mkdir(parents=True)
+                if run_dir.parent.name == "c0_frozen":
+                    (run_dir / "learning_rate_schedule.json").write_text(json.dumps({
+                        "entries": [
+                            {"data_id": "habitat", "episode_id": "episode-0",
+                             "update_eligible": rate is not None,
+                             "effective_learning_rate": rate}
+                            for rate in (2.5e-5, None, 1e-4)
+                        ]
+                    }))
+                if run_dir.parent.name == "c2_fixed_mean" and data_id == HABITAT_DATA_ID:
+                    config = Path(command[command.index("--config_path") + 1])
+                    self.assertIn("initial_lr: 6.25e-05", config.read_text())
                 episode_log = [
                     {
                         "data_id": data_id,
@@ -55,7 +69,6 @@ class SeedBatchPipelineTests(unittest.TestCase):
 
             seed_dir = run_seed_batch(
                 seed=321,
-                fixed_mean_lr=6.25e-5,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
                 source_episodes=1,
@@ -222,14 +235,47 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertIn("git", provenance)
             self.assertIn("initial_checkpoint", provenance)
             self.assertEqual(len(provenance["output_checkpoints"]), 5)
+            self.assertEqual(manifest["fixed_mean_learning_rate"], 6.25e-5)
+            self.assertEqual(summary["fixed_mean_learning_rate"], 6.25e-5)
+            self.assertEqual(provenance["workload"]["fixed_mean_learning_rate"], 6.25e-5)
+            c2_path = seed_dir / "c2_fixed_mean" / "habitat_config.yaml"
+            fingerprint = next(item for item in provenance["inputs"] if item["path"] == str(c2_path))
+            self.assertEqual(fingerprint["sha256"], hashlib.sha256(c2_path.read_bytes()).hexdigest())
+            self.assertTrue(any(item["path"] == str(schedule_dir / "learning_rate_schedule.json")
+                                for item in provenance["inputs"]))
 
-    def test_rejects_invalid_fixed_mean_learning_rate(self) -> None:
-        with self.assertRaisesRegex(ValueError, "positive finite"):
-            run_seed_batch(seed=1, fixed_mean_lr=0.0)
+    def test_recorded_mean_weights_updates_not_episodes(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "schedule.json"
+            path.write_text(json.dumps({"entries": [
+                {"episode_id": episode, "update_eligible": eligible,
+                 "effective_learning_rate": rate}
+                for episode, eligible, rate in (
+                    ("a", True, 2e-5), ("a", True, 4e-5),
+                    ("b", True, 9e-5), ("b", False, None),
+                )
+            ]}))
+            self.assertAlmostEqual(recorded_mean_learning_rate(path), 5e-5)
+
+    def test_rejects_unusable_recorded_schedule(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "schedule.json"
+            for rate in (None, 0, -1, float("nan"), float("inf"), True):
+                with self.subTest(rate=rate):
+                    path.write_text(json.dumps({"entries": [
+                        {"update_eligible": True, "effective_learning_rate": rate}
+                    ]}))
+                    with self.assertRaisesRegex(ValueError, "entry 0 effective_learning_rate"):
+                        recorded_mean_learning_rate(path)
+            path.write_text(json.dumps({"entries": [
+                {"update_eligible": False, "effective_learning_rate": None}
+            ]}))
+            with self.assertRaisesRegex(ValueError, "no eligible C0 updates"):
+                recorded_mean_learning_rate(path)
 
     def test_rejects_invalid_smoke_workload(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_episodes"):
-            run_seed_batch(seed=1, fixed_mean_lr=1e-4, source_episodes=0)
+            run_seed_batch(seed=1, source_episodes=0)
 
     def test_optimizer_count_uses_explicit_update_flag(self) -> None:
         rows = _episode_diagnostic_metrics({"steps": [
