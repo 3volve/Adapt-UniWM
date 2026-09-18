@@ -1,4 +1,23 @@
 {
+  "habitat": {
+    "adapter": "habitat",
+    "dataset": "instance_imagenav_hm3d_v3",
+    "dataset_split": "val",
+    "test": [
+      "827",
+      "352",
+      "817",
+      "338",
+      "346",
+      "997",
+      "743",
+      "39",
+      "449",
+      "66",
+      "887",
+      "404"
+    ]
+  },
   "action_token_vocabulary": {
     "coordinate_frame": "agent_relative",
     "bin_step": 0.01,

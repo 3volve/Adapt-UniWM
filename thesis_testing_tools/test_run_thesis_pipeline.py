@@ -20,16 +20,95 @@ from thesis_testing_tools.run_thesis_pipeline import (
 
 
 class SeedBatchPipelineTests(unittest.TestCase):
+    def test_manifest_count_checked_before_creating_run(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"habitat": {"test": ["352", "827"]}}))
+            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
+                with self.assertRaisesRegex(ValueError, "lists only 2"):
+                    run_seed_batch(seed=1, source_manifest=manifest, habitat_episodes=3,
+                                   output_root=root / "output")
+                generate.assert_not_called()
+                self.assertFalse((root / "output").exists())
+
+    def test_generation_order_and_failure_precede_model_stages(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"habitat": {"test": ["352", "827", "817"]}}))
+            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence",
+                       side_effect=["first.json", RuntimeError("generation failed")]) as generate:
+                with patch("thesis_testing_tools.run_thesis_pipeline.run_stage") as stage:
+                    with self.assertRaisesRegex(RuntimeError, "generation failed"):
+                        run_seed_batch(seed=1, source_manifest=manifest, habitat_episodes=2,
+                                       output_root=root / "output")
+                    self.assertEqual([call.args[0] for call in generate.call_args_list], ["352", "827"])
+                    stage.assert_not_called()
+
+    def test_existing_run_override_skips_generation(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
+                with patch("thesis_testing_tools.run_thesis_pipeline.run_provenance",
+                           return_value={"inputs": []}):
+                    with patch("thesis_testing_tools.run_thesis_pipeline.run_stage",
+                               side_effect=RuntimeError("stop before model")):
+                        with self.assertRaisesRegex(RuntimeError, "stop before model"):
+                            run_seed_batch(seed=1, habitat_episodes=1, habitat_action_run=root / "prior",
+                                           output_root=root, timestamp="override", metric_calculator=object())
+                generate.assert_not_called()
+            for config in (root / "thesis_seed_1_override").glob("c*/habitat_config.yaml"):
+                text = config.read_text()
+                self.assertIn("fixed_action_files_dir: null", text)
+                self.assertIn("fixed_action_run_dir: " + json.dumps(str(root / "prior")), text)
+
+    def test_sequence_directory_loader(self):
+        # Exercise the actual loader without importing Habitat's native dependencies.
+        path = Path("source_tools/habitat_source_tools.py")
+        module = ast.parse(path.read_text())
+        adapter = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "HabitatEpisodeAdapter")
+        loader = next(node for node in adapter.body if isinstance(node, ast.FunctionDef) and node.name == "_load_fixed_actions_from_files")
+        loader.decorator_list = []
+        namespace = {"Path": Path, "json": json, "__file__": str(path.resolve())}
+        exec(compile(ast.Module(body=[loader], type_ignores=[]), str(path), "exec"), namespace)
+        load = namespace[loader.name]
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            payload = {"schema_version": 1, "episode_id": "827", "target_steps": 2, "actions": ["first", "second"]}
+            (root / "827.json").write_text(json.dumps(payload))
+            self.assertEqual(load(directory), (["827"], {"827": ["first", "second"]}))
+            (root / "duplicate.json").write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "duplicate episode_id"):
+                load(directory)
+            payload["episode_id"] = "352"
+            payload["target_steps"] = 3
+            (root / "duplicate.json").write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "matching target_steps"):
+                load(directory)
+
+    @patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence")
     @patch(
         "thesis_testing_tools.run_thesis_pipeline._captured_command",
         return_value={"available": False, "error": "not queried in unit tests"},
     )
-    def test_runs_one_source_pre_and_condition_specific_followups(self, _capture) -> None:
+    def test_runs_one_source_pre_and_condition_specific_followups(self, _capture, generate) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temporary_directory:
             temporary_path = Path(temporary_directory)
             output_root = temporary_path / "output"
             initial_checkpoint = temporary_path / "starting_ckpt"
             calls: list[list[str]] = []
+
+            def fake_generate(episode_id, target_steps, run_dir, **kwargs):
+                self.assertEqual(calls, [])
+                self.assertEqual((episode_id, target_steps, kwargs["seed"]), ("827", 8, 321))
+                self.assertEqual(kwargs["checkpoint"], initial_checkpoint)
+                path = run_dir / "habitat_action_sequences" / "827.json"
+                path.parent.mkdir()
+                path.write_text(json.dumps({"episode_id": episode_id, "actions": ["action"] * target_steps}))
+                return path.relative_to(Path.cwd()).as_posix()
+
+            generate.side_effect = fake_generate
 
             def fake_runner(command, **kwargs) -> None:
                 self.assertTrue(kwargs["check"])
@@ -157,8 +236,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 seed_dir / "c1_fixed_base" / "habitat_config.yaml"
             ).read_text(encoding="utf-8")
             self.assertIn(
-                "fixed_action_run_dir: "
-                + json.dumps(str((seed_dir / "c0_frozen" / "habitat").resolve())),
+                "fixed_action_files_dir: "
+                + json.dumps(str(seed_dir / "habitat_action_sequences")),
                 c1_config,
             )
 
@@ -227,11 +306,17 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertIsNone(
                 manifest["conditions"][0]["habitat_action_reference_run"]
             )
-            for condition in manifest["conditions"][1:]:
-                self.assertEqual(
-                    condition["habitat_action_reference_run"],
-                    str((seed_dir / "c0_frozen" / "habitat").resolve()),
-                )
+            generate.assert_called_once()
+            for condition in manifest["conditions"]:
+                self.assertIsNone(condition["habitat_action_reference_run"])
+                config = Path(condition["habitat_config"]).read_text()
+                self.assertIn('episode_ids: ["827"]', config)
+                self.assertIn("fixed_action_files_dir: " + json.dumps(str(seed_dir / "habitat_action_sequences")), config)
+            self.assertEqual(manifest["workload"]["habitat_episode_ids"], ["827"])
+            sequence_files = manifest["workload"]["habitat_action_sequences"]["files"]
+            self.assertEqual(len(sequence_files), 1)
+            provenance = json.loads((seed_dir / "provenance.json").read_text())
+            self.assertIn(str((Path.cwd() / sequence_files[0]).resolve()), [item["path"] for item in provenance["inputs"]])
             self.assertTrue((seed_dir / "seed_summary.json").is_file())
             summary = json.loads((seed_dir / "seed_summary.json").read_text())
             self.assertEqual(summary["status"], "inconclusive")

@@ -113,6 +113,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         seed: int,
         bin_step: float = 0.01,
         episode_ids: list[str] | None = None,
+        fixed_action_files_dir: str | None = None,
         fixed_action_run_dir: str | None = None,
         extra_overrides: list[str] = [],
     ):
@@ -122,11 +123,14 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.fixed_actions_by_episode: dict[str, list[str]] | None = None
         fixed_action_episode_ids: list[str] | None = None
 
-        if fixed_action_run_dir is not None:
-            (
-                fixed_action_episode_ids,
-                self.fixed_actions_by_episode,
-            ) = self._load_fixed_actions_from_run(fixed_action_run_dir)
+        if fixed_action_run_dir is not None and fixed_action_files_dir is not None:
+            raise ValueError("Supply only one of fixed_action_run_dir and fixed_action_files_dir")
+        if fixed_action_files_dir is not None:
+            fixed_action_episode_ids, self.fixed_actions_by_episode =\
+                self._load_fixed_actions_from_files(fixed_action_files_dir)
+        elif fixed_action_run_dir is not None:
+            fixed_action_episode_ids, self.fixed_actions_by_episode =\
+                self._load_fixed_actions_from_run(fixed_action_run_dir)
 
         if episode_ids is None and fixed_action_episode_ids is not None:
             episode_ids = fixed_action_episode_ids
@@ -310,6 +314,32 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.sim.sim_config.agents[agent_id].action_space.update(action_specs)
         self.sim.get_agent(agent_id).agent_config.action_space.update(action_specs)
         
+    @staticmethod
+    def _load_fixed_actions_from_files(
+        directory: str,
+    ) -> tuple[list[str], dict[str, list[str]]]:
+        """Load generated sequences; explicit episode_ids controls execution order."""
+        path = Path(__file__).resolve().parent.parent / directory
+        actions_by_episode: dict[str, list[str]] = {}
+        for filename in sorted(path.glob("*.json")):
+            payload = json.loads(filename.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                raise ValueError(f"{filename}: expected action sequence schema_version 1")
+            episode_id = payload.get("episode_id")
+            actions = payload.get("actions")
+            if not isinstance(episode_id, str) or not episode_id:
+                raise ValueError(f"{filename}: episode_id must be a nonempty string")
+            if episode_id in actions_by_episode:
+                raise ValueError(f"{filename}: duplicate episode_id {episode_id}")
+            if (not isinstance(actions, list) or not actions
+                    or any(not isinstance(action, str) or not action for action in actions)
+                    or len(actions) != payload.get("target_steps")):
+                raise ValueError(f"{filename}: actions must be nonempty strings matching target_steps")
+            actions_by_episode[episode_id] = actions
+        if not actions_by_episode:
+            raise ValueError(f"{path}: no action sequence JSON files found")
+        return list(actions_by_episode), actions_by_episode
+
     @staticmethod
     def _load_fixed_actions_from_run(
         run_dir: str,

@@ -16,6 +16,11 @@ from typing import Any, Callable, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.generate_habitat_action_sequence import generate_action_sequence
+
 REPLAY_CONFIG = REPO_ROOT / "cfg" / "replay_uniwm_cfg.yaml"
 DEVELOPMENT_MANIFEST = REPO_ROOT / "cfg" / "eval_dataset_manifest.json"
 HELDOUT_MANIFEST = REPO_ROOT / "cfg" / "thesis_heldout_manifest.json"
@@ -138,6 +143,7 @@ def run_provenance(
     )
     input_paths = [
         Path(__file__),
+        REPO_ROOT / "scripts" / "generate_habitat_action_sequence.py",
         REPLAY_CONFIG,
         FROZEN_CONFIG,
         FIXED_CONFIG,
@@ -372,6 +378,8 @@ def write_seed_habitat_config(
     initial_checkpoint: Path,
     seed: int,
     habitat_action_run: Path | None,
+    habitat_action_files_dir: Path | None = None,
+    habitat_episode_ids: list[str] | None = None,
     schedule_input_dir: Path | None = None,
     shuffled_schedule: bool = False,
     schedule_shuffle_seed: int | None = None,
@@ -401,6 +409,13 @@ def write_seed_habitat_config(
             else json.dumps(str(habitat_action_run.resolve()))
         ),
     )
+    reference_index = next(i for i, line in enumerate(lines)
+                           if line.lstrip().startswith("fixed_action_run_dir:"))
+    indentation = lines[reference_index][:len(lines[reference_index]) - len(lines[reference_index].lstrip())]
+    lines.insert(reference_index + 1, f"{indentation}fixed_action_files_dir: "
+                 + ("null" if habitat_action_files_dir is None else json.dumps(str(habitat_action_files_dir))) + "\n")
+    if habitat_episode_ids is not None:
+        _replace_yaml_scalar(lines, "episode_ids", json.dumps(habitat_episode_ids))
     if schedule_shuffle_seed is not None:
         _replace_yaml_scalar(lines, "shuffled_seed", str(schedule_shuffle_seed))
     if schedule_input_dir is not None:
@@ -989,6 +1004,7 @@ def run_seed_batch(
     metric_calculator: MetricCalculator | None = None,
 ) -> Path:
     """Run all C0-C5 conditions for one paired experimental seed."""
+    seed_started = time.perf_counter()
     fixed_mean_lr = None  # Resolved after C0 records its schedule.
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
         raise ValueError("seed must be an integer in [0, 2**32)")
@@ -996,7 +1012,7 @@ def run_seed_batch(
         ("source_episodes", source_episodes),
         ("habitat_episodes", habitat_episodes),
     ):
-        if isinstance(value, bool) or value <= 0:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
     for name, value in (
         ("max_episode_steps", max_episode_steps),
@@ -1022,17 +1038,44 @@ def run_seed_batch(
     source_max_episode_steps = step_limit(source_max_episode_steps, REPLAY_CONFIG)
     habitat_max_episode_steps = step_limit(habitat_max_episode_steps, FROZEN_CONFIG)
 
+    source_manifest = Path(source_manifest).resolve()
+    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    habitat_ids = manifest.get("habitat", {}).get("test")
+    if (not isinstance(habitat_ids, list) or not habitat_ids
+            or any(not isinstance(ep, str) or not ep for ep in habitat_ids)
+            or len(set(habitat_ids)) != len(habitat_ids)):
+        raise ValueError(f"{source_manifest}: habitat.test must be a nonempty list of unique episode ID strings")
+    if habitat_episodes > len(habitat_ids):
+        raise ValueError(f"Requested {habitat_episodes} Habitat episodes, but {source_manifest} lists only {len(habitat_ids)} in habitat.test")
+    habitat_ids = habitat_ids[:habitat_episodes]
+
     timestamp = (
         datetime.now().strftime("%Y%m%d_%H%M%S")
         if timestamp is None
         else timestamp
     )
     initial_checkpoint = Path(initial_checkpoint).resolve()
-    source_manifest = Path(source_manifest).resolve()
     seed_dir = (
         Path(output_root) / f"thesis_seed_{int(seed)}_{timestamp}"
     ).resolve()
     seed_dir.mkdir(parents=True, exist_ok=False)
+
+    generation_started = time.perf_counter()
+    action_files = []
+    action_files_dir = None
+    if habitat_action_run is None:
+        for episode_id in habitat_ids:
+            print(f"[THESIS PIPELINE] Generating {habitat_max_episode_steps} actions for Habitat episode {episode_id}", flush=True)
+            action_files.append(generate_action_sequence(
+                episode_id, habitat_max_episode_steps, seed_dir, seed=seed,
+                config_path=FROZEN_CONFIG, checkpoint=initial_checkpoint,
+            ))
+        action_files_dir = seed_dir / "habitat_action_sequences"
+    action_reference = {
+        "files_dir": str(action_files_dir) if action_files_dir is not None else None,
+        "files": action_files,
+        "generation_seconds": time.perf_counter() - generation_started,
+    }
 
     source_pre_dir = seed_dir / "source_pre"
     source_pre_config = seed_dir / "source_pre_config.yaml"
@@ -1068,17 +1111,15 @@ def run_seed_batch(
         else:
             source_config = FIXED_CONFIG
 
-        condition_action_run = (
-            habitat_action_run
-            if habitat_action_run is not None
-            else (None if condition_id == "c0_frozen" else c0_habitat_dir)
-        )
+        condition_action_run = habitat_action_run
         write_seed_habitat_config(
             source_config,
             habitat_config,
             initial_checkpoint=initial_checkpoint,
             seed=int(seed),
             habitat_action_run=condition_action_run,
+            habitat_action_files_dir=action_files_dir,
+            habitat_episode_ids=habitat_ids,
             schedule_input_dir=(
                 c0_habitat_dir
                 if condition_id in ("c3_aligned_replay", "c4_shuffled_replay")
@@ -1158,6 +1199,8 @@ def run_seed_batch(
         "source_data_ids": SOURCE_DATA_IDS.split(","),
         "source_episodes_per_data_id": source_episodes,
         "habitat_episodes": habitat_episodes,
+        "habitat_episode_ids": habitat_ids,
+        "habitat_action_sequences": action_reference,
         "max_episode_steps": max_episode_steps,
         "source_max_episode_steps": source_max_episode_steps,
         "habitat_max_episode_steps": habitat_max_episode_steps,
@@ -1170,6 +1213,7 @@ def run_seed_batch(
         generated_configs=generated_configs,
         workload=workload,
     )
+    provenance["inputs"].extend(artifact_fingerprint(REPO_ROOT / filename) for filename in action_files)
     provenance_path = seed_dir / "provenance.json"
     provenance_path.write_text(
         json.dumps(provenance, indent=2) + "\n",
@@ -1234,8 +1278,6 @@ def run_seed_batch(
         if metric_calculator is None
         else metric_calculator
     )
-    seed_started = time.perf_counter()
-
     source_pre_record = run_stage(
         "source_pre",
         source_pre_command,
@@ -1774,7 +1816,7 @@ def main() -> None:
         "--source-manifest",
         type=Path,
         default=DEVELOPMENT_MANIFEST,
-        help="Source trajectory manifest used by source-pre and source-post.",
+        help="Manifest for source evaluation and, in all-conditions mode, ordered Habitat episode IDs from habitat.test.",
     )
     parser.add_argument(
         "--schedule-shuffle-seed",
@@ -1828,7 +1870,8 @@ def main() -> None:
         type=Path,
         help=(
             "Force Habitat actions from episode_logs.json in an existing "
-            "Habitat run directory."
+            "Habitat run directory. In all-conditions mode this skips action generation; "
+            "otherwise sequences are generated once per selected episode and shared by C0-C5."
         ),
     )
     args = parser.parse_args()
