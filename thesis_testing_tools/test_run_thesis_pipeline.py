@@ -1,4 +1,5 @@
 import json
+import io
 import hashlib
 import argparse
 import ast
@@ -13,7 +14,6 @@ from thesis_testing_tools.run_thesis_pipeline import (
     HABITAT_DATA_ID,
     SOURCE_DATA_IDS,
     run_seed_batch,
-    recorded_mean_learning_rate,
     smoke_test_result,
     _episode_diagnostic_metrics,
 )
@@ -27,7 +27,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             manifest.write_text(json.dumps({"habitat": {"test": ["352", "827"]}}))
             with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
                 with self.assertRaisesRegex(ValueError, "lists only 2"):
-                    run_seed_batch(seed=1, source_manifest=manifest, habitat_episodes=3,
+                    run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest, habitat_episodes=3,
                                    output_root=root / "output")
                 generate.assert_not_called()
                 self.assertFalse((root / "output").exists())
@@ -41,7 +41,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
                        side_effect=["first.json", RuntimeError("generation failed")]) as generate:
                 with patch("thesis_testing_tools.run_thesis_pipeline.run_stage") as stage:
                     with self.assertRaisesRegex(RuntimeError, "generation failed"):
-                        run_seed_batch(seed=1, source_manifest=manifest, habitat_episodes=2,
+                        run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest, habitat_episodes=2,
                                        output_root=root / "output")
                     self.assertEqual([call.args[0] for call in generate.call_args_list], ["352", "827"])
                     stage.assert_not_called()
@@ -55,7 +55,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
                     with patch("thesis_testing_tools.run_thesis_pipeline.run_stage",
                                side_effect=RuntimeError("stop before model")):
                         with self.assertRaisesRegex(RuntimeError, "stop before model"):
-                            run_seed_batch(seed=1, habitat_episodes=1, habitat_action_run=root / "prior",
+                            run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, habitat_episodes=1, habitat_action_run=root / "prior",
                                            output_root=root, timestamp="override", metric_calculator=object())
                 generate.assert_not_called()
             for config in (root / "thesis_seed_1_override").glob("c*/habitat_config.yaml"):
@@ -98,6 +98,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             output_root = temporary_path / "output"
             initial_checkpoint = temporary_path / "starting_ckpt"
             calls: list[list[str]] = []
+            initial_c2_config = None
 
             def fake_generate(episode_id, target_steps, run_dir, **kwargs):
                 self.assertEqual(calls, [])
@@ -111,18 +112,30 @@ class SeedBatchPipelineTests(unittest.TestCase):
             generate.side_effect = fake_generate
 
             def fake_runner(command, **kwargs) -> None:
+                nonlocal initial_c2_config
                 self.assertTrue(kwargs["check"])
                 calls.append(list(command))
                 run_dir = Path(command[command.index("--run_dir") + 1])
                 data_id = command[command.index("--data_id") + 1]
                 run_dir.mkdir(parents=True)
+                if run_dir.name == "source_pre":
+                    # C2 and its provenance are finalized before any model stage.
+                    c2_path = run_dir.parent / "c2_fixed_mean" / "habitat_config.yaml"
+                    initial_c2_config = c2_path.read_bytes()
+                    self.assertIn(b"initial_lr: 6.25e-05", initial_c2_config)
+                    initial_provenance = json.loads((run_dir.parent / "provenance.json").read_text())
+                    self.assertEqual(initial_provenance["workload"]["fixed_mean_learning_rate"], 6.25e-5)
+                    fingerprint = next(item for item in initial_provenance["inputs"]
+                                       if item["path"] == str(c2_path))
+                    self.assertEqual(fingerprint["sha256"], hashlib.sha256(initial_c2_config).hexdigest())
                 if run_dir.parent.name == "c0_frozen":
                     (run_dir / "learning_rate_schedule.json").write_text(json.dumps({
                         "entries": [
                             {"data_id": "habitat", "episode_id": "episode-0",
                              "update_eligible": rate is not None,
                              "effective_learning_rate": rate}
-                            for rate in (2.5e-5, None, 1e-4)
+                            # Deliberately differs from the supplied development mean.
+                            for rate in (1e-5, None, 3e-5)
                         ]
                     }))
                 if run_dir.parent.name == "c2_fixed_mean" and data_id == HABITAT_DATA_ID:
@@ -151,6 +164,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
 
             seed_dir = run_seed_batch(
                 seed=321,
+                fixed_mean_lr=6.25e-5,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
                 source_episodes=1,
@@ -334,54 +348,52 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertEqual(manifest["fixed_mean_learning_rate"], 6.25e-5)
             self.assertEqual(summary["fixed_mean_learning_rate"], 6.25e-5)
             self.assertEqual(provenance["workload"]["fixed_mean_learning_rate"], 6.25e-5)
+            self.assertEqual(provenance["workload"]["fixed_mean_learning_rate_source"], "provided_fixed_mean_lr")
             c2_path = seed_dir / "c2_fixed_mean" / "habitat_config.yaml"
+            self.assertEqual(c2_path.read_bytes(), initial_c2_config)
             fingerprint = next(item for item in provenance["inputs"] if item["path"] == str(c2_path))
             self.assertEqual(fingerprint["sha256"], hashlib.sha256(c2_path.read_bytes()).hexdigest())
             self.assertTrue(any(item["path"] == str(schedule_dir / "learning_rate_schedule.json")
                                 for item in provenance["inputs"]))
 
-    def test_recorded_mean_weights_updates_not_episodes(self) -> None:
+    def test_rejects_invalid_fixed_mean_before_creating_run(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            path = Path(directory) / "schedule.json"
-            path.write_text(json.dumps({"entries": [
-                {"episode_id": episode, "update_eligible": eligible,
-                 "effective_learning_rate": rate}
-                for episode, eligible, rate in (
-                    ("a", True, 2e-5), ("a", True, 4e-5),
-                    ("b", True, 9e-5), ("b", False, None),
-                )
-            ]}))
-            self.assertAlmostEqual(recorded_mean_learning_rate(path), 5e-5)
-
-    def test_rejects_unusable_recorded_schedule(self) -> None:
-        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
-            path = Path(directory) / "schedule.json"
+            output_root = Path(directory) / "output"
             for rate in (None, 0, -1, float("nan"), float("inf"), True):
                 with self.subTest(rate=rate):
-                    path.write_text(json.dumps({"entries": [
-                        {"update_eligible": True, "effective_learning_rate": rate}
-                    ]}))
-                    with self.assertRaisesRegex(ValueError, "entry 0 effective_learning_rate"):
-                        recorded_mean_learning_rate(path)
-            path.write_text(json.dumps({"entries": [
-                {"update_eligible": False, "effective_learning_rate": None}
-            ]}))
-            with self.assertRaisesRegex(ValueError, "no eligible C0 updates"):
-                recorded_mean_learning_rate(path)
+                    with self.assertRaisesRegex(ValueError, "fixed_mean_lr must be a positive finite"):
+                        run_seed_batch(seed=1, fixed_mean_lr=rate, output_root=output_root)
+                    self.assertFalse(output_root.exists())
+
+    def test_cli_requires_development_mean_for_all_conditions(self) -> None:
+        from thesis_testing_tools.run_thesis_pipeline import main
+        for arguments, message in (
+            (["--all-conditions", "--seed", "100"], "requires --fixed-mean-lr"),
+            (["--fixed-mean-lr", "6.25e-5"], "--fixed-mean-lr require --all-conditions"),
+        ):
+            with self.subTest(arguments=arguments), patch("sys.argv", ["pipeline", *arguments]), patch(
+                "sys.stderr", new_callable=io.StringIO
+            ) as stderr, patch("thesis_testing_tools.run_thesis_pipeline.run_seed_batch") as run:
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
+                run.assert_not_called()
 
     def test_rejects_invalid_smoke_workload(self) -> None:
         with self.assertRaisesRegex(ValueError, "source_episodes"):
-            run_seed_batch(seed=1, source_episodes=0)
+            run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_episodes=0)
         for name in ("source_max_episode_steps", "habitat_max_episode_steps"):
             with self.assertRaisesRegex(ValueError, name):
-                run_seed_batch(seed=1, **{name: 0})
+                run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, **{name: 0})
         for seed in (-1, 2**32, True):
             with self.assertRaisesRegex(ValueError, "seed"):
-                run_seed_batch(seed=seed)
+                run_seed_batch(seed=seed, fixed_mean_lr=6.25e-5)
 
     def test_cli_forwards_stage_limits(self) -> None:
         from thesis_testing_tools.run_thesis_pipeline import main
         with patch("sys.argv", ["pipeline", "--all-conditions", "--seed", "100",
+                                "--fixed-mean-lr", "6.25e-5",
                                 "--smoke-test", "--source-max-episode-steps", "3",
                                 "--habitat-max-episode-steps", "8"]), patch(
             "thesis_testing_tools.run_thesis_pipeline.run_seed_batch"
@@ -390,6 +402,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["source_max_episode_steps"], 3)
         self.assertEqual(run.call_args.kwargs["habitat_max_episode_steps"], 8)
         self.assertEqual(run.call_args.kwargs["max_episode_steps"], 2)
+        self.assertEqual(run.call_args.kwargs["fixed_mean_lr"], 6.25e-5)
 
     def test_runner_seeds_before_model_initialization(self) -> None:
         # Execute the actual CLI block without importing the unavailable ML stack.
