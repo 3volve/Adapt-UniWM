@@ -37,7 +37,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             root = Path(directory)
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({"habitat": {"test": ["352", "827", "817"]}}))
-            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence",
+            with patch("thesis_testing_tools.run_thesis_pipeline._captured_command", return_value={}), patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence",
                        side_effect=["first.json", RuntimeError("generation failed")]) as generate:
                 with patch("thesis_testing_tools.run_thesis_pipeline.run_stage") as stage:
                     with self.assertRaisesRegex(RuntimeError, "generation failed"):
@@ -45,11 +45,18 @@ class SeedBatchPipelineTests(unittest.TestCase):
                                        output_root=root / "output")
                     self.assertEqual([call.args[0] for call in generate.call_args_list], ["352", "827"])
                     stage.assert_not_called()
+            record_path = next((root / "output").glob("*/run_manifest.json"))
+            record = json.loads(record_path.read_text())
+            self.assertEqual(record["status"], "failed")
+            self.assertEqual(record["failure"]["phase"], "preparation")
+            self.assertIn("generation failed", record["failure"]["message"])
 
     def test_existing_run_override_skips_generation(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             root = Path(directory)
-            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
+            (root / "prior").mkdir()
+            (root / "prior/episode_logs.json").write_text("[]")
+            with patch("thesis_testing_tools.run_thesis_pipeline._captured_command", return_value={}), patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
                 with patch("thesis_testing_tools.run_thesis_pipeline.run_provenance",
                            return_value={"inputs": []}):
                     with patch("thesis_testing_tools.run_thesis_pipeline.run_stage",
@@ -61,7 +68,11 @@ class SeedBatchPipelineTests(unittest.TestCase):
             for config in (root / "thesis_seed_1_override").glob("c*/habitat_config.yaml"):
                 text = config.read_text()
                 self.assertIn("fixed_action_files_dir: null", text)
-                self.assertIn("fixed_action_run_dir: " + json.dumps(str(root / "prior")), text)
+                record = json.loads((root / "thesis_seed_1_override/run_manifest.json").read_text())
+                snapshot = next(item["snapshot"] for item in record["inputs"]
+                                if item["role"] == "fixed_action_reference")
+                self.assertIn("fixed_action_run_dir: " + json.dumps(str(
+                    (root / "thesis_seed_1_override" / snapshot).parent)), text)
 
     def test_sequence_directory_loader(self):
         # Exercise the actual loader without importing Habitat's native dependencies.
@@ -97,6 +108,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
             temporary_path = Path(temporary_directory)
             output_root = temporary_path / "output"
             initial_checkpoint = temporary_path / "starting_ckpt"
+            calibration = temporary_path / "development_calibration.json"
+            calibration.write_text(json.dumps({"mean_lr": 6.25e-5, "split": "development"}))
             calls: list[list[str]] = []
             initial_c2_config = None
 
@@ -165,6 +178,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             seed_dir = run_seed_batch(
                 seed=321,
                 fixed_mean_lr=6.25e-5,
+                fixed_mean_calibration=calibration,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
                 source_episodes=1,
@@ -355,6 +369,19 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertEqual(fingerprint["sha256"], hashlib.sha256(c2_path.read_bytes()).hexdigest())
             self.assertTrue(any(item["path"] == str(schedule_dir / "learning_rate_schedule.json")
                                 for item in provenance["inputs"]))
+            record = json.loads((seed_dir / "run_manifest.json").read_text())
+            self.assertEqual(record["status"], "inconclusive")
+            self.assertEqual(len(record["stages"]), len(calls))
+            self.assertEqual(len({stage["stage_id"] for stage in record["stages"]}), len(calls))
+            self.assertTrue(all(stage["status"] == "completed" for stage in record["stages"]))
+            self.assertEqual((seed_dir / record["metadata"]["fixed_mean_calibration"]).read_bytes(),
+                             calibration.read_bytes())
+            for stage, command in zip(record["stages"], calls):
+                self.assertEqual(stage["executed_command"], command)
+                self.assertEqual(Path(command[command.index("--config_path") + 1]),
+                                 seed_dir / stage["config_snapshot"])
+            artifacts = json.loads((seed_dir / record["artifact_index"]).read_text())["files"]
+            self.assertIn("seed_summary.json", [item["path"] for item in artifacts])
 
     def test_rejects_invalid_fixed_mean_before_creating_run(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -415,7 +442,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
         fake_torch = types.SimpleNamespace(manual_seed=lambda seed: events.append(("torch", seed)))
         def runner(*args):
             events.append(("model", None))
-            return types.SimpleNamespace(run_episodes=lambda *a: None, get_logs=lambda: [])
+            return types.SimpleNamespace(run_episodes=lambda *a: None, get_logs=lambda: [],
+                                         wrapper=types.SimpleNamespace(engine=object()))
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory, patch(
             "sys.argv", ["runner", "--config_path", "unused.yaml", "--run_dir", directory,
                          "--seed", "321"]
@@ -425,6 +453,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             exec(compile(block, str(path), "exec"), {
                 "argparse": argparse, "Path": Path, "UniWMEpisodeRunner": runner,
                 "save_runner_logs": lambda *a: None,
+                "write_runtime_metadata": lambda *a, **k: None,
             })
         self.assertEqual(events, [("python", 321), ("numpy", 321), ("torch", 321), ("model", None)])
 

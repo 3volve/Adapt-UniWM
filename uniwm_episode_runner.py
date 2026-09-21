@@ -8,6 +8,7 @@ from runtime_scripts.datasource_schemas import T_OutputBundle, T_Adapter, T_Form
 from runtime_scripts.test_runtime_metrics import append_runner_event, save_runner_logs
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
+from runtime_scripts.run_metadata import write_runtime_metadata
 from runtime_scripts.runtime_engine import UniWMEngine
 from runtime_scripts.runtime_utils import (
     copy_base_config,
@@ -247,7 +248,9 @@ if __name__ == '__main__':
         run_dir.mkdir(parents=True, exist_ok=True)
     print(f"[RUNNER] Output directory: {run_dir}")
 
+    write_runtime_metadata(run_dir, seed=args.seed)
     runner = UniWMEpisodeRunner(args.config_path, args.data_id, run_dir)
+    write_runtime_metadata(run_dir, seed=args.seed, engine=runner.wrapper.engine)
     runner.run_episodes(args.num_episodes, args.data_id, run_dir)
 
     save_runner_logs(runner.get_logs(), run_dir)

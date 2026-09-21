@@ -65,6 +65,7 @@ class UniWMEngine:
 
         loaded = load_model(SimpleNamespace(**self.config["load_model_args"]), self.config["load_model_cfg"], self.action_vocabulary)
         self.model: PeftModel | PeftMixedModel = loaded["model"]
+        self.initialization_metadata = loaded["initialization_metadata"]
 
         if hasattr(self.model, "gradient_checkpointing_enable"):
             self.model.gradient_checkpointing_enable(

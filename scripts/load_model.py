@@ -124,6 +124,7 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
         )
 
         if init_lora_ckpt_path:
+            adapter_initialization = "loaded_trainable_adapter"
             print(f"Initializing trainable LoRA from checkpoint: {init_lora_ckpt_path}")
             lora_model = PeftModel.from_pretrained(
                 model,
@@ -131,17 +132,27 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
                 is_trainable=True,
             )
         elif is_inference_only:
+            adapter_initialization = "loaded_inference_adapter"
             lora_model = PeftModel.from_pretrained(
                 model,
                 peft_ckpt_path,
                 is_trainable=False,
             )
         else:
+            adapter_initialization = "new_adapter"
             lora_model = get_peft_model(model, config)
                 
         return {
             'processor': processor,
-            'model': lora_model
+            'model': lora_model,
+            'initialization_metadata': {
+                'base_model': 'leloy/Anole-7b-v0.1-hf',
+                'adapter_initialization': adapter_initialization,
+                'adapter_checkpoint': (init_lora_ckpt_path or peft_ckpt_path)
+                    if adapter_initialization != 'new_adapter' else None,
+                'processor_checkpoint': processor_ckpt_path or 'leloy/Anole-7b-v0.1-hf',
+                'embeddings_resized': model_embedding_size != tokenizer_size,
+            },
         }
     else:
         raise ValueError("Unsupported model type. ")

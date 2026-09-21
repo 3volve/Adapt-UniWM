@@ -75,14 +75,15 @@ For the paired core experiment, queue all six conditions for one seed with:
 python thesis_testing_tools/run_thesis_pipeline.py \
   --all-conditions \
   --seed 100 \
+  --fixed-mean-lr "$DEVELOPMENT_MEAN_LR" \
   --habitat-action-run thesis_artifacts/habitat_fixed_actions/no_learning
 ```
 
-C2 automatically uses the arithmetic mean of C0's recorded effective learning
-rates over eligible updates across all episodes. Collisions and stop transitions
-marked ineligible are excluded; a schedule with no eligible updates stops the
-batch with an error. This is the mean of the frozen-reference controller schedule,
-not the learning controller's schedule. C2's config and the run metadata are finalized after C0 completes. The batch
+C2 requires `--fixed-mean-lr`: supply the mean effective learning rate determined
+from valid Full-controller update opportunities on development data. Set
+`DEVELOPMENT_MEAN_LR` to that calibrated value before running this example.
+C2's configuration is finalized before any model stage; it never estimates its
+rate from the current held-out stream. The batch
 runs source-pre once, starts every C0-C5 Habitat condition from the same initial
 checkpoint, and runs a separate source-post evaluation for C1-C5. Because C0
 does not update the model, its source-post metrics are reused exactly from
@@ -105,6 +106,60 @@ Before model initialization, the runner seeds Python, NumPy and PyTorch (CPU
 and CUDA). Seeds must be integers from 0 through 2**32 - 1. Dropout remains
 enabled during training; strict deterministic GPU algorithms are not forced.
 The model seed is recorded in workload metadata and stage commands.
+
+Every new pipeline invocation now has a `run_manifest.json` as its provenance
+entry point. It links organized files rather than embedding large logs or model
+metadata in a single JSON document:
+
+- `run_manifest.json`: run identity, seed/settings, selected episode order for
+  seed batches, input snapshots and hashes, stage commands/status/timing, failure
+  details, and references to plans, checkpoint provenance, and summaries.
+- `provenance/snapshots/`: copies of configuration templates, executed stage
+  configurations, the data manifest, Python implementation/analysis files,
+  generated or reused action references, controller schedule, and any supplied
+  development calibration artifact. Each snapshot has a SHA-256 in the manifest.
+  Model stages execute their saved configuration; seed batches also use the
+  saved source manifest and saved reused-action logs.
+- `provenance/environment.json` and `working_tree_diff.json`: Python/packages,
+  platform, GPU/driver query, selected environment and Slurm variables, and Git
+  working-tree changes. Git commit/branch/status are in the master manifest.
+- `<stage>/runtime_metadata_before_model.json` and `runtime_metadata.json`:
+  worker seeds and RNG fingerprints, actual Torch/CUDA/cuDNN determinism and TF32
+  settings, GPU details, LoRA initialization, resolved model settings, dropout,
+  trainable parameters, and optimizer settings. The first file survives model
+  initialization failures. Capture observes settings without reseeding or
+  enabling deterministic algorithms.
+- `provenance/artifact_index.json`: relative paths and sizes for saved logs,
+  checkpoints, metrics, tables, figures, and other run files. Large checkpoint
+  hashes remain in `provenance.json` for seed batches; legacy pipelines record
+  checkpoint fingerprints in the master manifest. Checkpoint weights are not
+  duplicated into the snapshot directory.
+
+To preserve the evidence behind C2's supplied rate, also pass
+`--fixed-mean-calibration path/to/development_calibration.json`. This optional
+file can be a JSON report, CSV, or other single calibration record; it is copied
+and hashed. Omission is recorded as `null`. This records the reference and rate;
+it does not validate the calibration methodology or derive a replacement rate.
+
+Existing `seed_manifest.json`, `provenance.json`, `pipeline_manifest.json`, and
+summary files remain available. Follow-up runs get their own master manifest;
+post-only invocations store their manifest and new outputs under
+`source_post_invocations/<timestamp>/` to preserve previous results. References
+to the reused source-pre and Habitat artifacts point outside that subdirectory.
+
+Caught failures and keyboard interrupts retain partial artifacts and a traceback.
+`completed` means execution/analysis finished; smoke runs can be `inconclusive`.
+An uncatchable kill or node loss can leave `running`, which must not be interpreted
+as success. Per-transition accounting and schedule reconciliation are a separate
+pending change. Snapshots preserve provenance but do not package external datasets,
+model downloads, or make absolute paths relocatable automatically.
+
+The artifact index is finalized when the invocation exits. After adding offline
+tables or figures inside a run, refresh it from the repository root:
+
+```bash
+python -m thesis_testing_tools.run_manifest "output/thesis_seed_100_<timestamp>"
+```
 
 Run one complete pipeline per condition:
 
