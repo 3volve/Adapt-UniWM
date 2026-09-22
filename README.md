@@ -198,6 +198,22 @@ The thesis defines and interprets the reported metrics. The README records where
 the implementation produces them so a reader can trace thesis tables back to
 run artifacts without duplicating the manuscript's methods section.
 
+### Regenerate metrics from EventLogger outputs
+
+The versioned offline metric generator reads worker event files and their saved
+images, producing per-attempt, episode, dataset and optional source-retention
+reports with input/code/output hashes and explicit exclusion counts:
+
+```bash
+python -m thesis_testing_tools.generate_metrics \
+  --events output/my_run/habitat/events.jsonl \
+  --output output/my_run/analysis_v1
+```
+
+See [metric generation](docs/metric_generation.md) for metric definitions,
+pre/post pairing, downloaded-path mappings, dependencies and citation guidance.
+Automatic pipeline analysis is still disabled; this is an explicit offline step.
+
 ### Record the experiment workstation
 
 The thesis experiments ran on this reference workstation:

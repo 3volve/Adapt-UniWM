@@ -3,7 +3,9 @@
 `runtime_scripts/event_logger.py` implements the shared collector used by the
 runner and pipeline coordinator. Existing writer implementations remain in the
 repository but are disconnected. Analysis readers have not been migrated, and
-automatic metric generation is disabled. No reconciliation checks were added.
+automatic metric generation is disabled. The standalone
+[metric generator](metric_generation.md) can now analyze completed worker outputs.
+No reconciliation checks were added.
 
 ## Runtime integration
 
