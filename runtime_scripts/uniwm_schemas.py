@@ -45,10 +45,19 @@ class StepPrediction:
     context_familiarity: float
     context_stability: float
     
+    viz_used_memory: bool = False
     logging_info: dict[str, Any] = field(default_factory=dict)
 
     real_input_obs: Image.Image | None = None
     real_next_obs: Image.Image | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"action": self.action_text, "available": self.visualization is not None,
+                "raw_action_text": self.logging_info.get("raw_action_text"),
+                "act_entropy": self.act_entropy, "viz_entropy": self.viz_entropy,
+                "context_familiarity": self.context_familiarity,
+                "context_stability": self.context_stability,
+                "viz_used_memory": self.viz_used_memory}
 
 @dataclass(frozen=True)
 class RoutePrediction:
@@ -76,7 +85,7 @@ class TransitionRecord:
     step_info: dict[str, Any] | None = None
     env_info: dict[str, Any] | None = None
 
-    def to_log(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "route_id": self.route_id,
             "route_idx": self.route_idx,
@@ -102,7 +111,7 @@ class RouteRecord:
     planned_step_count: int
     planned_actions: list[str]
 
-    def to_log(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "route_id": self.route_id,
             "replan_reason": self.replan_reason,

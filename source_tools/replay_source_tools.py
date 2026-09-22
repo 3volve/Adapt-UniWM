@@ -36,7 +36,9 @@ class ReplayEpisodeAdapter(SourceAdapter):
         data_root: str = "eval_data",
         manifest_path: str = "cfg/eval_dataset_manifest.json",
         manifest_split: str = "test",
+        event_logger=None,
     ):
+        self.event_logger = event_logger
         root_dir = Path(__file__).resolve().parent.parent
         self.data_root = root_dir / data_root
         self.manifest_path = root_dir / manifest_path

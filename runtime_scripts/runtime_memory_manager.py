@@ -8,7 +8,8 @@ from runtime_scripts.uniwm_schemas import MemorySnapshot
 class RuntimeMemoryBankManager:
     _cached_step_state: MemorySnapshot | None = None
 
-    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, memory_context_tau: float, top_k: int = 3, verbose: bool = False):
+    def __init__(self, model: nn.Module, use_memory_bank_inference: bool, memory_context_tau: float, top_k: int = 3, verbose: bool = False, *, event_logger):
+        self.event_logger = event_logger
         self.model = model
         self.is_enabled = use_memory_bank_inference
         self.current_step = 0
@@ -24,14 +25,14 @@ class RuntimeMemoryBankManager:
 
     def setup_for_episode(self, episode_id: str | None = None):
         """Prepares the memory bank for a new episode."""
+        self.event_logger.feed({"memory": {"episode_setup": {str(episode_id): {
+            "enabled": self.is_enabled, "outcome": "unfinished" if self.is_enabled else "skipped"}}}})
         if not self.is_enabled:
             return
 
         # Reset memory bank for each episode to ensure independence
         if hasattr(self.model, 'reset_memory_bank'):
             self.model.reset_memory_bank()
-            if self.verbose:
-                print(f"[MEMORY] Working memory reset for episode {episode_id}")
             self.context_ema = None
             
         elif hasattr(self.model, 'memory_bank_initialized'):
@@ -42,29 +43,22 @@ class RuntimeMemoryBankManager:
                 for layer in self.model.model.model.layers:
                     if hasattr(layer, 'self_attn') and hasattr(layer.self_attn, 'reset_memory_bank'):
                         layer.self_attn.reset_memory_bank()
-            if self.verbose:
-                print(f"[MEMORY] Fallback working memory reset for episode {episode_id}")
 
         # Reset global cross-step memory bank for each episode
         if hasattr(self.model, 'reset_global_memory_bank'):
             self.model.reset_global_memory_bank()
-            if self.verbose:
-                print(f"[MEMORY] Long-term memory reset for episode {episode_id}")
             self.context_ema = None
 
         # Enable global memory bank functionality
         if hasattr(self.model, 'enable_global_memory_bank'):
             self.model.enable_global_memory_bank()
-            if self.verbose:
-                print(f"[MEMORY] Long-term memory enabled for episode {episode_id}")
 
         # Enable memory bank functionality if available
         if hasattr(self.model, 'enable_memory_bank'):
             self.model.enable_memory_bank()
-            if self.verbose:
-                print(f"[MEMORY] General memory bank functionality enabled for episode {episode_id}")
 
         self.current_step = 0
+        self.event_logger.feed({"memory": {"episode_setup": {str(episode_id): {"outcome": "completed"}}}})
 
     def start_new_step(self):
         """Prepares for a new step within an episode."""
@@ -183,8 +177,6 @@ class RuntimeMemoryBankManager:
             action_gen_kwargs["use_global_memory_bank"] = False
             return action_gen_kwargs
         
-        if self.verbose:
-            print(f"\n[MEMORY] Memory-state {self.current_step} Action Prediction Substep ===")
 
         action_gen_kwargs_with_memory = action_gen_kwargs.copy()
 
@@ -206,8 +198,6 @@ class RuntimeMemoryBankManager:
             viz_gen_kwargs["use_global_memory_bank"] = False
             return viz_gen_kwargs
 
-        if self.verbose:
-            print(f"\n[MEMORY] Memory-state {self.current_step}: Visualization Substep ===")
 
         # Enable memory bank for visualization generation
         viz_gen_kwargs_with_memory = viz_gen_kwargs.copy()
@@ -224,6 +214,7 @@ class RuntimeMemoryBankManager:
 
     def store_step_memory(self) -> bool:
         """Stores the current step's K,V pairs into the global memory bank."""
+        self.event_logger.feed({"memory": {"store": {"outcome": "unfinished", "step": self.current_step}}})
         memory_model = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
         layers = [
             memory_model.model.layers[index]
@@ -237,6 +228,7 @@ class RuntimeMemoryBankManager:
         )
 
         if not self.is_enabled or not memory_ready:
+            self.event_logger.feed({"memory": {"store": {"outcome": "skipped", "reason": "disabled_or_not_ready"}}})
             return False
 
         # Store current step's intra-step K,V to global cross-step memory bank
@@ -244,18 +236,8 @@ class RuntimeMemoryBankManager:
         if hasattr(memory_model, 'store_to_global_memory_bank'):
             memory_model.store_to_global_memory_bank(self.current_step)
             
-            print(f"[MEMORY] Memory-state {self.current_step}: Promoted working memory to long-term memory")
-            if self.verbose:
-                for layer_idx, layer in zip(sorted(memory_model.use_memory_bank_layers), layers):
-                    if len(layer.self_attn.global_stored_keys) > 0:
-                        print(
-                            f"    - Layer {layer_idx}: Global memory bank now has {len(layer.self_attn.global_stored_keys)} steps")
-                        print(
-                            f"    - Layer {layer_idx}: Latest stored K shape: {layer.self_attn.global_stored_keys[-1].shape}")
-                        print(
-                            f"    - Layer {layer_idx}: Latest stored V shape: {layer.self_attn.global_stored_values[-1].shape}")
-                        break  # Only print for first layer to avoid spam
                             
+            self.event_logger.feed({"memory": {"store": {"outcome": "completed"}}})
             return True
         
         return False

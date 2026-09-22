@@ -8,6 +8,7 @@ from PIL import Image
 
 from runtime_scripts.runtime_engine import UniWMEngine
 from runtime_scripts.learning_rate_schedule import LearningRateSchedule
+from runtime_scripts.event_logger import EventLogger
 from runtime_scripts.modulator_system import ModulatorSystem
 from runtime_scripts.uniwm_schemas import (
     UniWMInputBundle,
@@ -17,6 +18,7 @@ from runtime_scripts.uniwm_schemas import (
     StepPrediction
 )
 from runtime_scripts.runtime_utils import (
+    image_validity,
     image_to_array,
     is_stop_action,
     load_config,
@@ -45,7 +47,8 @@ REQUIRED_FIELDS: list[str] = [
 ]
 
 class UniWMWrapper:
-    def __init__(self, engine: UniWMEngine, config_path: str, absolute_output_path: str):
+    def __init__(self, engine: UniWMEngine, config_path: str, absolute_output_path: str, *, event_logger: EventLogger):
+        self.event_logger = event_logger
         self.engine = engine
         root_config = load_config(config_path)
         self.config = root_config.get("wrapper", {})
@@ -88,7 +91,7 @@ class UniWMWrapper:
             or self.learning_rate_schedule.is_recording
         )
         mod_config = None if not modulators_enabled else root_config["modulators"]["visualization"]
-        self.viz_modulators = ModulatorSystem(modulators_enabled, mod_config)
+        self.viz_modulators = ModulatorSystem(modulators_enabled, mod_config, event_logger=event_logger)
         
         # TODO: Add additional action-selection modulator system
         #self.act_modulators = ModulatorSystem(modulators_enabled, root_config["modulators"]["action"])
@@ -122,6 +125,7 @@ class UniWMWrapper:
                 return "stop"
 
         current_step = self.current_route.steps[self.route_idx]
+        self.event_logger.feed({"prediction": current_step.to_dict()})
         self.pending_step, self.pending_step_idx = current_step, self.route_idx
         self.last_planned_action = current_step.action_text
         self.last_predicted_observation = current_step.visualization
@@ -140,18 +144,25 @@ class UniWMWrapper:
         step_idx: int,
     ) -> TransitionRecord:
         if self.ready_to_act or not self.pending_step or (self.pending_step_idx < 0):
-            print(f"Failing with values: ({self.ready_to_act}, {'exists' if self.pending_step else 'none'}, {self.pending_step_idx})")
             raise AssertionError("get_next_action(...) must be called before observe_transition(...).")
         
         transition_step, transition_step_idx = self.pending_step, self.pending_step_idx
         real_obs = observed_bundle.current_observation
+        self.event_logger.feed({'wrapper': {'phase': 'observe_transition'}})
+        self.event_logger.feed({'wrapper': {'model_transition_observed': True}})
+        self.event_logger.feed({'wrapper': dict(zip(('target_valid', 'target_invalid_reason'), image_validity(real_obs)))})
+        self.event_logger.feed({'wrapper': dict(zip(('observation_valid', 'observation_invalid_reason'), image_validity(transition_step.real_input_obs)))})
+        self.event_logger.feed({'wrapper': dict(collision=observed_bundle.collision, source_done=observed_bundle.source_done, schedule_mode=self.learning_rate_schedule.mode)})
+        self.event_logger.feed({'wrapper': {'controller_state_before': self.viz_modulators.get_current_state()}})
         transition_step.context_familiarity, transition_step.context_stability = self.engine.get_current_context()
         save_path_real, save_path_viz, save_path_eval = build_img_paths(self.output_path, self.episode_id, ["real", "pred", "eval"], self.route_id, transition_step_idx)
         
         if real_obs is not None and self.config["log_real_obs"]:
             save_img(real_obs, save_path_real)
+            self.event_logger.feed({'wrapper': {'real_obs_path': save_path_real}})
         if transition_step.visualization is not None and self.config["log_predicted_obs"]:
             save_img(transition_step.visualization, save_path_viz)
+            self.event_logger.feed({'wrapper': {'predicted_obs_path': save_path_viz}})
         
         if len(self.current_route) > self.route_idx:
             next_step = self.current_route.steps[self.route_idx]
@@ -169,6 +180,8 @@ class UniWMWrapper:
             if stop_action
             else ("collision" if observed_bundle.collision else None)
         )
+        self.event_logger.feed({'wrapper': dict(stop_action=stop_action, update_eligible=update_eligible, eligibility_skip_reason=skip_reason, update_skip_reason=skip_reason or (None if self.config['training_enabled'] else 'schedule_record_only' if self.learning_rate_schedule.is_recording else 'training_disabled'))})
+        self.event_logger.feed({'wrapper': {'phase': 'schedule_replay'}})
         replayed_lr_scalar = self.learning_rate_schedule.replay_transition(
             data_id=data_id,
             episode_id=self.episode_id,
@@ -181,7 +194,9 @@ class UniWMWrapper:
 
         lr_scalar: float | None = None
         if transition_step and not stop_action:
+            self.event_logger.feed({'wrapper': {'phase': 'controller'}})
             divergence, mod_divergence = self.compute_divergence(transition_step.visualization, transition_step.real_next_obs)
+            self.event_logger.feed({'wrapper': {'controller_evidence': {'action_entropy': transition_step.act_entropy, 'visual_entropy': transition_step.viz_entropy, 'context_familiarity': transition_step.context_familiarity, 'context_stability': transition_step.context_stability, 'prediction_divergence': mod_divergence, 'visual_loss_fast_before': self._viz_loss_fast, 'visual_loss_slow_before': self._viz_loss_slow}}})
             
             if observed_bundle.collision:
                 modulator_state = {
@@ -206,11 +221,17 @@ class UniWMWrapper:
                     lr_scalar = self.viz_modulators.compute_step_update_weight()
                     modulator_state = self.viz_modulators.get_current_state()
                 
-                if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
-                    eval_log = self._run_eval_predict(transition_step.input_bundle, real_obs, save_path_eval)
-
                 if lr_scalar is None:
                     raise AssertionError("Eligible transition did not produce an LR scalar")
+                self.event_logger.feed({'wrapper': {'controller_state': modulator_state or {}}})
+                self.event_logger.feed({'wrapper': {'update_weight': lr_scalar}})
+                if self.engine.config["training"] is not False:
+                    self.event_logger.feed({'wrapper': {'effective_learning_rate': float(self.engine.config['training']['hyper_params']['initial_lr']) * lr_scalar}})
+                if self.config["eval_forced_action"] and observed_bundle.action_text is not None:
+                    self.event_logger.feed({'wrapper': {'phase': 'source_evaluation'}})
+                    eval_log = self._run_eval_predict(transition_step.input_bundle, real_obs, save_path_eval)
+                    self.event_logger.feed({'wrapper': {'evaluation': eval_log}})
+                self.event_logger.feed({'wrapper': {'phase': 'visual_loss'}})
                 if self.config["training_enabled"]:
                     update_log = self.engine.train_viz_step(transition_step, lr_scalar,
                         max_grad_norm=self.engine.config["training"]["hyper_params"]["max_grad_norm"])
@@ -221,14 +242,20 @@ class UniWMWrapper:
                     self._update_viz_loss(update_log)
             
                 if self.config["add_global_memories"]:
+                    self.event_logger.feed({'wrapper': {'phase': 'store_memory'}})
                     self.engine.store_working_memory()
                 
+            self.event_logger.feed({'wrapper': {'phase': 'update_memory'}})
             self.engine.update_working_memory(
                 real_obs,
                 observed_bundle.start_pose_str,
                 not observed_bundle.collision
             )
 
+        self.event_logger.feed({'wrapper': {'controller_state': modulator_state or {}}})
+        if update_log is None:
+            self.event_logger.feed({'wrapper': {'visual_loss_missing_reason': skip_reason or ('training_disabled' if not self.config['training_enabled'] else None)}})
+        self.event_logger.feed({'wrapper': {'phase': 'schedule_record'}})
         self.learning_rate_schedule.record_transition(
             data_id=data_id,
             episode_id=self.episode_id,
@@ -240,6 +267,7 @@ class UniWMWrapper:
             lr_scalar=lr_scalar,
         )
                 
+        self.event_logger.feed({'wrapper': {'phase': 'replan'}})
         replan_reason = None
         replanned = False
         route_id = self.route_id
@@ -275,6 +303,8 @@ class UniWMWrapper:
         self.last_divergence = divergence
         self.ready_to_act = True
         self.pending_step, self.pending_step_idx = None, -1
+        self.event_logger.feed({"wrapper": {"replanned": replanned, "replan_reason": replan_reason,
+            "divergence": divergence, "phase": "completed"}})
         return record
 
     def save_learning_rate_schedule(self) -> None:
@@ -288,7 +318,6 @@ class UniWMWrapper:
         if current_bundle.source_done:
             return
         
-        print(f"[WRAPPER] Replanning Route: {reason}")
         self.latest_bundle = current_bundle
         self.pending_step = None
         self.pending_step_idx = 0
@@ -311,7 +340,7 @@ class UniWMWrapper:
         raise AssertionError(f"Unsupported divergence_metric '{metric}'")
 
     def get_routes_log_for_episode(self) -> list[dict[str, Any]]:
-        return [record.to_log() for record in self.route_history]
+        return [record.to_dict() for record in self.route_history]
 
     def get_state_snapshot(self) -> dict[str, Any]:
         return {
@@ -363,7 +392,8 @@ class UniWMWrapper:
                 planned_actions=[str(step.action_text) for step in self.current_route.steps]
             )
         )
-        
+        self.event_logger.feed({"routes": {str(self.episode_id): {str(self.route_id): self.route_history[-1].to_dict()}}})
+
     def _run_eval_predict(self, observed_bundle: UniWMInputBundle, target_obs: Image.Image, save_path_eval: str) -> dict[str, Any]:
         if observed_bundle.action_text is None or (isinstance(observed_bundle.action_text, list) and len(observed_bundle.action_text) <= 0):
             raise AssertionError("[UNEXPECTED ERROR] eval needs a forced action to perform a proper evaluation.")
@@ -381,6 +411,7 @@ class UniWMWrapper:
         eval_log["context_familiarity"] = eval_prediction.context_familiarity
         eval_log["context_stability"] = eval_prediction.context_stability
         eval_log["prediction_available"] = eval_prediction.visualization is not None
+        eval_log["prediction_missing_reason"] = None if eval_prediction.visualization is not None else "no_visualization"
         eval_log["predicted_obs_path"] = save_path_eval if eval_prediction.visualization is not None and self.config["log_predicted_obs"] else None
         
         if eval_prediction.visualization is not None and self.config["log_predicted_obs"]:

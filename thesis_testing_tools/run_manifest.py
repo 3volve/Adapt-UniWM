@@ -93,6 +93,10 @@ class RunManifest:
         with (self.root / "run_manifest.json").open("x", encoding="utf-8") as handle:
             json.dump(self.data, handle, indent=2, default=str)
         (self.root / "provenance").mkdir()
+        from runtime_scripts.event_logger import EventLogger
+        self.event_logger = EventLogger(self.root / "events.jsonl", {
+            "pipeline": {"run_type": self.data["run_type"], "run_id": self.data["run_id"]}})
+        self.data["references"]["events"] = "events.jsonl"
         return self
 
     def capture_environment(self, overrides: dict):
@@ -164,9 +168,11 @@ class RunManifest:
                   "run_dir": str(run_dir.resolve()), "config_path": str(config_path),
                   "config_snapshot": config_snapshot.relative_to(self.root).as_posix(),
                   "command": list(command), "started_at": now(), "finished_at": None,
-                  "runtime_metadata": stage_id + "/runtime_metadata.json",
-                  "runtime_metadata_before_model": stage_id + "/runtime_metadata_before_model.json"}
+                  "events": stage_id + "/events.jsonl", "event_schema_version": 1}
         self.data["stages"].append(record)
+        self.event_logger.feed({"outcome": "completed"})
+        self.event_logger.next_step({"stage": {"id": stage_id, "name": name, "outcome": "unfinished",
+                                              "events": record["events"]}})
         self.data["phase"] = name
         self.save()
         started = time.perf_counter()
@@ -181,8 +187,11 @@ class RunManifest:
             record["status"] = "completed"
         finally:
             record.update(finished_at=now(), duration_seconds=time.perf_counter() - started)
-            record["runtime_metadata_available"] = (run_dir / "runtime_metadata.json").is_file()
-            self.data["phase"] = "analysis" if record["status"] == "completed" else name
+            record["events_available"] = (run_dir / "events.jsonl").is_file()
+            self.event_logger.feed({"outcome": record["status"], "stage": {
+                "outcome": record["status"], "duration_seconds": record["duration_seconds"],
+                "events_available": record["events_available"]}})
+            self.data["phase"] = "stage_finished" if record["status"] == "completed" else name
             self.save()
 
     def __exit__(self, exc_type, error, tb):
@@ -196,6 +205,13 @@ class RunManifest:
         elif self.data["status"] == "running":
             self.data["status"] = "completed"
         self.data.update(finished_at=now(), duration_seconds=time.perf_counter() - self.started)
+        if error is not None:
+            self.event_logger.feed({"outcome": self.data["status"], "failure": {
+                "type": type(error).__name__, "message": str(error), "phase": self.data["phase"]}})
+        else:
+            self.event_logger.feed({"outcome": "completed"})
+        self.event_logger.finish({"outcome": self.data["status"],
+                                  "manifest": "run_manifest.json"})
         self.save()
         artifacts = index_artifacts(self.root)
         write_json(self.root / self.data["artifact_index"], {"updated_at": now(), "files": artifacts})

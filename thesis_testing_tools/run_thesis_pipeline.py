@@ -2,8 +2,8 @@
 
 This is deliberately a personal, hard-coded experiment driver.  It mirrors the
 two online evaluation shell scripts, but keeps each torchrun in the foreground
-and writes the cross-stage thesis aggregates after the individual runner
-artifacts have been persisted.  An existing pipeline run can also supply the
+and persists execution summaries. Legacy cross-stage metric generation is
+temporarily disabled during the EventLogger migration. An existing run can supply the
 source-pre reference for an additional Habitat -> source-post follow-up.
 """
 
@@ -281,28 +281,6 @@ def write_post_replay_config(
     destination.write_text("".join(lines), encoding="utf-8")
 
 
-def write_habitat_fixed_action_config(
-    source_config: Path,
-    destination: Path,
-    action_run_dir: Path,
-) -> None:
-    lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
-    replacement = json.dumps(str(action_run_dir.resolve()))
-    fixed_action_line = next(
-        index
-        for index, line in enumerate(lines)
-        if line.lstrip().startswith("fixed_action_run_dir:")
-    )
-    indentation = lines[fixed_action_line][
-        : len(lines[fixed_action_line]) - len(lines[fixed_action_line].lstrip())
-    ]
-    lines[fixed_action_line] = (
-        f"{indentation}fixed_action_run_dir: {replacement}\n"
-    )
-
-    destination.write_text("".join(lines), encoding="utf-8")
-
-
 def _replace_yaml_scalar(
     lines: list[str],
     key: str,
@@ -343,7 +321,6 @@ def write_seed_habitat_config(
     *,
     initial_checkpoint: Path,
     seed: int,
-    habitat_action_run: Path | None,
     habitat_action_files_dir: Path | None = None,
     habitat_episode_ids: list[str] | None = None,
     fixed_mean_lr: float | None = None,
@@ -367,20 +344,8 @@ def write_seed_habitat_config(
     if max_route_steps is not None:
         _replace_yaml_scalar(lines, "max_route_steps", str(max_route_steps))
 
-    _replace_yaml_scalar(
-        lines,
-        "fixed_action_run_dir",
-        (
-            "null"
-            if habitat_action_run is None
-            else json.dumps(str(habitat_action_run.resolve()))
-        ),
-    )
-    reference_index = next(i for i, line in enumerate(lines)
-                           if line.lstrip().startswith("fixed_action_run_dir:"))
-    indentation = lines[reference_index][:len(lines[reference_index]) - len(lines[reference_index].lstrip())]
-    lines.insert(reference_index + 1, f"{indentation}fixed_action_files_dir: "
-                 + ("null" if habitat_action_files_dir is None else json.dumps(str(habitat_action_files_dir))) + "\n")
+    _replace_yaml_scalar(lines, "fixed_action_files_dir",
+                         "null" if habitat_action_files_dir is None else json.dumps(str(habitat_action_files_dir)))
     if habitat_episode_ids is not None:
         _replace_yaml_scalar(lines, "episode_ids", json.dumps(habitat_episode_ids))
     if fixed_mean_lr is not None:
@@ -938,7 +903,6 @@ def run_seed_batch(
     fixed_mean_calibration: Path | None = None,
     initial_checkpoint: Path = BASE_CHECKPOINT,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
-    habitat_action_run: Path | None = None,
     schedule_shuffle_seed: int = 20260827,
     source_episodes: int = SOURCE_EPISODES,
     habitat_episodes: int = HABITAT_EPISODES,
@@ -1039,21 +1003,16 @@ def run_seed_batch(
             calibration = run_record.snapshot(fixed_mean_calibration, "development_calibration")
             run_record.data["metadata"]["fixed_mean_calibration"] = calibration.relative_to(seed_dir).as_posix()
             run_record.save()
-        if habitat_action_run is not None:
-            habitat_action_run = run_record.snapshot(
-                Path(habitat_action_run) / "episode_logs.json", "fixed_action_reference"
-            ).parent
         generation_started = time.perf_counter()
         action_files = []
         action_files_dir = None
-        if habitat_action_run is None:
-            for episode_id in habitat_ids:
-                print(f"[THESIS PIPELINE] Generating {habitat_max_episode_steps} actions for Habitat episode {episode_id}", flush=True)
-                action_files.append(generate_action_sequence(
-                    episode_id, habitat_max_episode_steps, seed_dir, seed=seed,
-                    config_path=FROZEN_CONFIG, checkpoint=initial_checkpoint,
-                ))
-            action_files_dir = seed_dir / "habitat_action_sequences"
+        for episode_id in habitat_ids:
+            print(f"[THESIS PIPELINE] Generating {habitat_max_episode_steps} actions for Habitat episode {episode_id}", flush=True)
+            action_files.append(generate_action_sequence(
+                episode_id, habitat_max_episode_steps, seed_dir, seed=seed,
+                config_path=FROZEN_CONFIG, checkpoint=initial_checkpoint,
+            ))
+        action_files_dir = seed_dir / "habitat_action_sequences"
         for filename in action_files:
             run_record.snapshot(REPO_ROOT / filename, "generated_actions")
         action_reference = {
@@ -1096,13 +1055,12 @@ def run_seed_batch(
             else:
                 source_config = FIXED_CONFIG
 
-            condition_action_run = habitat_action_run
             write_seed_habitat_config(
                 source_config,
                 habitat_config,
                 initial_checkpoint=initial_checkpoint,
                 seed=int(seed),
-                habitat_action_run=condition_action_run,
+
                 habitat_action_files_dir=action_files_dir,
                 habitat_episode_ids=habitat_ids,
                 fixed_mean_lr=(fixed_mean_lr if condition_id == "c2_fixed_mean" else None),
@@ -1162,7 +1120,7 @@ def run_seed_batch(
                         None if source_post_command is None else source_post_config
                     ),
                     "source_post_command": source_post_command,
-                    "habitat_action_reference_run": condition_action_run,
+
                 }
             )
 
@@ -1238,29 +1196,16 @@ def run_seed_batch(
                     "source_post_reused_from_source_pre": (
                         plan["condition_id"] == "c0_frozen"
                     ),
-                    "habitat_action_reference_run": (
-                        None
-                        if plan["habitat_action_reference_run"] is None
-                        else str(Path(plan["habitat_action_reference_run"]).resolve())
-                    ),
+
                 }
                 for plan in condition_plans
             ],
-            "habitat_action_reference_run": (
-                None
-                if habitat_action_run is None
-                else str(habitat_action_run.resolve())
-            ),
+
             "environment_overrides": ENV_OVERRIDES,
         }
         with (seed_dir / "seed_manifest.json").open("w", encoding="utf-8") as handle:
             json.dump(seed_manifest, handle, indent=2)
 
-        calculate_metrics = (
-            AlexNetVisualMetricCalculator()
-            if metric_calculator is None
-            else metric_calculator
-        )
         run_record.reference("seed_plan", seed_dir / "seed_manifest.json")
         run_record.reference("checkpoint_provenance", provenance_path)
         run_record.reference("source_pre", source_pre_dir)
@@ -1274,17 +1219,7 @@ def run_seed_batch(
             run_manifest=run_record,
         )
         source_pre_record["input_checkpoint_path"] = str(initial_checkpoint)
-        source_pre_rows = collect_stage_episode_metrics(
-            source_pre_dir,
-            SOURCE_DATA_IDS,
-            "eval",
-            calculate_metrics,
-        )
-        source_pre_record["thesis_episode_metrics"] = str(
-            source_pre_dir / "thesis_episode_metrics.csv"
-        )
 
-        smoke_stage_rows = {"source_pre": source_pre_rows}
         condition_summaries: list[dict[str, Any]] = []
         for plan in condition_plans:
             condition_started = time.perf_counter()
@@ -1297,9 +1232,7 @@ def run_seed_batch(
                     "name": "source_pre",
                     "status": "reused",
                     "run_dir": str(source_pre_dir),
-                    "thesis_episode_metrics": str(
-                        source_pre_dir / "thesis_episode_metrics.csv"
-                    ),
+
                 }
             ]
 
@@ -1325,34 +1258,18 @@ def run_seed_batch(
                 provenance_path.write_text(
                     json.dumps(provenance, indent=2) + "\n", encoding="utf-8"
                 )
-            habitat_rows = collect_stage_episode_metrics(
-                habitat_dir,
-                HABITAT_DATA_ID,
-                "pred",
-                calculate_metrics,
-            )
-            habitat_record["thesis_episode_metrics"] = str(
-                habitat_dir / "thesis_episode_metrics.csv"
-            )
 
             source_post_dir = Path(plan["source_post_dir"])
             source_post_command = plan["source_post_command"]
             if source_post_command is None:
                 source_post_dir.mkdir()
-                source_post_rows = [dict(row) for row in source_pre_rows]
-                _write_csv(
-                    source_post_dir / "thesis_episode_metrics.csv",
-                    source_post_rows,
-                )
                 reuse_record = {
                     "name": "source_post",
                     "status": "reused",
                     "run_dir": str(source_post_dir),
                     "source_pre_reference": str(source_pre_dir),
                     "reason": "C0 performed no optimizer steps",
-                    "thesis_episode_metrics": str(
-                        source_post_dir / "thesis_episode_metrics.csv"
-                    ),
+
                 }
                 with (source_post_dir / "reuse_manifest.json").open(
                     "w", encoding="utf-8"
@@ -1371,39 +1288,9 @@ def run_seed_batch(
                 )
                 source_post_record["input_checkpoint_path"] = str(final_checkpoint)
                 stage_records.append(source_post_record)
-                source_post_rows = collect_stage_episode_metrics(
-                    source_post_dir,
-                    SOURCE_DATA_IDS,
-                    "eval",
-                    calculate_metrics,
-                )
-                source_post_record["thesis_episode_metrics"] = str(
-                    source_post_dir / "thesis_episode_metrics.csv"
-                )
 
-            smoke_stage_rows[f"{condition_id}/habitat"] = habitat_rows
-            smoke_stage_rows[f"{condition_id}/source_post"] = source_post_rows
-            comparison_rows = compare_source_episodes(
-                source_pre_rows,
-                source_post_rows,
-            )
-            _write_csv(
-                condition_dir / "source_episode_comparison.csv",
-                comparison_rows,
-            )
 
-            condition_summary = build_pipeline_summary(
-                seed_dir,
-                condition_dir,
-                source_pre_dir,
-                stage_records,
-                source_pre_rows,
-                habitat_rows,
-                source_post_rows,
-                comparison_rows,
-                time.perf_counter() - condition_started,
-                "seed_condition",
-            )
+            condition_summary = {"status": "completed", "result_dir": str(condition_dir), "stages": stage_records, "analysis": {"status": "disabled", "reason": "Legacy metric readers do not support events.jsonl yet"}, "artifacts": {}}
             condition_summary.update(
                 {
                     "condition_id": condition_id,
@@ -1454,16 +1341,10 @@ def run_seed_batch(
                 for summary in condition_summaries
             ],
         }
+        batch_summary["analysis"] = {"status": "disabled", "reason": "EventLogger reader migration deferred"}
         if smoke_test:
-            result = smoke_test_result(
-                smoke_stage_rows, c0_habitat_dir / "learning_rate_schedule.json"
-            )
-            batch_summary["smoke_test_result"] = result
-            if result["status"] == "inconclusive":
-                batch_summary["status"] = "inconclusive"
-            print(f"[THESIS SMOKE TEST] {result['status'].upper()}")
-            for reason in result["missing_coverage"]:
-                print(f"  - {reason}")
+            batch_summary["smoke_test_result"] = {"status": "not_evaluated",
+                "reason": "Runtime smoke workload completed; metric-based coverage checks are temporarily disabled"}
 
         provenance_path.write_text(
             json.dumps(provenance, indent=2) + "\n",
@@ -1484,7 +1365,6 @@ def run_pipeline(
     *,
     existing_run: Path | None = None,
     source_post_checkpoint: Path | None = None,
-    habitat_action_run: Path | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     timestamp: str | None = None,
     subprocess_runner: SubprocessRunner | None = None,
@@ -1540,13 +1420,6 @@ def run_pipeline(
         if not post_only:
             final_checkpoint = habitat_dir / "final_ckpt"
 
-            if habitat_action_run is not None:
-                habitat_config = result_dir / "habitat_fixed_actions_config.yaml"
-                write_habitat_fixed_action_config(
-                    HABITAT_CONFIG,
-                    habitat_config,
-                    habitat_action_run,
-                )
 
         run_record.snapshot(REPLAY_CONFIG, "config_template")
         run_record.snapshot(DEVELOPMENT_MANIFEST, "data_manifest")
@@ -1556,8 +1429,6 @@ def run_pipeline(
         if post_only:
             run_record.data["checkpoints"]["habitat_final"] = artifact_fingerprint(final_checkpoint)
         run_record.reference("source_pre", source_pre_dir)
-        if habitat_action_run is not None:
-            run_record.snapshot(Path(habitat_action_run) / "episode_logs.json", "fixed_action_reference")
 
         source_pre_command = (
             build_torchrun_command(
@@ -1651,11 +1522,7 @@ def run_pipeline(
                 "source_post_input_checkpoint": str(final_checkpoint),
             },
             "source_post_config": str(post_config),
-            "habitat_action_reference_run": (
-                None
-                if habitat_action_run is None
-                else str(habitat_action_run.resolve())
-            ),
+
         }
         manifest_path = result_dir / (
             "source_post_manifest.json"
@@ -1668,30 +1535,10 @@ def run_pipeline(
             json.dump(manifest, handle, indent=2)
 
         run_record.reference("pipeline_plan", manifest_path)
-        calculate_metrics = (
-            AlexNetVisualMetricCalculator()
-            if metric_calculator is None
-            else metric_calculator
-        )
         pipeline_started = time.perf_counter()
         stage_records: list[dict[str, Any]] = []
 
-        if source_pre_command is None:
-            source_pre_metrics_path = (
-                source_pre_dir / "thesis_episode_metrics.csv"
-            )
-            if source_pre_metrics_path.is_file():
-                source_pre_rows = load_source_episode_metrics(
-                    source_pre_metrics_path
-                )
-            else:
-                source_pre_rows = collect_stage_episode_metrics(
-                    source_pre_dir,
-                    SOURCE_DATA_IDS,
-                    "eval",
-                    calculate_metrics,
-                )
-        else:
+        if source_pre_command is not None:
             source_pre_record = run_stage(
                 "source_pre",
                 source_pre_command,
@@ -1703,28 +1550,8 @@ def run_pipeline(
             )
             source_pre_record["input_checkpoint_path"] = str(BASE_CHECKPOINT)
             stage_records.append(source_pre_record)
-            source_pre_rows = collect_stage_episode_metrics(
-                source_pre_dir,
-                SOURCE_DATA_IDS,
-                "eval",
-                calculate_metrics,
-            )
-            source_pre_record["thesis_episode_metrics"] = str(
-                source_pre_dir / "thesis_episode_metrics.csv"
-            )
 
-        if habitat_command is None:
-            habitat_metrics_path = habitat_dir / "thesis_episode_metrics.csv"
-            if habitat_metrics_path.is_file():
-                habitat_rows = load_episode_metrics(habitat_metrics_path)
-            else:
-                habitat_rows = collect_stage_episode_metrics(
-                    habitat_dir,
-                    HABITAT_DATA_ID,
-                    "pred",
-                    calculate_metrics,
-                )
-        else:
+        if habitat_command is not None:
             habitat_record = run_stage(
                 "habitat",
                 habitat_command,
@@ -1739,15 +1566,6 @@ def run_pipeline(
             stage_records.append(habitat_record)
             run_record.data["checkpoints"]["habitat_final"] = artifact_fingerprint(final_checkpoint)
             run_record.save()
-            habitat_rows = collect_stage_episode_metrics(
-                habitat_dir,
-                HABITAT_DATA_ID,
-                "pred",
-                calculate_metrics,
-            )
-            habitat_record["thesis_episode_metrics"] = str(
-                habitat_dir / "thesis_episode_metrics.csv"
-            )
 
         write_post_replay_config(REPLAY_CONFIG, post_config, final_checkpoint)
 
@@ -1762,45 +1580,12 @@ def run_pipeline(
         )
         source_post_record["input_checkpoint_path"] = str(final_checkpoint)
         stage_records.append(source_post_record)
-        source_post_rows = collect_stage_episode_metrics(
-            source_post_dir,
-            SOURCE_DATA_IDS,
-            "eval",
-            calculate_metrics,
-        )
-        source_post_record["thesis_episode_metrics"] = str(
-            source_post_dir / "thesis_episode_metrics.csv"
-        )
 
-        comparison_rows = compare_source_episodes(
-            source_pre_rows,
-            source_post_rows,
-        )
-        _write_csv(
-            result_dir / "source_episode_comparison.csv",
-            comparison_rows,
-        )
 
-        summary = build_pipeline_summary(
-            pipeline_dir,
-            result_dir,
-            source_pre_dir,
-            stage_records,
-            source_pre_rows,
-            habitat_rows,
-            source_post_rows,
-            comparison_rows,
-            time.perf_counter() - pipeline_started,
-            (
-                "source_post_from_existing_checkpoint"
-                if post_only
-                else None
-            ),
-        )
+        summary = {"status": "completed", "result_dir": str(result_dir), "stages": stage_records, "analysis": {"status": "disabled", "reason": "Legacy metric readers do not support events.jsonl yet"}, "artifacts": {}}
         with (result_dir / "pipeline_summary.json").open(
             "w", encoding="utf-8"
         ) as handle:
-            summary["artifacts"]["habitat_metrics"] = str(habitat_dir / "thesis_episode_metrics.csv")
             summary["artifacts"]["habitat_checkpoint"] = str(final_checkpoint)
             json.dump(summary, handle, indent=2)
 
@@ -1891,15 +1676,6 @@ def main() -> None:
         "--habitat-port",
         type=int,
     )
-    parser.add_argument(
-        "--habitat-action-run",
-        type=Path,
-        help=(
-            "Force Habitat actions from episode_logs.json in an existing "
-            "Habitat run directory. In all-conditions mode this skips action generation; "
-            "otherwise sequences are generated once per selected episode and shared by C0-C5."
-        ),
-    )
     args = parser.parse_args()
     
     if args.habitat_cfg is not None:
@@ -1958,7 +1734,7 @@ def main() -> None:
             fixed_mean_calibration=args.fixed_mean_calibration,
             initial_checkpoint=args.initial_checkpoint,
             source_manifest=args.source_manifest,
-            habitat_action_run=args.habitat_action_run,
+
             schedule_shuffle_seed=args.schedule_shuffle_seed,
             source_episodes=source_episodes,
             habitat_episodes=habitat_episodes,
@@ -1994,7 +1770,7 @@ def main() -> None:
         result_dir = run_pipeline(
             existing_run=args.existing_run,
             source_post_checkpoint=args.source_post_checkpoint,
-            habitat_action_run=args.habitat_action_run,
+
             output_root=args.output_root,
         )
     print(f"[THESIS PIPELINE] Finished: {result_dir}")

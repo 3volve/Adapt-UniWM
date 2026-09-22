@@ -16,6 +16,30 @@ from scripts.postprocess_logits_utils import split_token_sequence
 
 VERBOSE_UTILS = False
 
+def event_values(value):
+    """Convert producer metadata to small JSON values before feeding the logger."""
+    if isinstance(value, dict):
+        return {key: event_values(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [event_values(child) for child in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return {"shape": list(value.shape), "dtype": str(value.dtype)}
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def image_validity(image):
+    """Images at this boundary are decoded PIL images."""
+    if image is None:
+        return False, "missing_image"
+    if min(image.size) <= 0:
+        return False, "empty_image"
+    return True, None
+
+
 def image_to_array(observation: Image.Image) -> np.ndarray:
     array = np.asarray(observation, dtype=np.float32)
     return array / 255.0

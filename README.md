@@ -75,8 +75,7 @@ For the paired core experiment, queue all six conditions for one seed with:
 python thesis_testing_tools/run_thesis_pipeline.py \
   --all-conditions \
   --seed 100 \
-  --fixed-mean-lr "$DEVELOPMENT_MEAN_LR" \
-  --habitat-action-run thesis_artifacts/habitat_fixed_actions/no_learning
+  --fixed-mean-lr "$DEVELOPMENT_MEAN_LR"
 ```
 
 C2 requires `--fixed-mean-lr`: supply the mean effective learning rate determined
@@ -119,15 +118,15 @@ metadata in a single JSON document:
   generated or reused action references, controller schedule, and any supplied
   development calibration artifact. Each snapshot has a SHA-256 in the manifest.
   Model stages execute their saved configuration; seed batches also use the
-  saved source manifest and saved reused-action logs.
+  saved source manifest and standalone action sequences.
 - `provenance/environment.json` and `working_tree_diff.json`: Python/packages,
   platform, GPU/driver query, selected environment and Slurm variables, and Git
   working-tree changes. Git commit/branch/status are in the master manifest.
-- `<stage>/runtime_metadata_before_model.json` and `runtime_metadata.json`:
+- `<stage>/events.jsonl`, startup record:
   worker seeds and RNG fingerprints, actual Torch/CUDA/cuDNN determinism and TF32
   settings, GPU details, LoRA initialization, resolved model settings, dropout,
-  trainable parameters, and optimizer settings. The first file survives model
-  initialization failures. Capture observes settings without reseeding or
+  trainable parameters, and optimizer settings. Before-model evidence survives
+  caught initialization failures. Capture observes settings without reseeding or
   enabling deterministic algorithms.
 - `provenance/artifact_index.json`: relative paths and sizes for saved logs,
   checkpoints, metrics, tables, figures, and other run files. Large checkpoint
@@ -148,10 +147,18 @@ post-only invocations store their manifest and new outputs under
 to the reused source-pre and Habitat artifacts point outside that subdirectory.
 
 Caught failures and keyboard interrupts retain partial artifacts and a traceback.
-`completed` means execution/analysis finished; smoke runs can be `inconclusive`.
+`completed` means execution finished. Automatic legacy metric generation is
+temporarily disabled; smoke coverage is marked `not_evaluated`.
 An uncatchable kill or node loss can leave `running`, which must not be interpreted
-as success. Per-transition accounting and schedule reconciliation are a separate
-pending change. Snapshots preserve provenance but do not package external datasets,
+as success. Each runner now writes `events.jsonl` with explicit
+prediction/target availability, update outcomes, skip reasons, and caught failures,
+including when detailed step logging is disabled. See
+[EventLogger](docs/event_logger.md) for the current contract. The coordinator has
+its own event file. Legacy writer implementations are retained but disconnected;
+metric readers are temporarily incompatible. Past-run action replay is retired:
+all-conditions runs generate fresh standalone sequences shared across conditions.
+Sample-count auditing and schedule reconciliation remain a separate pending change.
+Snapshots preserve provenance but do not package external datasets,
 model downloads, or make absolute paths relocatable automatically.
 
 The artifact index is finalized when the invocation exits. After adding offline
@@ -181,12 +188,11 @@ Each run is written below `output/thesis_pipeline_<timestamp>/`. The primary
 reproducibility artifacts are:
 
 - `pipeline_manifest.json`: commands, configurations, inputs, and checkpoint flow.
-- `source_pre/thesis_episode_metrics.csv`: source performance before adaptation.
-- `habitat/thesis_episode_metrics.csv`: Habitat navigation, learning, and diagnostic metrics.
+- `source_pre/events.jsonl`: source evaluation events before adaptation.
+- `habitat/events.jsonl`: navigation, learning, and diagnostic events.
 - `habitat/final_ckpt/`: the condition's final PEFT adapter.
-- `source_post/thesis_episode_metrics.csv`: source performance after adaptation.
-- `source_episode_comparison.csv`: paired pre/post source-retention comparison.
-- `pipeline_summary.json`: compact run-level Habitat and retention summary.
+- `source_post/events.jsonl`: source evaluation events after adaptation.
+- `pipeline_summary.json`: execution summary with analysis explicitly disabled.
 
 The thesis defines and interprets the reported metrics. The README records where
 the implementation produces them so a reader can trace thesis tables back to

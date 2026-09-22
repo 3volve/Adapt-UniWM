@@ -28,9 +28,10 @@ class ModulatorSystem:
     
     _step_events: dict[str, float] = {}
 
-    def __init__(self, enabled: bool, config: dict | None):
+    def __init__(self, enabled: bool, config: dict | None, *, event_logger=None):
         """Initialize the scaffold with optional visualization-weight settings."""
         self.enabled = enabled
+        self.event_logger = event_logger
         
         if enabled and config is not None:
             validate_config(config, REQUIRED_FIELDS)
@@ -191,7 +192,11 @@ class ModulatorSystem:
 
     def compute_step_update_weight(self) -> float:
         """Compute the current visual update weight from ACh-like and NE-like state."""
+        if self.event_logger is not None:
+            self.event_logger.feed({"controller": {"enabled": self.enabled, "outcome": "unfinished"}})
         if not self.enabled:
+            if self.event_logger is not None:
+                self.event_logger.feed({"controller": {"outcome": "completed"}})
             return 1.0
 
         ne_mult = self._compute_ne_mult()
@@ -202,6 +207,8 @@ class ModulatorSystem:
         clipped_weight = clamp(weight, 0.0, max_weight)
 
         self._step_events["update_weight"] = clipped_weight
+        if self.event_logger is not None:
+            self.event_logger.feed({"controller": {"outcome": "completed"}})
         return clipped_weight
 
     def get_current_state(self) -> dict[str, Any]:

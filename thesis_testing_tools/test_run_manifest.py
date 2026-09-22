@@ -12,6 +12,7 @@ from unittest.mock import patch
 from thesis_testing_tools.run_manifest import RunManifest, artifact_fingerprint, sha256_file
 from thesis_testing_tools.run_thesis_pipeline import run_stage, run_pipeline, FULL_CONFIG
 from runtime_scripts.run_metadata import runtime_metadata
+from runtime_scripts.event_logger import EventLogger
 
 
 class RunManifestTests(unittest.TestCase):
@@ -39,7 +40,7 @@ class RunManifestTests(unittest.TestCase):
             self.assertEqual(manifest["stages"][0]["input_checkpoint_path"], "checkpoint")
             self.assertEqual(manifest["inputs"][0]["sha256"], sha256_file(saved))
             self.assertEqual(len(manifest["inputs"]), 1)
-            self.assertFalse(manifest["stages"][0]["runtime_metadata_available"])
+            self.assertFalse(manifest["stages"][0]["events_available"])
             index = json.loads((output / manifest["artifact_index"]).read_text())
             self.assertIn("stage/result.txt", [item["path"] for item in index["files"]])
             self.assertTrue(all(not Path(item["path"]).is_absolute() for item in index["files"]))
@@ -74,7 +75,7 @@ class RunManifestTests(unittest.TestCase):
                 self.assertEqual(manifest["failure"]["returncode"], 7 if isinstance(failure, subprocess.CalledProcessError) else None)
                 if isinstance(failure, RuntimeError):
                     self.assertEqual(manifest["stages"][0]["status"], "completed")
-                    self.assertEqual(manifest["failure"]["phase"], "analysis")
+                    self.assertEqual(manifest["failure"]["phase"], "stage_finished")
                 self.assertTrue((output / manifest["failure"]["traceback"]).is_file())
                 self.assertIsNotNone(manifest["finished_at"])
 
@@ -102,10 +103,8 @@ class RunManifestTests(unittest.TestCase):
             output = Path(command[command.index("--run_dir") + 1])
             output.mkdir(parents=True, exist_ok=True)
             data_id = command[command.index("--data_id") + 1]
-            (output / "episode_logs.json").write_text(json.dumps([{
-                "data_id": data_id, "episode_index": 0, "episode_id": "0",
-                "adapter_source_mode": "test", "termination_reason": "done", "steps": [],
-            }]))
+            with EventLogger(output / "events.jsonl") as log:
+                log.feed({"outcome": "completed"})
             if data_id == "habitat":
                 (output / "final_ckpt").mkdir()
                 (output / "final_ckpt/adapter.bin").write_bytes(b"adapter")
@@ -118,7 +117,7 @@ class RunManifestTests(unittest.TestCase):
             old_outputs = {path: path.read_bytes() for path in followup.rglob("*") if path.is_file()}
             post = run_pipeline(source_post_checkpoint=followup / "habitat/final_ckpt", timestamp="post", **kwargs)
             self.assertEqual(post, followup / "source_post_invocations/post")
-            self.assertTrue((post / "source_post/episode_logs.json").is_file())
+            self.assertTrue((post / "source_post/events.jsonl").is_file())
             for path, data in old_outputs.items():
                 self.assertEqual(path.read_bytes(), data)
             self.assertEqual((followup / "run_manifest.json").read_bytes(), before)

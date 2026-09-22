@@ -170,7 +170,7 @@ def generate_action_sequence(
             or vocab.axes["dyaw"]["max_bin"] < TURN_BINS
             or not vocab.axes["dyaw"]["allow_negative"]):
         raise ValueError("Checkpoint must support 25 forward bins and +/-17 turn bins")
-    params.update(episode_ids=[episode_id], fixed_action_run_dir=None,
+    params.update(episode_ids=[episode_id],
                   fixed_action_files_dir=None, seed=seed)
     for key in ("data_path", "scenes_dir"):
         params[key] = str((REPO_ROOT / params[key]).resolve())

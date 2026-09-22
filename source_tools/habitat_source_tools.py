@@ -114,23 +114,19 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         bin_step: float = 0.01,
         episode_ids: list[str] | None = None,
         fixed_action_files_dir: str | None = None,
-        fixed_action_run_dir: str | None = None,
         extra_overrides: list[str] = [],
+        event_logger=None,
     ):
+        self.event_logger = event_logger
         self.reset_src()
         self.bin_step = float(bin_step)
 
         self.fixed_actions_by_episode: dict[str, list[str]] | None = None
         fixed_action_episode_ids: list[str] | None = None
 
-        if fixed_action_run_dir is not None and fixed_action_files_dir is not None:
-            raise ValueError("Supply only one of fixed_action_run_dir and fixed_action_files_dir")
         if fixed_action_files_dir is not None:
             fixed_action_episode_ids, self.fixed_actions_by_episode =\
                 self._load_fixed_actions_from_files(fixed_action_files_dir)
-        elif fixed_action_run_dir is not None:
-            fixed_action_episode_ids, self.fixed_actions_by_episode =\
-                self._load_fixed_actions_from_run(fixed_action_run_dir)
 
         if episode_ids is None and fixed_action_episode_ids is not None:
             episode_ids = fixed_action_episode_ids
@@ -252,11 +248,15 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
 
         step_results: list[HabitatOutputBundle] = []
         for action_index, action in enumerate(actions):
+            if self.event_logger is not None:
+                self.event_logger.feed({"adapter": {"primitives": {str(action_index): {"action": action, "outcome": "unfinished"}}}})
             obs = self.env.step(action)
             is_collision = bool(self.sim.previous_step_collided)
             self.current_episode = self.env.current_episode
             self.step_index += 1
             env_done = bool(self.env.episode_over)
+            if self.event_logger is not None:
+                self.event_logger.feed({"adapter": {"primitives": {str(action_index): {"collision": is_collision, "outcome": "completed", "source_done": env_done}}}})
             final_primitive = action_index == len(actions) - 1
             done = env_done or (
                 fixed_sequence_done and (final_primitive or is_collision)
@@ -339,34 +339,6 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         if not actions_by_episode:
             raise ValueError(f"{path}: no action sequence JSON files found")
         return list(actions_by_episode), actions_by_episode
-
-    @staticmethod
-    def _load_fixed_actions_from_run(
-        run_dir: str,
-    ) -> tuple[list[str], dict[str, list[str]]]:
-        root_dir = Path(__file__).resolve().parent.parent
-        path = Path(run_dir)
-
-        if not path.is_absolute():
-            path = root_dir / path
-
-        with (path / "episode_logs.json").open(
-            "r", encoding="utf-8"
-        ) as file:
-            episode_logs = json.load(file)
-
-        episode_ids: list[str] = []
-        actions_by_episode: dict[str, list[str]] = {}
-
-        for episode_log in episode_logs:
-            episode_id = str(episode_log["episode_id"])
-            episode_ids.append(episode_id)
-            actions_by_episode[episode_id] = [
-                str(step["action"])
-                for step in episode_log["steps"]
-            ]
-
-        return episode_ids, actions_by_episode
 
     def _pack_step(
         self,
@@ -451,6 +423,8 @@ class HabitatUniWMFormatter(SourceFormatter[HabitatOutputBundle]):
             "step_index": f"[{outputs[0].step_index}->{outputs[-1].step_index}]",
             "source_mode": output.source_mode,
             "action_taken": ', '.join(['<no action>' if o.action_taken is None else o.action_taken for o in outputs]),
+            "primitive_actions_executed": [o.action_taken for o in outputs if o.action_taken is not None],
+            "primitive_action_count": sum(o.action_taken is not None for o in outputs),
             "metrics": dict(output.metrics)
         })
         

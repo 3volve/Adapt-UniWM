@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any, Generic
 
 from runtime_scripts.datasource_schemas import T_OutputBundle, T_Adapter, T_Formatter
-from runtime_scripts.test_runtime_metrics import append_runner_event, save_runner_logs
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, TransitionRecord
 from runtime_scripts.uniwm_wrapper import UniWMWrapper
-from runtime_scripts.run_metadata import write_runtime_metadata
+from runtime_scripts.run_metadata import runtime_metadata
+from runtime_scripts.event_logger import EventLogger
 from runtime_scripts.runtime_engine import UniWMEngine
 from runtime_scripts.runtime_utils import (
+    event_values,
+    image_validity,
     copy_base_config,
     is_stop_action,
     load_config,
@@ -21,7 +23,6 @@ from runtime_scripts.runtime_utils import (
 REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",
     "stop_on_wrapper_done",
-    "log_every_step",
     "source_file_name",
     "adapter_params",
     "save_model_weights",
@@ -36,12 +37,14 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         data_id: str,
         full_output_path: Path,
         *,
+        event_logger: EventLogger,
         engine: UniWMEngine | None = None # Mostly for testing purposes
     ) -> None:
+        self.event_logger = event_logger
         config = load_config(config_path)
         copy_base_config(config_path, full_output_path)
         self.config: dict[str, Any] = config.get("runner", {})
-        engine = UniWMEngine(data_id, config_path) if engine is None else engine
+        engine = UniWMEngine(data_id, config_path, event_logger=event_logger) if engine is None else engine
         
         # Need to normalize these two to ensure proper generation and conversion
         
@@ -51,7 +54,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self.wrapper = UniWMWrapper(
             engine,
             config_path,
-            str(full_output_path)
+            str(full_output_path), event_logger=event_logger
         )
 
         source_classes = self._load_source_classes(
@@ -63,121 +66,88 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self.adapter: T_Adapter = source_classes[0]
         self.formatter: T_Formatter = source_classes[1]
 
-        self._episode_logs: list[dict[str, Any]] = []
+        self.episode_index = 0
 
     def run_episode(self, data_id: str) -> dict[str, Any]:
-        print("[RUNNER] Starting New Episode")
-        # Generate new observation when resetting episode
-        step_results: list[T_OutputBundle] = self.adapter.reset_ep()
-        episode_index = len(self._episode_logs)
-        episode_id = step_results[0].episode_id
-
-        # convert new observation to UniWMInputBundle
-        converted_obs: UniWMInputBundle = self.formatter.convert_from_source(step_results)
-
-        # Pass new observation to the wrapper with a reset_episode command
-        wrapper_reset_state: dict[str, Any] = self.wrapper.reset_episode(converted_obs, episode_id)
-
-        conv_info = converted_obs.metadata
-        step_logs: list[dict[str, Any]] = []
+        log = self.event_logger
+        episode_index = self.episode_index
+        setup_key = f"{data_id}/{episode_index}"
+        log.feed({"episode_setup": {setup_key: {"outcome": "unfinished"}}})
+        step_results = self.adapter.reset_ep()
+        episode_id = str(step_results[0].episode_id)
+        converted_obs = self.formatter.convert_from_source(step_results)
+        reset_state = self.wrapper.reset_episode(converted_obs, episode_id)
+        log.feed({"episode_setup": {setup_key: {"outcome": "completed", "episode_id": episode_id,
+            "environment": event_values(converted_obs.metadata), "wrapper": reset_state}}})
         termination_reason = "max_episode_steps"
         steps_executed = 0
+        attempts = 0
         consecutive_no_ops = 0
-
-        # Start running through steps with the returned UniWM Action str to start the loop
         for step_idx in range(self.config["max_episode_steps"]):
-            print(f"[RUNNER] Starting New Step #[{step_idx}]")
-            # Retrieve the predicted next action from wrapper
-            planned_action: str = self.wrapper.get_next_action()
+            log.next_step({"data_id": data_id, "episode_id": episode_id,
+                "episode_index": episode_index, "step_idx": step_idx,
+                "source_mode": self.adapter.source_mode, "transition": {"outcome": "unfinished"}})
+            attempts += 1
+            planned_action = self.wrapper.get_next_action()
             wrapper_requested_stop = is_stop_action(planned_action)
-            
-            # Convert returned actions list[str] to source-friendly version
-            converted_actions: list[str] = self.formatter.convert_action(planned_action)
-
-            # If there aren't any valid actions returned...
-            if len(converted_actions) <= 0:
-                print(f"[RUNNER] UniWM action: [{planned_action}] converted to a no-op. Replanning...")
+            valid, reason = image_validity(converted_obs.current_observation)
+            log.feed({"action": {"requested": planned_action, "stop": wrapper_requested_stop},
+                "transition": {"route_id": self.wrapper.route_id, "route_idx": self.wrapper.pending_step_idx},
+                "observation": {"valid": valid, "invalid_reason": reason},
+                "formatter": {"action_conversion": "unfinished"}})
+            converted_actions = self.formatter.convert_action(planned_action)
+            log.feed({"formatter": {"action_conversion": "completed", "converted_actions": converted_actions}})
+            if not converted_actions:
                 consecutive_no_ops += 1
-                
                 if consecutive_no_ops >= 5:
                     termination_reason = "repeated_no_op_actions"
+                    log.feed({"outcome": "no_op", "transition": {"outcome": "no_op"}})
                     break
-                
                 self.wrapper.replan_route(converted_obs, "Empty converted actions")
+                log.feed({"outcome": "no_op", "transition": {"outcome": "no_op"}})
                 continue
-            
             consecutive_no_ops = 0
+            log.feed({"adapter": {"outcome": "unfinished"}})
             step_results = self.adapter.step(converted_actions)
-
-            # Convert adapter output obs to UniWMInputBundle
+            log.feed({"adapter": {"outcome": "completed"}, "formatter": {"observation_conversion": "unfinished"}})
             converted_obs = self.formatter.convert_from_source(step_results)
-
-            # Give new obs state to wrapper to update its state
-            transition: TransitionRecord = self.wrapper.observe_transition(
-                converted_obs,
-                data_id=data_id,
-                step_idx=step_idx,
-            )
-            
+            log.feed({"formatter": {"observation_conversion": "completed"},
+                "environment": event_values(converted_obs.metadata)})
+            self.wrapper.observe_transition(converted_obs, data_id=data_id, step_idx=step_idx)
             steps_executed += 1
-            if self.config["log_every_step"]:
-                step_log = {
-                    "data_id": data_id,
-                    "episode_index": episode_index,
-                    "episode_id": episode_id,
-                    "step_idx": step_idx,
-                    **transition.to_log(),
-                    "wrapper_requested_stop": wrapper_requested_stop,
-                }
-                step_logs.append(step_log)
-                append_runner_event(
-                    self.full_output_path,
-                    step_log,
-                )
-                
+            log.feed({"outcome": "completed", "transition": {"outcome": "completed"}})
             if converted_obs.source_done:
                 termination_reason = "adapter_done"
                 break
             if wrapper_requested_stop and self.config["stop_on_wrapper_done"]:
                 termination_reason = "wrapper_stop_action"
                 break
-
-        episode_log = {
-            "episode_index": episode_index,
-            "episode_id": episode_id,
-            "data_id": data_id,
-            "adapter_source_mode": self.adapter.source_mode,
-            "steps_executed": steps_executed,
-            "termination_reason": termination_reason,
-            "reset_info": conv_info,
-            "wrapper_reset_state": wrapper_reset_state,
-            "routes": self.wrapper.get_routes_log_for_episode(),
-            "steps": step_logs,
-            "final_wrapper_state": self.wrapper.get_state_snapshot(),
-        }
-
-        print("[RUNNER] Finishing Episode")
-        self._episode_logs.append(episode_log)
-        return episode_log
+        result = {"episode_id": episode_id, "data_id": data_id, "attempts": attempts,
+            "steps_executed": steps_executed, "termination_reason": termination_reason}
+        log.feed({"episode_end": {setup_key: result}})
+        self.episode_index += 1
+        return result
 
     def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path) -> None:
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
-        
-        for id in data_id.split(","):
-            self.adapter.reset_src(id)
+        for source_id in data_id.split(","):
+            self.event_logger.feed({"source_setup": {source_id: {"outcome": "unfinished"}}})
+            self.adapter.reset_src(source_id)
+            self.event_logger.feed({"source_setup": {source_id: {"outcome": "completed"}}})
             for _ in range(num_episodes):
-                self.run_episode(id)
-                save_runner_logs(self.get_logs(), full_output_path)
+                self.run_episode(source_id)
+                key = str(self.episode_index - 1)
+                self.event_logger.feed({"schedule_save": {key: {"outcome": "unfinished"}}})
                 self.wrapper.save_learning_rate_schedule()
-            
+                self.event_logger.feed({"schedule_save": {key: {"outcome": "completed"}}})
             if self.config["save_model_weights"]:
-                self.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
-
+                self.event_logger.feed({"checkpoint": {source_id: {"outcome": "unfinished"}}})
+                checkpoint = self.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
+                self.event_logger.feed({"checkpoint": {source_id: {"outcome": "completed", "path": str(checkpoint)}}})
+        self.event_logger.feed({"schedule_finalize": {"outcome": "unfinished"}})
         self.wrapper.finalize_learning_rate_schedule()
-
-    def get_logs(self) -> list[dict[str, Any]]:
-        return list(self._episode_logs)
+        self.event_logger.feed({"schedule_finalize": {"outcome": "completed"}})
 
     def _load_source_classes(self, data_type: str, bin_step: float, img_size: int) -> tuple[T_Adapter, T_Formatter]:
         source_tools_name = self.config.get("source_file_name")
@@ -214,7 +184,7 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         if self.config["adapter_params"].get("bin_step", False):
             self.config["adapter_params"]["bin_step"] = bin_step
 
-        adapter: T_Adapter = adapter_cls(**self.config["adapter_params"])
+        adapter: T_Adapter = adapter_cls(**self.config["adapter_params"], event_logger=self.event_logger)
         formatter: T_Formatter = formatter_cls(bin_step, img_size)
         return adapter, formatter
 
@@ -248,11 +218,15 @@ if __name__ == '__main__':
         run_dir.mkdir(parents=True, exist_ok=True)
     print(f"[RUNNER] Output directory: {run_dir}")
 
-    write_runtime_metadata(run_dir, seed=args.seed)
-    runner = UniWMEpisodeRunner(args.config_path, args.data_id, run_dir)
-    write_runtime_metadata(run_dir, seed=args.seed, engine=runner.wrapper.engine)
-    runner.run_episodes(args.num_episodes, args.data_id, run_dir)
-
-    save_runner_logs(runner.get_logs(), run_dir)
-    
+    import torch
+    with EventLogger(run_dir / "events.jsonl") as log:
+        before = runtime_metadata(torch, seed=args.seed)
+        log.feed({"runtime": {"before_model": event_values(before)}})
+        runner = UniWMEpisodeRunner(args.config_path, args.data_id, run_dir, event_logger=log)
+        after = runtime_metadata(torch, seed=args.seed, engine=runner.wrapper.engine)
+        # Retain changed observations without repeating static environment/settings.
+        changed = {key: value for key, value in after.items() if value != before.get(key)}
+        log.feed({"runtime": {"after_model": event_values(changed)}, "outcome": "completed"})
+        runner.run_episodes(args.num_episodes, args.data_id, run_dir)
+        log.finish({"outcome": "completed", "episodes": runner.episode_index})
     print("[RUNNER] Ending Run")

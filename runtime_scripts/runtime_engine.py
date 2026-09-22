@@ -16,6 +16,7 @@ from peft.mixed_model import PeftMixedModel
 from transformers import ChameleonProcessor, PreTrainedTokenizerFast
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
+from runtime_scripts.event_logger import EventLogger
 from runtime_scripts.runtime_memory_manager import RuntimeMemoryBankManager
 from runtime_scripts.uniwm_schemas import UniWMInputBundle, StepPrediction, RoutePrediction
 from scripts.load_model import load_model
@@ -51,7 +52,8 @@ REQUIRED_FIELDS: dict[str, dict | list] = {
 class UniWMEngine:
     """Persistent online UniWM inference engine."""
 
-    def __init__(self, data_id: str, config_path: str = "cfg/habitat_uniwm_cfg.yaml"):
+    def __init__(self, data_id: str, config_path: str = "cfg/habitat_uniwm_cfg.yaml", *, event_logger: EventLogger):
+        self.event_logger = event_logger
         del data_id
         self.config = load_config(config_path).get("engine", {})
         validate_config(self.config, REQUIRED_FIELDS)
@@ -82,7 +84,7 @@ class UniWMEngine:
 
         using_memory = self.config["load_model_args"]["use_memory_bank_inference"]
         self._memory_manager = RuntimeMemoryBankManager(
-            self.model, using_memory, **self.config["memory_bank_args"]
+            self.model, using_memory, event_logger=event_logger, **self.config["memory_bank_args"]
         )
             
         self.config["generation"]["action"]["use_memory_bank"] = using_memory
@@ -248,16 +250,21 @@ class UniWMEngine:
     ) -> dict[str, Any]:
         """Note: Make sure you are calling the UniWMEngine.init_working_memory() when you want to store a prior step into global memory and update the observation in working KV memory used by the model."""
 
+        self.event_logger.feed({"training": {"phase": "loss", "optimizer_step": False}})
         for group in self._optimizer.param_groups:
             group["lr"] = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
 
         self.model.train()
         self._optimizer.zero_grad(set_to_none=True)
         loss, components = self._compute_viz_step_loss(prediction)
+        self.event_logger.feed({'training': {'visual_loss': components[f"{self.config['training']['loss']['log_prefix']}base_loss"]}})
+        self.event_logger.feed({'training': {'visual_loss_missing_reason': None}})
 
-        grad_norm = self._update_weights(loss_scaler, loss, max_grad_norm)
+        gradient_log = self._update_weights(loss_scaler, loss, max_grad_norm)
+        self.event_logger.feed({'training': {'phase': 'restore_eval_mode'}})
         self.model.eval()
 
+        self.event_logger.feed({"training": {"phase": "completed"}})
         log_prefix = self.config["training"]["loss"]["log_prefix"]
         effective_lr = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
 
@@ -268,8 +275,8 @@ class UniWMEngine:
             "optimizer_lr": self._optimizer.param_groups[0]["lr"],
             "final_lr": effective_lr,
             "effective_learning_rate": effective_lr,
-            "grad_norm": grad_norm,
-            "gradient_clipped": (grad_norm > max_grad_norm) if max_grad_norm is not None else False,
+            "grad_norm": gradient_log["grad_norm_before_clip"],
+            **gradient_log,
             "optimizer_step": True,
         }
 
@@ -279,6 +286,7 @@ class UniWMEngine:
         lr_scaler: float,
     ) -> dict[str, Any]:
         """Compute the online visualization loss without updating parameters."""
+        self.event_logger.feed({"training": {"phase": "record_loss", "optimizer_step": False}})
         self.model.train()
         with torch.no_grad():
             _, components = self._compute_viz_step_loss(prediction)
@@ -286,6 +294,8 @@ class UniWMEngine:
 
         log_prefix = self.config["training"]["loss"]["log_prefix"]
         effective_lr = float(self.config["training"]["hyper_params"]["initial_lr"]) * lr_scaler
+        self.event_logger.feed({"training": {"visual_loss": components[f"{log_prefix}base_loss"],
+            "phase": "completed"}})
         return {
             **components,
             "base_loss": components[f"{log_prefix}base_loss"],
@@ -294,6 +304,8 @@ class UniWMEngine:
             "final_lr": effective_lr,
             "effective_learning_rate": effective_lr,
             "grad_norm": None,
+            "grad_norm_before_clip": None,
+            "grad_norm_after_clip": None,
             "gradient_clipped": False,
             "optimizer_step": False,
         }
@@ -319,7 +331,7 @@ class UniWMEngine:
         )
         memory_kwargs, _ = self._get_viz_kwargs(
             dict(self.config["training"]["visualization"]),
-            prediction.logging_info["viz_used_memory"],
+            prediction.viz_used_memory,
         )
 
         with torch.autocast(device_type="cuda", dtype=self.model.dtype):
@@ -390,7 +402,7 @@ class UniWMEngine:
         step_output.logging_info["raw_action_text"] = raw_action_text
         step_output.logging_info["act_entropy"] = act_entropy
         step_output.logging_info["viz_entropy"] = viz_entropy
-        step_output.logging_info["viz_used_memory"] = used_memory
+        step_output.viz_used_memory = used_memory
         return step_output
     
     def _zero_act_translations(self, action_text) -> str:
@@ -463,28 +475,45 @@ class UniWMEngine:
         generated_img = decode_image(self.model, self.processor, generated_tokens)
         return generated_img, entropy_value, used_memory
 
-    def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> float:
+    def _gradient_norm(self) -> float:
+        norms = [torch.linalg.vector_norm(parameter.grad.detach(), 2)
+                 for parameter in self._trainable_params if parameter.grad is not None]
+        return float(torch.linalg.vector_norm(torch.stack(norms), 2).item()) if norms else 0.0
+
+    def _update_weights(self, update_scale: float, supervised_loss: torch.Tensor, max_grad_norm: float | None) -> dict[str, Any]:
+        self.event_logger.feed({'training': {'phase': 'backward'}})
         scaled_loss = update_scale * supervised_loss
         scaled_loss.backward()
 
-        grad_norm = 0.0
+        self.event_logger.feed({'training': {'phase': 'gradient_clipping'}})
         if max_grad_norm is not None:
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 self._trainable_params,
                 max_norm=max_grad_norm,
             ).detach().cpu().item()
+        else:
+            grad_norm = self._gradient_norm()
+        gradient_log = {
+            "grad_norm_before_clip": float(grad_norm),
+            "grad_norm_after_clip": self._gradient_norm() if max_grad_norm is not None else float(grad_norm),
+            "gradient_clipped": grad_norm > max_grad_norm if max_grad_norm is not None else False,
+        }
 
+        self.event_logger.feed({'training': dict(gradient_log)})
+        self.event_logger.feed({'training': {'phase': 'optimizer_step'}})
+        # If step() raises, an update may have partially happened; do not claim False.
+        self.event_logger.feed({'training': {'optimizer_step': None}})
         self._optimizer.step()
+        self.event_logger.feed({'training': dict(optimizer_step=True, applied_learning_rate=self._optimizer.param_groups[0]['lr'])})
         
 
-        return float(grad_norm)
+        return gradient_log
         
     def _get_viz_kwargs(self, kwargs: dict[str, Any], use_memory: bool | None = None) -> tuple[dict, bool]:         
         use_memory = use_memory if use_memory is not None else (
                 self.memory_count >= self.config["memory"]["min_memories"]
             )
         
-        print(f"[ENGINE] Getting visualization kwargs using use_memory set to: {use_memory}")
         
         if not use_memory:
             kwargs.pop("current_step", None)
