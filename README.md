@@ -74,6 +74,8 @@ For the paired core experiment, queue all six conditions for one seed with:
 ```bash
 python thesis_testing_tools/run_thesis_pipeline.py \
   --all-conditions \
+  --source-cfg replay_uniwm_cfg.yaml \
+  --habitat-base-cfg habitat_uniwm_cfg.yaml \
   --seed 100 \
   --fixed-mean-lr "$DEVELOPMENT_MEAN_LR"
 ```
@@ -90,6 +92,18 @@ source-pre without launching another model process. C0 records both aligned and
 within-episode-shuffled learning-rate schedules, which C3 and C4 consume from
 C0's Habitat output directory.
 
+`--source-cfg` selects the source-pre/post template. `--habitat-base-cfg`
+selects one shared Habitat template for all six conditions. Bare filenames are
+resolved under `cfg/`; repository-relative and absolute paths also work. These
+arguments default to the files shown above. The pipeline overrides training,
+modulator and schedule settings for each condition, C2's learning rate, and
+the requested workload/checkpoint settings. Other values carry through from
+the selected templates, including the base learning rate (`initial_lr`).
+Action generation also uses the selected Habitat base. Selected templates are
+snapshotted before use, and the generated stage configurations are saved in
+the run directory. The older condition-specific YAMLs remain available for
+single-condition runs through `--habitat-cfg`.
+
 The batch is written below `output/thesis_seed_<seed>_<timestamp>/`.
 `seed_manifest.json` records the full planned queue and generated configuration
 paths, while `seed_summary.json` links the completed per-condition summaries.
@@ -97,7 +111,7 @@ paths, while `seed_summary.json` links the completed per-condition summaries.
 For debug runs, `--source-max-episode-steps` and `--habitat-max-episode-steps`
 override the shared `--max-episode-steps` limit independently, including its
 two-step smoke default. Without a shared or stage-specific override, source
-uses the replay config limit and Habitat uses the frozen config limit for all
+uses the selected source config limit and Habitat uses the base config limit for all
 conditions. Resolved limits are recorded in the workload metadata.
 
 The batch passes `--seed` to every runner process, including source evaluation.

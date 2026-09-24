@@ -76,18 +76,28 @@ class SeedBatchPipelineTests(unittest.TestCase):
             root = Path(directory)
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({"habitat": {"test": ["352", "827", "817"]}}))
+            habitat_template = root / "habitat.yaml"
+            habitat_template.write_text(Path("cfg/habitat_uniwm_cfg.yaml").read_text().replace(
+                "max_episode_steps: 25", "max_episode_steps: 9"))
+            source_template = root / "source.yaml"
+            source_template.write_text(Path("cfg/replay_uniwm_cfg.yaml").read_text().replace(
+                "max_episode_steps: 25", "max_episode_steps: 7"))
             with patch("thesis_testing_tools.run_thesis_pipeline._captured_command", return_value={}), patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence",
                        side_effect=["first.json", RuntimeError("generation failed")]) as generate:
                 with patch("thesis_testing_tools.run_thesis_pipeline.run_stage") as stage:
                     with self.assertRaisesRegex(RuntimeError, "generation failed"):
                         run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest, habitat_episodes=2,
+                                       source_config=source_template, habitat_base_config=habitat_template,
                                        output_root=root / "output")
                     self.assertEqual([call.args[0] for call in generate.call_args_list], ["352", "827"])
+                    self.assertEqual([call.args[1] for call in generate.call_args_list], [9, 9])
                     stage.assert_not_called()
             record_path = next((root / "output").glob("*/run_manifest.json"))
             record = json.loads(record_path.read_text())
             self.assertEqual(record["status"], "failed")
             self.assertEqual(record["failure"]["phase"], "preparation")
+            self.assertEqual(record["metadata"]["source_max_episode_steps"], 7)
+            self.assertEqual(record["metadata"]["habitat_max_episode_steps"], 9)
             self.assertIn("generation failed", record["failure"]["message"])
 
     def test_past_run_action_option_is_retired(self):
@@ -132,11 +142,23 @@ class SeedBatchPipelineTests(unittest.TestCase):
             calibration.write_text(json.dumps({"mean_lr": 6.25e-5, "split": "development"}))
             calls: list[list[str]] = []
             initial_c2_config = None
+            # Non-default settings must reach every stage through the selected templates.
+            source_template = temporary_path / "custom_source.yaml"
+            source_template.write_text(Path("cfg/replay_uniwm_cfg.yaml").read_text().replace(
+                "full_replan_threshold: 0.12", "full_replan_threshold: 0.23"))
+            habitat_template = temporary_path / "custom_habitat.yaml"
+            habitat_template.write_text(Path("cfg/habitat_uniwm_cfg.yaml").read_text().replace(
+                "initial_lr: 1e-4", "initial_lr: 2e-4").replace(
+                "full_replan_threshold: 0.18", "full_replan_threshold: 0.31").replace(
+                "learning_rate_schedule: false",
+                "learning_rate_schedule:\n    mode: replay\n    input_path: stale_schedule\n    shuffled: true"))
 
             def fake_generate(episode_id, target_steps, run_dir, **kwargs):
                 self.assertEqual(calls, [])
                 self.assertEqual((episode_id, target_steps, kwargs["seed"]), ("827", 8, 321))
                 self.assertEqual(kwargs["checkpoint"], initial_checkpoint)
+                self.assertEqual(Path(kwargs["config_path"]).read_bytes(), habitat_template.read_bytes())
+                self.assertNotEqual(Path(kwargs["config_path"]), habitat_template)
                 path = run_dir / "habitat_action_sequences" / "827.json"
                 path.parent.mkdir()
                 path.write_text(json.dumps({"episode_id": episode_id, "actions": ["action"] * target_steps}))
@@ -186,6 +208,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
             seed_dir = run_seed_batch(
                 seed=321,
                 fixed_mean_lr=6.25e-5,
+                source_config=source_template,
+                habitat_base_config=habitat_template,
                 fixed_mean_calibration=calibration,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
@@ -244,6 +268,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 config = Path(command[command.index("--config_path") + 1]).read_text()
                 steps = 8 if command[command.index("--data_id") + 1] == HABITAT_DATA_ID else 2
                 self.assertIn(f"max_episode_steps: {steps}", config)
+                threshold = "0.31" if command[command.index("--data_id") + 1] == HABITAT_DATA_ID else "0.23"
+                self.assertIn(f"full_replan_threshold: {threshold}", config)
                 self.assertEqual(
                     command[command.index("--num_episodes") + 1],
                     "1",
@@ -295,6 +321,20 @@ class SeedBatchPipelineTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn(f"input_path: {json.dumps(str(schedule_dir))}", c4_config)
             self.assertIn("shuffled: true", c4_config)
+
+            for condition_id, _ in CORE_CONDITIONS:
+                config = (seed_dir / condition_id / "habitat_config.yaml").read_text()
+                training = "false" if condition_id == "c0_frozen" else "true"
+                modulators = "true" if condition_id in ("c0_frozen", "c5_full") else "false"
+                self.assertIn(f"training_enabled: {training}", config)
+                self.assertIn(f"enable_modulators: {modulators}", config)
+                self.assertIn("initial_lr: 6.25e-05" if condition_id == "c2_fixed_mean"
+                              else "initial_lr: 2e-4", config)
+                self.assertNotIn("stale_schedule", config)
+                self.assertEqual(config.count("learning_rate_schedule:"), 1)
+                if condition_id in ("c1_fixed_base", "c2_fixed_mean", "c5_full"):
+                    self.assertIn("learning_rate_schedule: false", config)
+                    self.assertNotIn("mode:", config.replace("multimodal_generation_mode:", ""))
 
             for condition_id, _ in CORE_CONDITIONS[1:]:
                 post_config = (
@@ -367,6 +407,11 @@ class SeedBatchPipelineTests(unittest.TestCase):
             self.assertTrue(any(item["path"] == str(schedule_dir / "learning_rate_schedule.json")
                                 for item in provenance["inputs"]))
             record = json.loads((seed_dir / "run_manifest.json").read_text())
+            self.assertEqual(record["metadata"]["source_config"], str(source_template))
+            self.assertEqual(record["metadata"]["habitat_base_config"], str(habitat_template))
+            input_hashes = {item.get("sha256") for item in provenance["inputs"]}
+            for template in (source_template, habitat_template):
+                self.assertIn(hashlib.sha256(template.read_bytes()).hexdigest(), input_hashes)
             self.assertEqual(record["status"], "completed")
             self.assertTrue(all(stage["events_available"] for stage in record["stages"]))
             self.assertEqual(len(record["stages"]), len(calls))
@@ -419,6 +464,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
         from thesis_testing_tools.run_thesis_pipeline import main
         with patch("sys.argv", ["pipeline", "--all-conditions", "--seed", "100",
                                 "--fixed-mean-lr", "6.25e-5",
+                                "--source-cfg", "replay_uniwm_cfg.yaml",
+                                "--habitat-base-cfg", "habitat_uniwm_cfg.yaml",
                                 "--smoke-test", "--source-max-episode-steps", "3",
                                 "--habitat-max-episode-steps", "8"]), patch(
             "thesis_testing_tools.run_thesis_pipeline.run_seed_batch"
@@ -428,6 +475,39 @@ class SeedBatchPipelineTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["habitat_max_episode_steps"], 8)
         self.assertEqual(run.call_args.kwargs["max_episode_steps"], 2)
         self.assertEqual(run.call_args.kwargs["fixed_mean_lr"], 6.25e-5)
+        self.assertEqual(run.call_args.kwargs["source_config"], Path("cfg/replay_uniwm_cfg.yaml").resolve())
+        self.assertEqual(run.call_args.kwargs["habitat_base_config"], Path("cfg/habitat_uniwm_cfg.yaml").resolve())
+
+    def test_config_paths_and_single_condition_cli(self) -> None:
+        from thesis_testing_tools.run_thesis_pipeline import config_path_argument, main
+        expected = Path("cfg/replay_uniwm_cfg.yaml").resolve()
+        for value in ("replay_uniwm_cfg.yaml", "cfg/replay_uniwm_cfg.yaml", str(expected)):
+            self.assertEqual(config_path_argument(value), expected)
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "Config file does not exist"):
+            config_path_argument("missing_config.yaml")
+        with patch("sys.argv", ["pipeline", "--source-cfg", "replay_uniwm_cfg.yaml",
+                                "--habitat-cfg", "habitat_uniwm_cfg_fixed_learning.yaml"]), patch(
+            "thesis_testing_tools.run_thesis_pipeline.run_pipeline"
+        ) as run:
+            main()
+        self.assertEqual(run.call_args.kwargs["source_config"], expected)
+        self.assertEqual(run.call_args.kwargs["habitat_config"],
+                         Path("cfg/habitat_uniwm_cfg_fixed_learning.yaml").resolve())
+
+    def test_cli_rejects_configs_in_wrong_mode(self) -> None:
+        from thesis_testing_tools.run_thesis_pipeline import main
+        for arguments, message in (
+            (["--habitat-base-cfg", "habitat_uniwm_cfg.yaml"], "require --all-conditions"),
+            (["--all-conditions", "--seed", "100", "--fixed-mean-lr", "6.98e-5",
+              "--habitat-cfg", "habitat_uniwm_cfg_fixed_learning.yaml"], "cannot be combined"),
+        ):
+            with self.subTest(arguments=arguments), patch("sys.argv", ["pipeline", *arguments]), patch(
+                "sys.stderr", new_callable=io.StringIO
+            ) as stderr:
+                with self.assertRaises(SystemExit) as error:
+                    main()
+                self.assertEqual(error.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
     def test_runner_seeds_before_model_initialization(self) -> None:
         # Execute the actual CLI block without importing the unavailable ML stack.

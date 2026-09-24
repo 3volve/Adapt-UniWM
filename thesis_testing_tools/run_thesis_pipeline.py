@@ -27,9 +27,6 @@ REPLAY_CONFIG = REPO_ROOT / "cfg" / "replay_uniwm_cfg.yaml"
 DEVELOPMENT_MANIFEST = REPO_ROOT / "cfg" / "eval_dataset_manifest.json"
 HELDOUT_MANIFEST = REPO_ROOT / "cfg" / "thesis_heldout_manifest.json"
 HABITAT_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg.yaml"
-FROZEN_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_no_learning.yaml"
-FIXED_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_fixed_learning.yaml"
-FULL_CONFIG = REPO_ROOT / "cfg" / "habitat_uniwm_cfg_modulated_learning.yaml"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "output"
 BASE_CHECKPOINT = REPO_ROOT / "checkpoints" / "base_ckpt"
 
@@ -108,6 +105,8 @@ def run_provenance(
     *,
     initial_checkpoint: Path,
     source_manifest: Path,
+    source_config: Path,
+    habitat_base_config: Path,
     generated_configs: list[Path],
     workload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -124,10 +123,8 @@ def run_provenance(
     input_paths = [
         Path(__file__),
         REPO_ROOT / "scripts" / "generate_habitat_action_sequence.py",
-        REPLAY_CONFIG,
-        FROZEN_CONFIG,
-        FIXED_CONFIG,
-        FULL_CONFIG,
+        source_config,
+        habitat_base_config,
         source_manifest,
         HELDOUT_MANIFEST,
         *generated_configs,
@@ -328,11 +325,12 @@ def write_seed_source_config(
     destination: Path,
     initial_checkpoint: Path,
     *,
+    source_config: Path = REPLAY_CONFIG,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
     max_episode_steps: int | None = None,
     max_route_steps: int | None = None,
 ) -> None:
-    lines = REPLAY_CONFIG.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
     _replace_yaml_scalar(lines, "manifest_path", json.dumps(str(source_manifest)))
     if max_episode_steps is not None:
@@ -346,6 +344,7 @@ def write_seed_habitat_config(
     source_config: Path,
     destination: Path,
     *,
+    condition_id: str,
     initial_checkpoint: Path,
     seed: int,
     habitat_action_files_dir: Path | None = None,
@@ -359,6 +358,8 @@ def write_seed_habitat_config(
     max_route_steps: int | None = None,
 ) -> None:
     lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
+    _replace_yaml_scalar(lines, "training_enabled", "false" if condition_id == "c0_frozen" else "true")
+    _replace_yaml_scalar(lines, "enable_modulators", "true" if condition_id in ("c0_frozen", "c5_full") else "false")
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
     _replace_yaml_scalar(lines, "seed", str(seed))
     _replace_yaml_scalar(
@@ -377,23 +378,31 @@ def write_seed_habitat_config(
         _replace_yaml_scalar(lines, "episode_ids", json.dumps(habitat_episode_ids))
     if fixed_mean_lr is not None:
         _replace_yaml_scalar(lines, "initial_lr", repr(float(fixed_mean_lr)))
-    if schedule_shuffle_seed is not None:
-        _replace_yaml_scalar(lines, "shuffled_seed", str(schedule_shuffle_seed))
-    if schedule_input_dir is not None:
-        schedule_line = next(
-            index
-            for index, line in enumerate(lines)
-            if line.lstrip().startswith("learning_rate_schedule:")
-        )
-        indentation = lines[schedule_line][
-            : len(lines[schedule_line]) - len(lines[schedule_line].lstrip())
+    # Replace the whole schedule block, including any settings in the base YAML.
+    schedule_line = next(i for i, line in enumerate(lines)
+                         if line.lstrip().startswith("learning_rate_schedule:"))
+    indentation = lines[schedule_line][:len(lines[schedule_line]) - len(lines[schedule_line].lstrip())]
+    schedule_end = schedule_line + 1
+    while schedule_end < len(lines):
+        line = lines[schedule_end]
+        if line.strip() and len(line) - len(line.lstrip()) <= len(indentation):
+            break
+        schedule_end += 1
+    schedule_lines = [f"{indentation}learning_rate_schedule: false\n"]
+    if condition_id == "c0_frozen":
+        schedule_lines = [
+            f"{indentation}learning_rate_schedule:\n",
+            f"{indentation}  mode: record\n",
+            f"{indentation}  shuffled_seed: {schedule_shuffle_seed}\n",
         ]
-        lines[schedule_line:schedule_line + 1] = [
+    if schedule_input_dir is not None:
+        schedule_lines = [
             f"{indentation}learning_rate_schedule:\n",
             f"{indentation}  mode: replay\n",
             f"{indentation}  input_path: {json.dumps(str(schedule_input_dir.resolve()))}\n",
             f"{indentation}  shuffled: {'true' if shuffled_schedule else 'false'}\n",
         ]
+    lines[schedule_line:schedule_end] = schedule_lines
 
     destination.write_text("".join(lines), encoding="utf-8")
 
@@ -927,6 +936,8 @@ def run_seed_batch(
     *,
     seed: int,
     fixed_mean_lr: float,
+    source_config: Path = REPLAY_CONFIG,
+    habitat_base_config: Path = HABITAT_CONFIG,
     fixed_mean_calibration: Path | None = None,
     initial_checkpoint: Path = BASE_CHECKPOINT,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
@@ -982,8 +993,10 @@ def run_seed_batch(
             if line.strip().startswith("max_episode_steps:")
         ))
 
-    source_max_episode_steps = step_limit(source_max_episode_steps, REPLAY_CONFIG)
-    habitat_max_episode_steps = step_limit(habitat_max_episode_steps, FROZEN_CONFIG)
+    source_config = Path(source_config).resolve()
+    habitat_base_config = Path(habitat_base_config).resolve()
+    source_max_episode_steps = step_limit(source_max_episode_steps, source_config)
+    habitat_max_episode_steps = step_limit(habitat_max_episode_steps, habitat_base_config)
 
     source_manifest = Path(source_manifest).resolve()
     manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
@@ -1024,8 +1037,9 @@ def run_seed_batch(
         run_record.capture_environment(ENV_OVERRIDES)
         run_record.snapshot_code()
         source_manifest = run_record.snapshot(source_manifest, "data_manifest")
-        for config in (REPLAY_CONFIG, FROZEN_CONFIG, FIXED_CONFIG, FULL_CONFIG):
-            run_record.snapshot(config, "config_template")
+        run_record.data["metadata"].update(source_config=str(source_config), habitat_base_config=str(habitat_base_config))
+        source_config = run_record.snapshot(source_config, "source_config_template")
+        habitat_base_config = run_record.snapshot(habitat_base_config, "habitat_base_config_template")
         if fixed_mean_calibration is not None:
             calibration = run_record.snapshot(fixed_mean_calibration, "development_calibration")
             run_record.data["metadata"]["fixed_mean_calibration"] = calibration.relative_to(seed_dir).as_posix()
@@ -1037,7 +1051,7 @@ def run_seed_batch(
             print(f"[THESIS PIPELINE] Generating {habitat_max_episode_steps} actions for Habitat episode {episode_id}", flush=True)
             action_files.append(generate_action_sequence(
                 episode_id, habitat_max_episode_steps, seed_dir, seed=seed,
-                config_path=FROZEN_CONFIG, checkpoint=initial_checkpoint,
+                config_path=habitat_base_config, checkpoint=initial_checkpoint,
             ))
         action_files_dir = seed_dir / "habitat_action_sequences"
         for filename in action_files:
@@ -1053,6 +1067,7 @@ def run_seed_batch(
         write_seed_source_config(
             source_pre_config,
             initial_checkpoint,
+            source_config=source_config,
             source_manifest=source_manifest,
             max_episode_steps=source_max_episode_steps,
             max_route_steps=max_route_steps,
@@ -1075,16 +1090,10 @@ def run_seed_batch(
             habitat_config = condition_dir / "habitat_config.yaml"
             final_checkpoint = habitat_dir / "final_ckpt"
 
-            if condition_id == "c0_frozen":
-                source_config = FROZEN_CONFIG
-            elif condition_id == "c5_full":
-                source_config = FULL_CONFIG
-            else:
-                source_config = FIXED_CONFIG
-
             write_seed_habitat_config(
-                source_config,
+                habitat_base_config,
                 habitat_config,
+                condition_id=condition_id,
                 initial_checkpoint=initial_checkpoint,
                 seed=int(seed),
 
@@ -1120,6 +1129,7 @@ def run_seed_batch(
                 write_seed_source_config(
                     source_post_config,
                     final_checkpoint,
+                    source_config=source_config,
                     source_manifest=source_manifest,
                     max_episode_steps=source_max_episode_steps,
                     max_route_steps=max_route_steps,
@@ -1178,6 +1188,8 @@ def run_seed_batch(
         provenance = run_provenance(
             initial_checkpoint=initial_checkpoint,
             source_manifest=source_manifest,
+            source_config=source_config,
+            habitat_base_config=habitat_base_config,
             generated_configs=generated_configs,
             workload=workload,
         )
@@ -1390,6 +1402,8 @@ def run_seed_batch(
 
 def run_pipeline(
     *,
+    source_config: Path = REPLAY_CONFIG,
+    habitat_config: Path = HABITAT_CONFIG,
     existing_run: Path | None = None,
     source_post_checkpoint: Path | None = None,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
@@ -1423,7 +1437,6 @@ def run_pipeline(
     habitat_dir = result_dir / "habitat"
     source_post_dir = result_dir / "source_post"
     post_config = result_dir / "source_post_config.yaml"
-    habitat_config = HABITAT_CONFIG
     if not post_only:
         result_dir.mkdir(parents=True, exist_ok=False)
     record_dir = result_dir if not post_only else result_dir / "source_post_invocations" / timestamp
@@ -1448,7 +1461,7 @@ def run_pipeline(
             final_checkpoint = habitat_dir / "final_ckpt"
 
 
-        run_record.snapshot(REPLAY_CONFIG, "config_template")
+        source_config = run_record.snapshot(source_config, "source_config_template")
         run_record.snapshot(DEVELOPMENT_MANIFEST, "data_manifest")
         if not post_only:
             habitat_config = run_record.snapshot(habitat_config, "habitat_config")
@@ -1459,7 +1472,7 @@ def run_pipeline(
 
         source_pre_command = (
             build_torchrun_command(
-                REPLAY_CONFIG,
+                source_config,
                 SOURCE_DATA_IDS,
                 source_pre_dir,
                 SOURCE_EPISODES,
@@ -1493,7 +1506,7 @@ def run_pipeline(
                 _planned_stage(
                     "source_pre",
                     SOURCE_DATA_IDS,
-                    REPLAY_CONFIG,
+                    source_config,
                     source_pre_dir,
                     source_pre_command,
                     BASE_CHECKPOINT,
@@ -1570,7 +1583,7 @@ def run_pipeline(
                 "source_pre",
                 source_pre_command,
                 source_pre_dir,
-                REPLAY_CONFIG,
+                source_config,
                 SOURCE_DATA_IDS,
                 subprocess_runner,
                 run_manifest=run_record,
@@ -1594,7 +1607,7 @@ def run_pipeline(
             run_record.data["checkpoints"]["habitat_final"] = artifact_fingerprint(final_checkpoint)
             run_record.save()
 
-        write_post_replay_config(REPLAY_CONFIG, post_config, final_checkpoint)
+        write_post_replay_config(source_config, post_config, final_checkpoint)
 
         source_post_record = run_stage(
             "source_post",
@@ -1620,8 +1633,25 @@ def run_pipeline(
         return result_dir
 
 
+def config_path_argument(value: str) -> Path:
+    """Resolve bare config filenames under cfg/, and other paths from the repo."""
+    path = Path(value)
+    path = (REPO_ROOT / "cfg" / path if path.parent == Path(".") else REPO_ROOT / path).resolve()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"Config file does not exist: {path}")
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--source-cfg", type=config_path_argument, default=REPLAY_CONFIG,
+        help="Source-pre/post template: filename under cfg/, repo-relative path, or absolute path.",
+    )
+    parser.add_argument(
+        "--habitat-base-cfg", type=config_path_argument,
+        help="Shared C0-C5 Habitat template (default: cfg/habitat_uniwm_cfg.yaml); requires --all-conditions.",
+    )
     parser.add_argument(
         "--all-conditions",
         action="store_true",
@@ -1696,18 +1726,14 @@ def main() -> None:
     )
     parser.add_argument(
         "--habitat-cfg",
-        type=Path,
-        help="Specify a specific config to use for the run",
+        type=config_path_argument,
+        help="Habitat configuration for a single-condition run; incompatible with --all-conditions.",
     )
     parser.add_argument(
         "--habitat-port",
         type=int,
     )
     args = parser.parse_args()
-    
-    if args.habitat_cfg is not None:
-        global HABITAT_CONFIG 
-        HABITAT_CONFIG = REPO_ROOT / "cfg" / args.habitat_cfg
     
     if args.habitat_port is not None:
         global HABITAT_PORT, REPLAY_PORT
@@ -1758,6 +1784,8 @@ def main() -> None:
         result_dir = run_seed_batch(
             seed=args.seed,
             fixed_mean_lr=args.fixed_mean_lr,
+            source_config=args.source_cfg,
+            habitat_base_config=args.habitat_base_cfg or HABITAT_CONFIG,
             fixed_mean_calibration=args.fixed_mean_calibration,
             initial_checkpoint=args.initial_checkpoint,
             source_manifest=args.source_manifest,
@@ -1774,6 +1802,7 @@ def main() -> None:
         )
     else:
         all_condition_only = {
+            "--habitat-base-cfg": args.habitat_base_cfg,
             "--seed": args.seed,
             "--fixed-mean-lr": args.fixed_mean_lr,
             "--fixed-mean-calibration": args.fixed_mean_calibration,
@@ -1795,6 +1824,8 @@ def main() -> None:
                 ", ".join(incompatible) + " require --all-conditions"
             )
         result_dir = run_pipeline(
+            source_config=args.source_cfg,
+            habitat_config=args.habitat_cfg or HABITAT_CONFIG,
             existing_run=args.existing_run,
             source_post_checkpoint=args.source_post_checkpoint,
 

@@ -1,3 +1,4 @@
+# Shared baseline for C0-C5. The pipeline overrides condition flags and schedules.
 engine:
   load_model_args:
     model: anole

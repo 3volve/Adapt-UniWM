@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from thesis_testing_tools.run_manifest import RunManifest, artifact_fingerprint, sha256_file
-from thesis_testing_tools.run_thesis_pipeline import run_stage, run_pipeline, FULL_CONFIG
+from thesis_testing_tools.run_thesis_pipeline import run_stage, run_pipeline
 from runtime_scripts.run_metadata import runtime_metadata
 from runtime_scripts.event_logger import EventLogger
 
@@ -97,12 +97,14 @@ class RunManifestTests(unittest.TestCase):
             self.assertEqual(artifact_fingerprint(root / "scripts")["file_count"], 1)
 
     @patch("thesis_testing_tools.run_thesis_pipeline._captured_command", return_value={})
-    @patch("thesis_testing_tools.run_thesis_pipeline.HABITAT_CONFIG", FULL_CONFIG)
     def test_legacy_full_followup_and_post_only_keep_separate_records(self, capture):
         def runner(command, **kwargs):
             output = Path(command[command.index("--run_dir") + 1])
             output.mkdir(parents=True, exist_ok=True)
             data_id = command[command.index("--data_id") + 1]
+            config = Path(command[command.index("--config_path") + 1]).read_text()
+            if data_id != "habitat":
+                self.assertIn("full_replan_threshold: 0.23", config)
             with EventLogger(output / "events.jsonl") as log:
                 log.feed({"outcome": "completed"})
             if data_id == "habitat":
@@ -110,7 +112,12 @@ class RunManifestTests(unittest.TestCase):
                 (output / "final_ckpt/adapter.bin").write_bytes(b"adapter")
 
         with tempfile.TemporaryDirectory() as temporary:
-            kwargs = {"subprocess_runner": runner, "metric_calculator": object()}
+            source_template = Path(temporary) / "source.yaml"
+            source_template.write_text(Path("cfg/replay_uniwm_cfg.yaml").read_text().replace(
+                "full_replan_threshold: 0.12", "full_replan_threshold: 0.23"))
+            kwargs = {"subprocess_runner": runner, "metric_calculator": object(),
+                      "source_config": source_template,
+                      "habitat_config": Path("cfg/habitat_uniwm_cfg_modulated_learning.yaml").resolve()}
             full = run_pipeline(output_root=Path(temporary), timestamp="full", **kwargs)
             followup = run_pipeline(existing_run=full, timestamp="followup", **kwargs)
             before = (followup / "run_manifest.json").read_bytes()
