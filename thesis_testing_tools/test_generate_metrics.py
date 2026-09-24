@@ -14,6 +14,15 @@ from thesis_testing_tools.generate_metrics import generate, read_events, sha256
 
 
 class GenerateMetricsTests(unittest.TestCase):
+    def test_spatial_variation_is_within_channels(self):
+        path = self.stage("variance", [[0]])
+        Image.new("RGB", (16, 16), (255, 0, 0)).save(path.parent / "ep-0-0-pred.png")
+        output = self.root / "variance_metrics"
+        generate([path], output, metrics=["mae"])
+        row = self.rows(output, "step_metrics.csv")[0]
+        self.assertEqual(float(row["prediction_spatial_std"]), 0)
+        self.assertAlmostEqual(float(row["mae"]), 1 / 3)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

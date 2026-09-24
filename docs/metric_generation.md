@@ -1,11 +1,13 @@
 # Reproducible thesis metric generation
 
-Method version **1.0.0** is implemented in
+Method version **1.1.0** is implemented in
 [`thesis_testing_tools/generate_metrics.py`](../thesis_testing_tools/generate_metrics.py).
 It reads EventLogger schema-1 **worker** logs and the images they reference. It
 does not rerun the world model, change checkpoints, read legacy episode logs, or influence
-experiment execution. The pipeline's automatic analysis remains disabled; run
-this tool explicitly after downloading or completing an experiment.
+experiment execution. The pipeline's general run report invokes this generator
+automatically; it can also be run independently after downloading or completing
+an experiment. Version 1.1.0 adds clipping flags and within-channel spatial
+variation diagnostics; image metric formulas and aggregation are unchanged.
 
 ## Generate reports
 
@@ -137,7 +139,7 @@ metrics across arbitrary library versions or CPU implementations.
 ## Citing the implementation
 
 In the thesis methods section, cite the repository commit containing this script,
-the path `thesis_testing_tools/generate_metrics.py`, and method version `1.0.0`.
+the path `thesis_testing_tools/generate_metrics.py`, and method version `1.1.0`.
 For a particular result table, also identify its `analysis_manifest.json` and
 `script_sha256`. This is an implementation citation, not a substitute for citing
 the original SSIM and LPIPS methods in the thesis bibliography.
@@ -145,7 +147,7 @@ the original SSIM and LPIPS methods in the thesis bibliography.
 Suggested wording:
 
 > Metrics were regenerated from saved EventLogger v1 worker records and image
-> artifacts using Adapt-UniWM's offline metric generator, method version 1.0.0
+> artifacts using Adapt-UniWM's offline metric generator, method version 1.1.0
 > (`thesis_testing_tools/generate_metrics.py`, repository revision [commit]).
 > Input hashes, preprocessing, exclusion counts and software versions accompany
 > each result in its analysis manifest.

@@ -80,4 +80,5 @@ records expose that gap; absent optional evidence remains unknown. Missing worke
 files or artifacts in an otherwise readable run are reportable failures, whereas
 malformed JSON/YAML or unsupported event/manifest structure prevents reporting.
 The manifest's intended report reference may therefore have no corresponding file;
-the console explains why. The compact HTML debug report remains a separate task.
+the console explains why. The pipeline subsequently generates the general
+[HTML run report](run_report.md), including available reconciliation findings.

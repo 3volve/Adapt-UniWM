@@ -32,7 +32,7 @@ class ReconciliationIntegrationTests(unittest.TestCase):
                     self.assertEqual(manifest["references"]["reconciliation"], "reconciliation.json")
                     events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
                     self.assertEqual(events[-1]["_event"]["kind"], "run_summary")
-                    self.assertIn("thesis_testing_tools.reconcile_run", command)
+                    self.assertIn(command[2], ("thesis_testing_tools.reconcile_run", "thesis_testing_tools.generate_run_report"))
                     self.assertFalse(kwargs["check"])
                     return types.SimpleNamespace(returncode=1)
                 with patch("thesis_testing_tools.run_thesis_pipeline.subprocess.run", side_effect=reconcile) as run:
@@ -45,7 +45,9 @@ class ReconciliationIntegrationTests(unittest.TestCase):
                             execute()
                     else:
                         execute()
-                    run.assert_called_once()
+                    self.assertEqual(run.call_count, 2)
+                    self.assertEqual([call.args[0][2] for call in run.call_args_list],
+                                     ["thesis_testing_tools.reconcile_run", "thesis_testing_tools.generate_run_report"])
 
     def test_launch_failure_does_not_replace_experiment_failure(self):
         with tempfile.TemporaryDirectory() as directory:

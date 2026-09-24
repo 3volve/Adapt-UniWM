@@ -65,20 +65,23 @@ def reconciled_run(root, **kwargs):
     try:
         with RunManifest(root, **kwargs) as record:
             record.reference("reconciliation", record.root / "reconciliation.json")
+            record.reference("run_report", record.root / "run_report.html")
+            record.reference("run_report_metrics", record.root / "run_report_metrics")
             yield record
     finally:
         if record is not None:
-            print(f"Reconciling pipeline output: {record.root}", flush=True)
-            try:
-                result = subprocess.run(
-                    [sys.executable, "-m", "thesis_testing_tools.reconcile_run", str(record.root)],
-                    cwd=REPO_ROOT, check=False,
-                )
-                if result.returncode:
-                    print(f"Reconciliation exited with code {result.returncode}; see the console output and any generated reconciliation.json.", flush=True)
-            except OSError as error:
-                # A reporting-launch failure must not replace the experiment's exception.
-                print(f"Could not launch reconciliation: {error}", flush=True)
+            for module in ("reconcile_run", "generate_run_report"):
+                print(f"Running {module}: {record.root}", flush=True)
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", f"thesis_testing_tools.{module}", str(record.root)],
+                        cwd=REPO_ROOT, check=False,
+                    )
+                    if result.returncode:
+                        print(f"{module} exited with code {result.returncode}; see the console output.", flush=True)
+                except OSError as error:
+                    # A reporting-launch failure must not replace the experiment's exception.
+                    print(f"Could not launch {module}: {error}", flush=True)
 
 
 def _captured_command(command: list[str]) -> dict[str, Any]:

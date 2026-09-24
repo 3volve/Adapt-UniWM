@@ -212,7 +212,7 @@ python -m thesis_testing_tools.generate_metrics \
 
 See [metric generation](docs/metric_generation.md) for metric definitions,
 pre/post pairing, downloaded-path mappings, dependencies and citation guidance.
-Automatic pipeline analysis is still disabled; this is an explicit offline step.
+The command can also be used independently of the pipeline's automatic run report.
 
 The pipeline automatically reconciles planned workload against recorded execution
 after finalizing each run, including failed runs. To run the check independently:
@@ -223,6 +223,10 @@ python -m thesis_testing_tools.reconcile_run output/my_seed_run
 
 See [pipeline reconciliation](docs/reconciliation.md) for checks, exit codes,
 downloaded-path mappings and the separate `reconciliation.json` evidence report.
+
+The pipeline then generates an offline `run_report.html` with results, coverage,
+adaptation diagnostics and prediction examples, using the official metric generator.
+See [run reports](docs/run_report.md) for independent generation and metric reuse.
 
 ### Record the experiment workstation
 

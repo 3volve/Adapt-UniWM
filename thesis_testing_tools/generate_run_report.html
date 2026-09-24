@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Run report · @@TITLE@@</title>
+<style>
+:root{font:15px/1.5 system-ui,sans-serif;color:#223347;background:#edf2f5}*{box-sizing:border-box}body{margin:0}header{background:#172e43;color:#fff;padding:34px max(24px,calc((100vw - 1300px)/2))}h1{font-size:28px;margin:8px 0;overflow-wrap:anywhere}header p{color:#d5e2ec;margin:6px 0}.eyebrow{letter-spacing:.14em;font-size:12px;text-transform:uppercase}main{max-width:1350px;margin:auto;padding:24px}section,details{background:white;border:1px solid #dbe3ea;border-radius:10px;padding:22px;margin-bottom:20px}h2{margin:0 0 8px;font-size:21px}h3{font-size:17px}p{margin:8px 0 16px}.muted,small{color:#586b7c}.notice{background:#fff4d6;border-left:4px solid #bd8411;padding:12px;overflow-wrap:anywhere}.table-scroll{overflow:auto;max-height:460px}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid #e4eaf0;vertical-align:top}th{position:sticky;top:0;background:#edf3f7;white-space:nowrap}td{max-width:480px;overflow-wrap:anywhere}tbody tr:hover{background:#f4f8fa}select{padding:7px;border:1px solid #a6b8c6;border-radius:5px;background:white;color:#223347;max-width:100%}label{display:inline-block;margin:8px 18px 8px 0}svg{width:100%;height:auto;display:block}svg text{font:12px system-ui;fill:#516478}.grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin:8px}.legend span:before{content:'●';color:var(--series);margin-right:6px}.gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}figure{margin:0;border:1px solid #dce5ed;padding:14px;border-radius:7px}.pair{display:grid;grid-template-columns:1fr 1fr;gap:6px}.pair img{width:100%;object-fit:contain;background:#edf2f5}figcaption{font-size:12px}summary{font-weight:650;cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:420px;overflow:auto}a{color:#126891}@media(max-width:850px){.grid,.gallery{grid-template-columns:1fr}main{padding:12px}section,details{padding:15px}}@media print{details{display:block}.table-scroll{max-height:none}section{break-inside:avoid}}
+</style></head><body>
+<header><div class="eyebrow">Adapt-UniWM · experiment report</div><h1>@@TITLE@@</h1><p>@@STATUS@@</p><p>@@META@@</p></header>
+<main>
+@@NOTICES@@
+<section><h2>Execution findings</h2><p class="muted">First eight reconciliation failures or unknowns. A completed process alone does not establish experiment validity.</p>@@ISSUES@@</section>
+<section><h2>Prediction results</h2><p class="muted">Official metric outputs: equal-weight means over completed episodes with scored pairs. Dashes mean unavailable, never zero. Source replay uses forced-action predictions.</p>@@RESULTS@@
+<h3>Habitat adaptation over episode order</h3><label>Metric <select id="metric"><option value="mae">MAE ↓</option><option value="ssim">SSIM ↑</option><option value="lpips">LPIPS ↓</option></select></label><div id="adaptation"></div>
+<h3>Source retention</h3><p class="muted">Post minus pre, using matched episodes with identical scored target coverage. Positive MAE/LPIPS or negative SSIM indicates deterioration. Unpaired episodes are excluded; reused baselines are not independent measurements.</p>@@RETENTION@@<div id="retention"></div></section>
+<section><h2>Execution and coverage</h2><p class="muted">Counts include all recorded attempts. Collisions and no-ops are legitimate events. “?” means the manifest does not establish planned coverage. Missing workers are listed in reconciliation findings.</p>@@COVERAGE@@</section>
+<section><h2>Adaptation diagnostics</h2><p class="muted">Learning rates summarize confirmed optimizer updates only. Gradients are pre-clipping norms. Clipping uses explicit observed flags; missing flags are excluded from its denominator.</p>@@DIAGNOSTICS@@
+<label>Worker <select id="worker"></select></label><div class="grid"><div><h3>Applied learning rate</h3><div id="lr"></div></div><div><h3>Gradient norm before clipping</h3><div id="grad"></div></div></div>
+<details><summary>Controller schedule scalars</summary><p class="muted">Recorded update weights, including C0's unapplied schedule. These are not evidence of optimizer updates.</p><div id="scalar"></div></details>
+<p class="muted">Horizontal position is recorded attempt order; dashed markers indicate episode boundaries. Gaps retain missing or unapplied values.</p></section>
+<section><h2>Prediction examples</h2><p class="muted">Deterministic examples per Habitat worker. Typical = closest to median transition MAE; high error = highest MAE; low variation = lowest mean within-channel spatial standard deviation in RGB [0,1]. Low variation is an inspection cue, not a collapse diagnosis. The same example may qualify in multiple categories.</p><label>Worker <select id="gallery-worker"></select></label><div id="gallery" class="gallery"></div></section>
+<details><summary>All reconciliation findings</summary>@@ALL_ISSUES@@</details>
+<details><summary>Image exclusions</summary>@@EXCLUSIONS@@</details>
+<details><summary>Settings and provenance</summary><p>@@LINKS@@</p><p class="muted">The report's plots, thumbnails and controls work offline. Evidence links require keeping the adjacent run files. This is a single-run inspection report, not a statistical comparison across trials.</p><h3>Run settings</h3><pre>@@SETTINGS@@</pre><h3>Report evidence</h3><pre>@@PROVENANCE@@</pre></details>
+</main>
+<script id="report-data" type="application/json">@@DATA@@</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('report-data').textContent), colors=['#147d92','#b55b19','#774fb0','#198656','#cc4264','#52667e'];
+const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e};
+const fmt=x=>x===null||x===undefined?'—':Number(x).toPrecision(4);
+function svgNode(tag,attrs,text){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;return e}
+function plot(id,series,key,xlabel,boundaries=[]){
+ const host=document.getElementById(id);host.replaceChildren();const points=series.flatMap(s=>s.points).filter(p=>p[key]!==null&&p[key]!==undefined);
+ if(!points.length){host.append(node('p','No values available.'));return}
+ const all=series.flatMap(s=>s.points), xmin=Math.min(...all.map(p=>p.x)),xmax=Math.max(xmin+1,...all.map(p=>p.x));
+ let ymin=Math.min(...points.map(p=>p[key])),ymax=Math.max(...points.map(p=>p[key]));let pad=(ymax-ymin)*.1||Math.abs(ymax)*.1||.1;ymin-=pad;ymax+=pad;
+ const x=v=>70+(v-xmin)/(xmax-xmin)*680,y=v=>255-(v-ymin)/(ymax-ymin)*210;
+ const svg=svgNode('svg',{viewBox:'0 0 800 305',role:'img','aria-label':key+' by '+xlabel});
+ for(let i=0;i<5;i++){const v=ymin+(ymax-ymin)*i/4;svg.append(svgNode('line',{x1:70,y1:y(v),x2:750,y2:y(v),stroke:'#e2e9ef'}),svgNode('text',{x:62,y:y(v)+4,'text-anchor':'end'},fmt(v)))}
+ for(let i=0;i<5;i++){const v=xmin+(xmax-xmin)*i/4;svg.append(svgNode('text',{x:x(v),y:278,'text-anchor':'middle'},Number(v.toFixed(1))))}
+ svg.append(svgNode('text',{x:400,y:299,'text-anchor':'middle'},xlabel));
+ for(const b of boundaries)svg.append(svgNode('line',{x1:x(b),x2:x(b),y1:40,y2:255,stroke:'#a4b4c3','stroke-dasharray':'4 4'}));
+ const legend=node('div');legend.className='legend';
+ series.forEach((s,index)=>{const color=colors[index%colors.length];let previous=null;
+  for(const p of s.points){if(p[key]===null||p[key]===undefined){previous=null;continue}if(previous)svg.append(svgNode('line',{x1:x(previous.x),y1:y(previous[key]),x2:x(p.x),y2:y(p[key]),stroke:color,'stroke-width':2}));
+   const dot=svgNode('circle',{cx:x(p.x),cy:y(p[key]),r:3,fill:color});dot.append(svgNode('title',{},s.name+' · '+p.label+' · '+fmt(p[key])));svg.append(dot);previous=p;}
+  const label=node('span',s.name);label.style.setProperty('--series',color);legend.append(label);
+ });host.append(svg,legend);
+}
+function metrics(){const key=document.getElementById('metric').value;plot('adaptation',data.workers.map(w=>({name:w.name,points:w.episodes})),key,'Episode order (zero-based)');
+ const host=document.getElementById('retention');host.replaceChildren();
+ const rows=data.retention.filter(r=>r[key]!==null);if(!rows.length){host.append(node('p','No paired retention values available.'));return}
+ const limit=Math.max(...rows.map(r=>Math.abs(r[key])))||1,svg=svgNode('svg',{viewBox:`0 0 1000 ${rows.length*30+45}`,role:'img','aria-label':'Source retention by dataset and condition'});
+ svg.append(svgNode('line',{x1:650,x2:650,y1:0,y2:rows.length*30,stroke:'#8293a2'}));
+ rows.forEach((r,i)=>{const end=650+r[key]/limit*220;svg.append(svgNode('text',{x:12,y:i*30+19},r.name+' · '+r.dataset),svgNode('rect',{x:Math.min(end,650),y:i*30+5,width:Math.max(Math.abs(end-650),1),height:19,fill:(key==='ssim'?r[key]<0:r[key]>0)?'#b45e26':'#147d92'}),svgNode('text',{x:920,y:i*30+19},fmt(r[key])))});host.append(svg);
+}
+function diagnostics(){const w=data.workers[document.getElementById('worker').value];for(const key of ['lr','grad','scalar']){const boundaries=w?w.steps.filter((s,i)=>i&&s.episode!==w.steps[i-1].episode).map(s=>s.x):[];plot(key,w?[{name:w.name,points:w.steps}]:[],key,'Attempt order (zero-based)',boundaries)}}
+function gallery(){const host=document.getElementById('gallery');host.replaceChildren();const selected=document.getElementById('gallery-worker').value;
+ for(const item of data.gallery.filter(g=>g.condition===selected)){const fig=node('figure');fig.append(node('h3',item.selection));const pair=node('div');pair.className='pair';item.images.forEach((src,i)=>{const box=node('div');box.append(node('small',i?'Target':'Prediction'));const image=node('img');image.src=src;image.alt=(i?'Target':'Prediction')+' episode '+item.episode+' step '+item.step;box.append(image);pair.append(box)});fig.append(pair,node('figcaption',`Episode ${item.episode} · step ${item.step} | MAE ${fmt(item.metrics.mae)} · SSIM ${fmt(item.metrics.ssim)} · LPIPS ${fmt(item.metrics.lpips)} | Spatial std: prediction ${fmt(item.variation[0])}, target ${fmt(item.variation[1])}`));host.append(fig)}
+ if(!host.children.length)host.append(node('p','No valid example images available.'));
+}
+data.workers.forEach((w,i)=>{const option=node('option',w.name);option.value=i;document.getElementById('worker').append(option)});
+[...new Set(data.gallery.map(g=>g.condition))].forEach(name=>{const option=node('option',name);option.value=name;document.getElementById('gallery-worker').append(option)});
+document.getElementById('metric').addEventListener('change',metrics);document.getElementById('worker').addEventListener('change',diagnostics);document.getElementById('gallery-worker').addEventListener('change',gallery);metrics();diagnostics();gallery();
+</script></body></html>

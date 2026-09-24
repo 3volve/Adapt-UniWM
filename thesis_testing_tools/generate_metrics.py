@@ -21,7 +21,7 @@ import sys
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 
-METHOD_VERSION = "1.0.0"
+METHOD_VERSION = "1.1.0"
 ROOT = Path(__file__).resolve().parents[1]
 DEFINITIONS = {
     "method_version": METHOD_VERSION,
@@ -39,6 +39,7 @@ DEFINITIONS = {
     "aggregation": "Episode: arithmetic mean of scored transitions. Stage/data_id: equal-weight mean of completed episodes with scores, plus separately labelled pooled transition means. No pooling across source datasets or workers.",
     "retention": "Post minus pre episode means, only completed episodes with identical scored step indices and target-image hashes; positive MAE/LPIPS and negative SSIM indicate deterioration.",
     "incomplete": "No reconstruction of unwritten events. Missing terminal run_summary is rejected unless explicitly allowed. Episode completion requires episode_end evidence.",
+    "spatial_variation": "Mean within-channel population standard deviation over native RGB pixels in [0,1], accumulated in float64. Diagnostic only; not a collapse classification.",
 }
 
 
@@ -219,6 +220,8 @@ def score_step(event, path, calculator, path_maps, inventory):
            "update_weight": finite(wrapper.get("update_weight")),
            "grad_norm_before_clip": finite(training.get("grad_norm_before_clip")),
            "grad_norm_after_clip": finite(training.get("grad_norm_after_clip")),
+           "gradient_clipped": training.get("gradient_clipped"),
+           "prediction_spatial_std": None, "target_spatial_std": None,
            "action_entropy": finite(event.get("prediction", {}).get("act_entropy")),
            "visualization_entropy": finite(event.get("prediction", {}).get("viz_entropy")),
            "forced_eval_visualization_entropy": finite(wrapper.get("evaluation", {}).get("viz_entropy"))}
@@ -251,6 +254,9 @@ def score_step(event, path, calculator, path_maps, inventory):
         elif ("ssim" in calculator.metrics and min(p.shape[:2]) < 11) or ("lpips" in calculator.metrics and min(p.shape[:2]) < 64):
             row["pair_status"] = "image_too_small"
         else:
+            # Mean within-channel spatial standard deviation, in RGB [0, 1].
+            row["prediction_spatial_std"] = float(p.std(axis=(0, 1), dtype=np.float64).mean())
+            row["target_spatial_std"] = float(t.std(axis=(0, 1), dtype=np.float64).mean())
             row.update(calculator(p, t))
     return row
 
