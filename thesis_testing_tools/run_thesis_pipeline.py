@@ -10,6 +10,7 @@ source-pre reference for an additional Habitat -> source-post follow-up.
 from __future__ import annotations
 
 import argparse, csv, json, math, os, platform, subprocess, sys, time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -55,6 +56,29 @@ CORE_CONDITIONS: tuple[tuple[str, str], ...] = (
 
 MetricCalculator = Callable[[Path, Path], Mapping[str, float]]
 SubprocessRunner = Callable[..., Any]
+
+
+@contextmanager
+def reconciled_run(root, **kwargs):
+    """Finalize execution evidence before running the independent offline check."""
+    record = None
+    try:
+        with RunManifest(root, **kwargs) as record:
+            record.reference("reconciliation", record.root / "reconciliation.json")
+            yield record
+    finally:
+        if record is not None:
+            print(f"Reconciling pipeline output: {record.root}", flush=True)
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "thesis_testing_tools.reconcile_run", str(record.root)],
+                    cwd=REPO_ROOT, check=False,
+                )
+                if result.returncode:
+                    print(f"Reconciliation exited with code {result.returncode}; see the console output and any generated reconciliation.json.", flush=True)
+            except OSError as error:
+                # A reporting-launch failure must not replace the experiment's exception.
+                print(f"Could not launch reconciliation: {error}", flush=True)
 
 
 def _captured_command(command: list[str]) -> dict[str, Any]:
@@ -980,7 +1004,7 @@ def run_seed_batch(
     ).resolve()
     seed_dir.mkdir(parents=True, exist_ok=False)
 
-    with RunManifest(
+    with reconciled_run(
         seed_dir, repo_root=REPO_ROOT, run_type="core_condition_seed_batch",
         metadata={"seed": seed, "fixed_mean_learning_rate": fixed_mean_lr,
                   "fixed_mean_calibration": None, "initial_checkpoint": str(initial_checkpoint),
@@ -1405,7 +1429,7 @@ def run_pipeline(
         result_dir = record_dir
         source_post_dir = result_dir / "source_post"
         post_config = result_dir / "source_post_config.yaml"
-    with RunManifest(
+    with reconciled_run(
         record_dir, repo_root=REPO_ROOT,
         run_type=("source_post_from_existing_checkpoint" if post_only else
                   "full_pipeline" if existing_run is None else "habitat_source_post_followup"),

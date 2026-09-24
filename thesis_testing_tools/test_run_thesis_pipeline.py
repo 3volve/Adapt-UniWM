@@ -15,9 +15,45 @@ from thesis_testing_tools.run_thesis_pipeline import (
     HABITAT_DATA_ID,
     SOURCE_DATA_IDS,
     run_seed_batch,
+    reconciled_run,
     smoke_test_result,
     _episode_diagnostic_metrics,
 )
+
+
+class ReconciliationIntegrationTests(unittest.TestCase):
+    def test_runs_after_finalization_on_success_and_failure(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "run"
+                def reconcile(command, **kwargs):
+                    manifest = json.loads((root / "run_manifest.json").read_text())
+                    self.assertEqual(manifest["status"], "failed" if fail else "completed")
+                    self.assertEqual(manifest["references"]["reconciliation"], "reconciliation.json")
+                    events = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
+                    self.assertEqual(events[-1]["_event"]["kind"], "run_summary")
+                    self.assertIn("thesis_testing_tools.reconcile_run", command)
+                    self.assertFalse(kwargs["check"])
+                    return types.SimpleNamespace(returncode=1)
+                with patch("thesis_testing_tools.run_thesis_pipeline.subprocess.run", side_effect=reconcile) as run:
+                    def execute():
+                        with reconciled_run(root=root, repo_root=root.parent, run_type="test", metadata={}, capture=lambda command: {}):
+                            if fail:
+                                raise RuntimeError("original experiment failure")
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "original experiment failure"):
+                            execute()
+                    else:
+                        execute()
+                    run.assert_called_once()
+
+    def test_launch_failure_does_not_replace_experiment_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "run"
+            with patch("thesis_testing_tools.run_thesis_pipeline.subprocess.run", side_effect=OSError("launch failed")):
+                with self.assertRaisesRegex(RuntimeError, "experiment failed"):
+                    with reconciled_run(root=root, repo_root=root.parent, run_type="test", metadata={}, capture=lambda command: {}):
+                        raise RuntimeError("experiment failed")
 
 
 class SeedBatchPipelineTests(unittest.TestCase):
