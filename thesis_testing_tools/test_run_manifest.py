@@ -117,7 +117,7 @@ class RunManifestTests(unittest.TestCase):
                 "full_replan_threshold: 0.12", "full_replan_threshold: 0.23"))
             kwargs = {"subprocess_runner": runner, "metric_calculator": object(),
                       "source_config": source_template,
-                      "habitat_config": Path("cfg/habitat_uniwm_cfg_modulated_learning.yaml").resolve()}
+                      "habitat_config": Path("cfg/habitat_uniwm_cfg.yaml").resolve()}
             full = run_pipeline(output_root=Path(temporary), timestamp="full", **kwargs)
             followup = run_pipeline(existing_run=full, timestamp="followup", **kwargs)
             before = (followup / "run_manifest.json").read_bytes()

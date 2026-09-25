@@ -6,6 +6,7 @@ import argparse
 import ast
 import types
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -16,9 +17,77 @@ from thesis_testing_tools.run_thesis_pipeline import (
     SOURCE_DATA_IDS,
     run_seed_batch,
     reconciled_run,
+    resolve_seed_run,
+    prepare_seed_run,
+    seed_stage,
+    execute_seed_stage,
+    collect_habitat_artifacts,
     smoke_test_result,
     _episode_diagnostic_metrics,
 )
+from thesis_testing_tools.run_manifest import RunManifest
+
+
+class ReusableSeedOperationsTests(unittest.TestCase):
+    def test_resolution_is_read_only_and_preserves_existing_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"habitat": {"test": ["352", "827"]},
+                                            "go_stanford": {"test": ["a", "b", "c"]}}))
+            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence") as generate:
+                run = resolve_seed_run(seed=7, fixed_mean_lr=0.00005, source_manifest=manifest,
+                                       habitat_episodes=1, source_episodes=2, max_episode_steps=4,
+                                       habitat_max_episode_steps=9, output_root=root / "output", timestamp="test")
+            generate.assert_not_called()
+            self.assertFalse((root / "output").exists())
+            self.assertEqual(run.habitat_ids, ["352"])
+            self.assertEqual(run.metadata["source_episode_order"], {"go_stanford": ["a", "b"]})
+            self.assertEqual((run.source_max_episode_steps, run.habitat_max_episode_steps), (4, 9))
+
+    def test_prepare_then_execute_independent_stage_without_shared_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"habitat": {"test": ["352"]}}))
+            run = resolve_seed_run(seed=7, fixed_mean_lr=0.00005, source_manifest=manifest,
+                                   habitat_episodes=1, source_episodes=1, max_episode_steps=2,
+                                   output_root=root / "output", timestamp="test")
+            def actions(episode_id, count, seed_dir, **kwargs):
+                path = seed_dir / "habitat_action_sequences" / "352.json"
+                path.parent.mkdir()
+                path.write_text(json.dumps({"episode_id": episode_id, "target_steps": count, "actions": ["forward"] * count}))
+                return str(path)
+            with patch("thesis_testing_tools.run_thesis_pipeline.generate_action_sequence", side_effect=actions), patch(
+                "thesis_testing_tools.run_thesis_pipeline._captured_command", return_value={}
+            ), patch("thesis_testing_tools.run_thesis_pipeline.run_stage") as execute:
+                with RunManifest(run.seed_dir, repo_root=Path.cwd(), run_type="test", metadata=dict(run.metadata), capture=lambda command: {}) as record:
+                    prepared = prepare_seed_run(run, record)
+                execute.assert_not_called()
+            before = (run.seed_dir / "run_manifest.json").read_bytes()
+            stage = seed_stage(prepared, "c3_aligned_replay/habitat")
+            self.assertIn(json.dumps(str(run.seed_dir / "c0_frozen/habitat")), Path(stage["config_path"]).read_text())
+            with patch("thesis_testing_tools.run_thesis_pipeline.subprocess.run") as runner:
+                result = execute_seed_stage(stage, runner)
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["output_checkpoint_path"], stage["output_checkpoint_path"])
+                self.assertEqual(runner.call_args.args[0], stage["command"])
+            self.assertEqual((run.seed_dir / "run_manifest.json").read_bytes(), before)
+            with self.assertRaisesRegex(ValueError, "baseline reuse"):
+                seed_stage(prepared, "c0_frozen/source_post")
+            failure = subprocess.CalledProcessError(9, stage["command"])
+            with patch("thesis_testing_tools.run_thesis_pipeline.subprocess.run", side_effect=failure) as runner:
+                with self.assertRaises(subprocess.CalledProcessError) as caught:
+                    execute_seed_stage(stage, runner)
+            self.assertIs(caught.exception, failure)
+            self.assertEqual((run.seed_dir / "run_manifest.json").read_bytes(), before)
+            c0 = seed_stage(prepared, "c0_frozen/habitat")
+            schedule = Path(c0["run_dir"]) / "learning_rate_schedule.json"
+            schedule.parent.mkdir()
+            schedule.write_text('{"entries": []}')
+            artifacts = collect_habitat_artifacts(c0)
+            self.assertEqual(artifacts["controller_schedule"]["sha256"], hashlib.sha256(schedule.read_bytes()).hexdigest())
+            self.assertEqual((run.seed_dir / "run_manifest.json").read_bytes(), before)
 
 
 class ReconciliationIntegrationTests(unittest.TestCase):
@@ -486,20 +555,20 @@ class SeedBatchPipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(argparse.ArgumentTypeError, "Config file does not exist"):
             config_path_argument("missing_config.yaml")
         with patch("sys.argv", ["pipeline", "--source-cfg", "replay_uniwm_cfg.yaml",
-                                "--habitat-cfg", "habitat_uniwm_cfg_fixed_learning.yaml"]), patch(
+                                "--habitat-cfg", "habitat_uniwm_cfg.yaml"]), patch(
             "thesis_testing_tools.run_thesis_pipeline.run_pipeline"
         ) as run:
             main()
         self.assertEqual(run.call_args.kwargs["source_config"], expected)
         self.assertEqual(run.call_args.kwargs["habitat_config"],
-                         Path("cfg/habitat_uniwm_cfg_fixed_learning.yaml").resolve())
+                         Path("cfg/habitat_uniwm_cfg.yaml").resolve())
 
     def test_cli_rejects_configs_in_wrong_mode(self) -> None:
         from thesis_testing_tools.run_thesis_pipeline import main
         for arguments, message in (
             (["--habitat-base-cfg", "habitat_uniwm_cfg.yaml"], "require --all-conditions"),
             (["--all-conditions", "--seed", "100", "--fixed-mean-lr", "6.98e-5",
-              "--habitat-cfg", "habitat_uniwm_cfg_fixed_learning.yaml"], "cannot be combined"),
+              "--habitat-cfg", "habitat_uniwm_cfg.yaml"], "cannot be combined"),
         ):
             with self.subTest(arguments=arguments), patch("sys.argv", ["pipeline", *arguments]), patch(
                 "sys.stderr", new_callable=io.StringIO

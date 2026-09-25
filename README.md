@@ -242,6 +242,9 @@ The pipeline then generates an offline `run_report.html` with results, coverage,
 adaptation diagnostics and prediction examples, using the official metric generator.
 See [run reports](docs/run_report.md) for independent generation and metric reuse.
 
+For the reusable preparation, stage execution and finalization functions, see
+[pipeline structure](docs/pipeline_structure.md).
+
 ### Record the experiment workstation
 
 The thesis experiments ran on this reference workstation:
