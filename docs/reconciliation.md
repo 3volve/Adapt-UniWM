@@ -1,6 +1,6 @@
 # Pipeline reconciliation
 
-`run_thesis_pipeline.py` runs reconciliation automatically after finalizing each
+`run_sequential.py` runs reconciliation automatically after finalizing each
 run's execution evidence, on both success and handled execution failure. It prints
 the result and records the intended report path in the manifest's references.
 Reconciliation failures do not replace the original experiment status/exception.

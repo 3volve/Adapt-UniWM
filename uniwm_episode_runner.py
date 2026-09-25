@@ -128,14 +128,15 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self.episode_index += 1
         return result
 
-    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path) -> None:
+    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path, source_episode_counts: dict[str, int] | None = None) -> None:
         if num_episodes == -1:
             num_episodes = self.config["source_max_episodes"]
         for source_id in data_id.split(","):
             self.event_logger.feed({"source_setup": {source_id: {"outcome": "unfinished"}}})
             self.adapter.reset_src(source_id)
             self.event_logger.feed({"source_setup": {source_id: {"outcome": "completed"}}})
-            for _ in range(num_episodes):
+            count = source_episode_counts[source_id] if source_episode_counts is not None else num_episodes
+            for _ in range(count):
                 self.run_episode(source_id)
                 key = str(self.episode_index - 1)
                 self.event_logger.feed({"schedule_save": {key: {"outcome": "unfinished"}}})
@@ -189,15 +190,20 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         return adapter, formatter
 
 if __name__ == '__main__':
+    import json
     parser = argparse.ArgumentParser()    
     parser.add_argument("--config_path", type=str, required=True)
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--run_dir", type=Path)
     parser.add_argument("--num_episodes", type=int, default=-1)
+    parser.add_argument("--source-episode-counts", type=json.loads,
+                        help="Resolved per-dataset episode counts as a JSON object; overrides --num_episodes")
     parser.add_argument("--seed", type=int,
                         help="Seed Python, NumPy and PyTorch before model initialization.")
     args = parser.parse_args()
+    if args.source_episode_counts is not None:
+        counts = args.source_episode_counts
     if args.seed is not None:
         if not 0 <= args.seed < 2**32:
             parser.error("--seed must be in [0, 2**32)")
@@ -227,6 +233,6 @@ if __name__ == '__main__':
         # Retain changed observations without repeating static environment/settings.
         changed = {key: value for key, value in after.items() if value != before.get(key)}
         log.feed({"runtime": {"after_model": event_values(changed)}, "outcome": "completed"})
-        runner.run_episodes(args.num_episodes, args.data_id, run_dir)
+        runner.run_episodes(args.num_episodes, args.data_id, run_dir, args.source_episode_counts)
         log.finish({"outcome": "completed", "episodes": runner.episode_index})
     print("[RUNNER] Ending Run")

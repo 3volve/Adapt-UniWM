@@ -1,10 +1,6 @@
-"""Run the fixed source -> Habitat adaptation -> source thesis pilot.
+"""Shared preparation, execution and reporting for source/Habitat experiments.
 
-This is deliberately a personal, hard-coded experiment driver.  It mirrors the
-two online evaluation shell scripts, but keeps each torchrun in the foreground
-and persists execution summaries. Legacy cross-stage metric generation is
-temporarily disabled during the EventLogger migration. An existing run can supply the
-source-pre reference for an additional Habitat -> source-post follow-up.
+Scheduling belongs to run_sequential.py and run_slurm.py.
 """
 
 from __future__ import annotations
@@ -33,8 +29,6 @@ BASE_CHECKPOINT = REPO_ROOT / "checkpoints" / "base_ckpt"
 
 SOURCE_DATA_IDS = "go_stanford,sacson,scand,recon"
 HABITAT_DATA_ID = "habitat"
-SOURCE_EPISODES = 2
-HABITAT_EPISODES = 12
 REPLAY_PORT = 20002
 HABITAT_PORT = 20001
 ENV_OVERRIDES = {
@@ -56,19 +50,6 @@ MetricCalculator = Callable[[Path, Path], Mapping[str, float]]
 SubprocessRunner = Callable[..., Any]
 
 
-@contextmanager
-def reconciled_run(root, **kwargs):
-    """Finalize execution evidence before running the independent offline check."""
-    record = None
-    try:
-        with RunManifest(root, **kwargs) as record:
-            record.reference("reconciliation", record.root / "reconciliation.json")
-            record.reference("run_report", record.root / "run_report.html")
-            record.reference("run_report_metrics", record.root / "run_report_metrics")
-            yield record
-    finally:
-        if record is not None:
-            generate_run_outputs(record.root)
 
 
 def generate_run_outputs(root: Path) -> None:
@@ -949,7 +930,7 @@ class SeedRun:
     initial_checkpoint: Path
     source_manifest: Path
     schedule_shuffle_seed: int
-    source_episodes: int
+    source_episode_counts: dict[str, int]
     habitat_episodes: int
     max_episode_steps: int | None
     source_max_episode_steps: int
@@ -983,8 +964,8 @@ def resolve_seed_run(
     initial_checkpoint: Path = BASE_CHECKPOINT,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
     schedule_shuffle_seed: int = 20260827,
-    source_episodes: int = SOURCE_EPISODES,
-    habitat_episodes: int = HABITAT_EPISODES,
+    source_episodes: int | None = None,
+    habitat_episodes: int | None = None,
     max_episode_steps: int | None = None,
     source_max_episode_steps: int | None = None,
     habitat_max_episode_steps: int | None = None,
@@ -1004,7 +985,7 @@ def resolve_seed_run(
         ("source_episodes", source_episodes),
         ("habitat_episodes", habitat_episodes),
     ):
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
             raise ValueError(f"{name} must be a positive integer")
     for name, value in (
         ("max_episode_steps", max_episode_steps),
@@ -1039,9 +1020,16 @@ def resolve_seed_run(
             or any(not isinstance(ep, str) or not ep for ep in habitat_ids)
             or len(set(habitat_ids)) != len(habitat_ids)):
         raise ValueError(f"{source_manifest}: habitat.test must be a nonempty list of unique episode ID strings")
-    if habitat_episodes > len(habitat_ids):
-        raise ValueError(f"Requested {habitat_episodes} Habitat episodes, but {source_manifest} lists only {len(habitat_ids)} in habitat.test")
     habitat_ids = habitat_ids[:habitat_episodes]
+    source_order = {}
+    for data_id in SOURCE_DATA_IDS.split(","):
+        entries = manifest.get(data_id, {}).get("test")
+        if (not isinstance(entries, list) or not entries
+                or any(not isinstance(ep, str) or not ep for ep in entries)):
+            raise ValueError(f"{source_manifest}: {data_id}.test must be a nonempty list of episode ID strings")
+        source_order[data_id] = entries[:source_episodes]
+    source_counts = {data_id: len(entries) for data_id, entries in source_order.items()}
+    habitat_episodes = len(habitat_ids)
 
     timestamp = (
         datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1055,10 +1043,9 @@ def resolve_seed_run(
     metadata = {"seed": seed, "fixed_mean_learning_rate": fixed_mean_lr,
                   "fixed_mean_calibration": None, "initial_checkpoint": str(initial_checkpoint),
                   "source_manifest_original": str(source_manifest),
-                  "source_episode_order": {data_id: manifest[data_id]["test"][:source_episodes]
-                      for data_id in SOURCE_DATA_IDS.split(",") if data_id in manifest},
+                  "source_episode_order": source_order,
                   "habitat_episode_order": habitat_ids, "schedule_shuffle_seed": schedule_shuffle_seed,
-                  "source_episodes_per_data_id": source_episodes, "habitat_episodes": habitat_episodes,
+                  "source_episode_counts": source_counts, "habitat_episodes": habitat_episodes,
                   "source_max_episode_steps": source_max_episode_steps,
                   "habitat_max_episode_steps": habitat_max_episode_steps, "max_route_steps": max_route_steps,
                   "smoke_test": smoke_test}
@@ -1071,7 +1058,7 @@ def resolve_seed_run(
         initial_checkpoint=initial_checkpoint,
         source_manifest=source_manifest,
         schedule_shuffle_seed=schedule_shuffle_seed,
-        source_episodes=source_episodes,
+        source_episode_counts=source_counts,
         habitat_episodes=habitat_episodes,
         max_episode_steps=max_episode_steps,
         source_max_episode_steps=source_max_episode_steps,
@@ -1126,10 +1113,11 @@ def prepare_seed_configs(
         source_pre_config,
         SOURCE_DATA_IDS,
         source_pre_dir,
-        run.source_episodes,
+        -1,
         REPLAY_PORT,
         seed=run.seed,
     )
+    source_pre_command += ["--source-episode-counts", json.dumps(run.source_episode_counts)]
 
     condition_plans: list[dict[str, Any]] = []
     c0_habitat_dir = run.seed_dir / CORE_CONDITIONS[0][0] / "habitat"
@@ -1188,10 +1176,11 @@ def prepare_seed_configs(
                 source_post_config,
                 SOURCE_DATA_IDS,
                 source_post_dir,
-                run.source_episodes,
+                -1,
                 REPLAY_PORT,
                 seed=run.seed,
             )
+            source_post_command += ["--source-episode-counts", json.dumps(run.source_episode_counts)]
 
         condition_plans.append(
             {
@@ -1256,7 +1245,7 @@ def prepare_seed_run(run: SeedRun, run_record: RunManifest) -> PreparedSeedRun:
         "schedule_shuffle_seed": int(run.schedule_shuffle_seed),
         "conditions": [condition_id for condition_id, _ in CORE_CONDITIONS],
         "source_data_ids": SOURCE_DATA_IDS.split(","),
-        "source_episodes_per_data_id": run.source_episodes,
+        "source_episode_counts": run.source_episode_counts,
         "habitat_episodes": run.habitat_episodes,
         "habitat_episode_ids": run.habitat_ids,
         "habitat_action_sequences": action_reference,
@@ -1359,6 +1348,7 @@ def seed_stage(prepared: PreparedSeedRun, stage_id: str) -> dict[str, Any]:
 def execute_seed_stage(
     stage: Mapping[str, Any], subprocess_runner: SubprocessRunner | None = None, *,
     run_manifest: RunManifest | None = None,
+    repo_root: Path = REPO_ROOT,
 ) -> dict[str, Any]:
     """Execute one stage; the caller chooses shared-manifest or independent recording.
 
@@ -1367,7 +1357,7 @@ def execute_seed_stage(
     """
     record = run_stage(
         stage["name"], stage["command"], Path(stage["run_dir"]), Path(stage["config_path"]),
-        stage["data_id"], subprocess_runner, run_manifest=run_manifest,
+        stage["data_id"], subprocess_runner, run_manifest=run_manifest, repo_root=repo_root,
     )
     record["input_checkpoint_path"] = stage["input_checkpoint_path"]
     if "output_checkpoint_path" in stage:
@@ -1501,316 +1491,9 @@ def finalize_seed_run(
     return batch_summary
 
 
-def run_seed_batch(
-    *,
-    seed: int,
-    fixed_mean_lr: float,
-    source_config: Path = REPLAY_CONFIG,
-    habitat_base_config: Path = HABITAT_CONFIG,
-    fixed_mean_calibration: Path | None = None,
-    initial_checkpoint: Path = BASE_CHECKPOINT,
-    source_manifest: Path = DEVELOPMENT_MANIFEST,
-    schedule_shuffle_seed: int = 20260827,
-    source_episodes: int = SOURCE_EPISODES,
-    habitat_episodes: int = HABITAT_EPISODES,
-    max_episode_steps: int | None = None,
-    source_max_episode_steps: int | None = None,
-    habitat_max_episode_steps: int | None = None,
-    max_route_steps: int | None = None,
-    smoke_test: bool = False,
-    output_root: Path = DEFAULT_OUTPUT_ROOT,
-    timestamp: str | None = None,
-    subprocess_runner: SubprocessRunner | None = None,
-    metric_calculator: MetricCalculator | None = None,
-) -> Path:
-    """Run the shared seed-batch operations sequentially, preserving existing policy."""
-    seed_started = time.perf_counter()
-    run = resolve_seed_run(
-        seed=seed,
-        fixed_mean_lr=fixed_mean_lr,
-        source_config=source_config,
-        habitat_base_config=habitat_base_config,
-        fixed_mean_calibration=fixed_mean_calibration,
-        initial_checkpoint=initial_checkpoint,
-        source_manifest=source_manifest,
-        schedule_shuffle_seed=schedule_shuffle_seed,
-        source_episodes=source_episodes,
-        habitat_episodes=habitat_episodes,
-        max_episode_steps=max_episode_steps,
-        source_max_episode_steps=source_max_episode_steps,
-        habitat_max_episode_steps=habitat_max_episode_steps,
-        max_route_steps=max_route_steps,
-        smoke_test=smoke_test,
-        output_root=output_root,
-        timestamp=timestamp,
-    )
-    run.seed_dir.mkdir(parents=True, exist_ok=False)
-    with reconciled_run(
-        run.seed_dir, repo_root=REPO_ROOT, run_type="core_condition_seed_batch",
-        metadata=dict(run.metadata), capture=_captured_command,
-    ) as run_record:
-        prepared = prepare_seed_run(run, run_record)
-        source_pre_record = execute_seed_stage(prepared.source_pre, subprocess_runner, run_manifest=run_record)
-        condition_summaries = []
-        for plan in prepared.conditions:
-            condition_id = plan["condition_id"]
-            habitat_stage = seed_stage(prepared, f"{condition_id}/habitat")
-            habitat_record = execute_seed_stage(habitat_stage, subprocess_runner, run_manifest=run_record)
-            record_habitat_artifacts(prepared, habitat_stage, run_record)
-            if plan["source_post_command"] is None:
-                post_record = record_source_pre_reuse(Path(prepared.source_pre["run_dir"]), Path(plan["source_post_dir"]))
-            else:
-                post_record = execute_seed_stage(
-                    seed_stage(prepared, f"{condition_id}/source_post"),
-                    subprocess_runner, run_manifest=run_record,
-                )
-            stage_records = [
-                {"name": "source_pre", "status": "reused", "run_dir": prepared.source_pre["run_dir"]},
-                habitat_record, post_record,
-            ]
-            condition_summaries.append(write_condition_summary(prepared, plan, stage_records))
-        summary = finalize_seed_run(
-            prepared, source_pre_record, condition_summaries,
-            duration_seconds=time.perf_counter() - seed_started,
-        )
-        run_record.reference("summary", run.seed_dir / "seed_summary.json")
-        run_record.data["status"] = summary["status"]
-        run_record.data["metadata"]["workload"] = prepared.workload
-        return run.seed_dir
 
 
 
-def run_pipeline(
-    *,
-    source_config: Path = REPLAY_CONFIG,
-    habitat_config: Path = HABITAT_CONFIG,
-    existing_run: Path | None = None,
-    source_post_checkpoint: Path | None = None,
-    output_root: Path = DEFAULT_OUTPUT_ROOT,
-    timestamp: str | None = None,
-    subprocess_runner: SubprocessRunner | None = None,
-    metric_calculator: MetricCalculator | None = None,
-) -> Path:
-    timestamp = (
-        datetime.now().strftime("%Y%m%d_%H%M%S")
-        if timestamp is None
-        else timestamp
-    )
-    post_only = source_post_checkpoint is not None
-    if post_only:
-        final_checkpoint = Path(source_post_checkpoint).resolve()
-        habitat_dir = final_checkpoint.parent
-        result_dir = habitat_dir.parent
-        pipeline_dir = result_dir.parent.parent
-    elif existing_run is None:
-        pipeline_dir = Path(output_root) / f"thesis_pipeline_{timestamp}"
-        result_dir = pipeline_dir
-    else:
-        pipeline_dir = Path(existing_run).resolve()
-        result_dir = (
-            pipeline_dir
-            / "followups"
-            / f"followup_{timestamp}"
-        )
-
-    source_pre_dir = pipeline_dir / "source_pre"
-    habitat_dir = result_dir / "habitat"
-    source_post_dir = result_dir / "source_post"
-    post_config = result_dir / "source_post_config.yaml"
-    if not post_only:
-        result_dir.mkdir(parents=True, exist_ok=False)
-    record_dir = result_dir if not post_only else result_dir / "source_post_invocations" / timestamp
-    if post_only:
-        # Preserve the previous invocation's outputs as well as its manifest.
-        result_dir = record_dir
-        source_post_dir = result_dir / "source_post"
-        post_config = result_dir / "source_post_config.yaml"
-    with reconciled_run(
-        record_dir, repo_root=REPO_ROOT,
-        run_type=("source_post_from_existing_checkpoint" if post_only else
-                  "full_pipeline" if existing_run is None else "habitat_source_post_followup"),
-        metadata={"seed": None, "seed_policy": "not explicitly seeded by legacy pipeline",
-                  "pipeline_dir": str(pipeline_dir), "result_dir": str(result_dir),
-                  "existing_run": str(existing_run) if existing_run is not None else None,
-                  "source_post_checkpoint": str(source_post_checkpoint) if post_only else None},
-        capture=_captured_command,
-    ) as run_record:
-        run_record.capture_environment(ENV_OVERRIDES)
-        run_record.snapshot_code()
-        if not post_only:
-            final_checkpoint = habitat_dir / "final_ckpt"
-
-
-        source_config = run_record.snapshot(source_config, "source_config_template")
-        run_record.snapshot(DEVELOPMENT_MANIFEST, "data_manifest")
-        if not post_only:
-            habitat_config = run_record.snapshot(habitat_config, "habitat_config")
-        run_record.data["checkpoints"] = {"initial": artifact_fingerprint(BASE_CHECKPOINT)}
-        if post_only:
-            run_record.data["checkpoints"]["habitat_final"] = artifact_fingerprint(final_checkpoint)
-        run_record.reference("source_pre", source_pre_dir)
-
-        source_pre_command = (
-            build_torchrun_command(
-                source_config,
-                SOURCE_DATA_IDS,
-                source_pre_dir,
-                SOURCE_EPISODES,
-                REPLAY_PORT,
-            )
-            if existing_run is None and not post_only
-            else None
-        )
-        habitat_command = (
-            None
-            if post_only
-            else build_torchrun_command(
-                habitat_config,
-                HABITAT_DATA_ID,
-                habitat_dir,
-                HABITAT_EPISODES,
-                HABITAT_PORT,
-            )
-        )
-        source_post_command = build_torchrun_command(
-            post_config,
-            SOURCE_DATA_IDS,
-            source_post_dir,
-            SOURCE_EPISODES,
-            REPLAY_PORT,
-        )
-
-        planned_stages = []
-        if source_pre_command is not None:
-            planned_stages.append(
-                _planned_stage(
-                    "source_pre",
-                    SOURCE_DATA_IDS,
-                    source_config,
-                    source_pre_dir,
-                    source_pre_command,
-                    BASE_CHECKPOINT,
-                )
-            )
-        if habitat_command is not None:
-            planned_stages.append(
-                _planned_stage(
-                    "habitat",
-                    HABITAT_DATA_ID,
-                    habitat_config,
-                    habitat_dir,
-                    habitat_command,
-                    BASE_CHECKPOINT,
-                    final_checkpoint,
-                )
-            )
-        planned_stages.append(
-            _planned_stage(
-                "source_post",
-                SOURCE_DATA_IDS,
-                post_config,
-                source_post_dir,
-                source_post_command,
-                final_checkpoint,
-            )
-        )
-
-        manifest = {
-            "created_at": datetime.now().astimezone().isoformat(),
-            "run_type": (
-                "source_post_from_existing_checkpoint"
-                if post_only
-                else (
-                    "full_pipeline"
-                    if existing_run is None
-                    else "habitat_source_post_followup"
-                )
-            ),
-            "pipeline_dir": str(pipeline_dir),
-            "result_dir": str(result_dir),
-            "source_pre_reference": str(source_pre_dir),
-            "source_data_ids": SOURCE_DATA_IDS.split(","),
-            "source_episodes_per_data_id": SOURCE_EPISODES,
-            "source_episode_count": (
-                len(SOURCE_DATA_IDS.split(",")) * SOURCE_EPISODES
-            ),
-            "environment_overrides": ENV_OVERRIDES,
-            "stages": planned_stages,
-            "checkpoint_flow": {
-                "base_checkpoint": str(BASE_CHECKPOINT),
-                "habitat_output_checkpoint": str(final_checkpoint),
-                "source_post_input_checkpoint": str(final_checkpoint),
-            },
-            "source_post_config": str(post_config),
-
-        }
-        manifest_path = result_dir / (
-            "source_post_manifest.json"
-            if post_only
-            else "pipeline_manifest.json"
-        )
-        with manifest_path.open(
-            "w", encoding="utf-8"
-        ) as handle:
-            json.dump(manifest, handle, indent=2)
-
-        run_record.reference("pipeline_plan", manifest_path)
-        pipeline_started = time.perf_counter()
-        stage_records: list[dict[str, Any]] = []
-
-        if source_pre_command is not None:
-            source_pre_record = run_stage(
-                "source_pre",
-                source_pre_command,
-                source_pre_dir,
-                source_config,
-                SOURCE_DATA_IDS,
-                subprocess_runner,
-                run_manifest=run_record,
-            )
-            source_pre_record["input_checkpoint_path"] = str(BASE_CHECKPOINT)
-            stage_records.append(source_pre_record)
-
-        if habitat_command is not None:
-            habitat_record = run_stage(
-                "habitat",
-                habitat_command,
-                habitat_dir,
-                habitat_config,
-                HABITAT_DATA_ID,
-                subprocess_runner,
-                run_manifest=run_record,
-            )
-            habitat_record["input_checkpoint_path"] = str(BASE_CHECKPOINT)
-            habitat_record["output_checkpoint_path"] = str(final_checkpoint)
-            stage_records.append(habitat_record)
-            run_record.data["checkpoints"]["habitat_final"] = artifact_fingerprint(final_checkpoint)
-            run_record.save()
-
-        write_post_replay_config(source_config, post_config, final_checkpoint)
-
-        source_post_record = run_stage(
-            "source_post",
-            source_post_command,
-            source_post_dir,
-            post_config,
-            SOURCE_DATA_IDS,
-            subprocess_runner,
-            run_manifest=run_record,
-        )
-        source_post_record["input_checkpoint_path"] = str(final_checkpoint)
-        stage_records.append(source_post_record)
-
-
-        summary = {"status": "completed", "result_dir": str(result_dir), "stages": stage_records, "analysis": {"status": "disabled", "reason": "Legacy metric readers do not support events.jsonl yet"}, "artifacts": {}}
-        with (result_dir / "pipeline_summary.json").open(
-            "w", encoding="utf-8"
-        ) as handle:
-            summary["artifacts"]["habitat_checkpoint"] = str(final_checkpoint)
-            json.dump(summary, handle, indent=2)
-
-        run_record.reference("summary", result_dir / "pipeline_summary.json")
-        return result_dir
 
 
 def config_path_argument(value: str) -> Path:
@@ -1822,197 +1505,30 @@ def config_path_argument(value: str) -> Path:
     return path
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--source-cfg", type=config_path_argument, default=REPLAY_CONFIG,
-        help="Source-pre/post template: filename under cfg/, repo-relative path, or absolute path.",
-    )
-    parser.add_argument(
-        "--habitat-base-cfg", type=config_path_argument,
-        help="Shared C0-C5 Habitat template (default: cfg/habitat_uniwm_cfg.yaml); requires --all-conditions.",
-    )
-    parser.add_argument(
-        "--all-conditions",
-        action="store_true",
-        help="Run the paired C0-C5 condition batch for one seed.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        help="Adapter/Habitat seed for an all-conditions batch.",
-    )
-    parser.add_argument(
-        "--fixed-mean-lr",
-        type=float,
-        help=("Required with --all-conditions: C2's frozen mean effective learning rate "
-              "from valid Full-controller update opportunities on development data. "
-              "Never estimate this value from the held-out test stream."),
-    )
-    parser.add_argument(
-        "--fixed-mean-calibration",
-        type=Path,
-        help="Optional development calibration artifact to snapshot and hash alongside --fixed-mean-lr.",
-    )
-    parser.add_argument(
-        "--initial-checkpoint",
-        type=Path,
-        default=BASE_CHECKPOINT,
-        help="Common checkpoint from which every condition starts.",
-    )
-    parser.add_argument(
-        "--source-manifest",
-        type=Path,
-        default=DEVELOPMENT_MANIFEST,
-        help="Manifest for source evaluation and, in all-conditions mode, ordered Habitat episode IDs from habitat.test.",
-    )
-    parser.add_argument(
-        "--schedule-shuffle-seed",
-        type=int,
-        default=20260827,
-        help="Seed used for C0's within-episode shuffled schedule.",
-    )
-    parser.add_argument(
-        "--output-root",
-        type=Path,
-        default=DEFAULT_OUTPUT_ROOT,
-    )
-    parser.add_argument(
-        "--smoke-test",
-        action="store_true",
-        help=(
-            "Mark the run as a non-evidentiary smoke test and default to one "
-            "episode per source, one Habitat episode, two episode steps, and "
-            "one route step."
-        ),
-    )
-    parser.add_argument("--source-episodes", type=int)
-    parser.add_argument("--habitat-episodes", type=int)
-    parser.add_argument("--max-episode-steps", type=int)
-    parser.add_argument("--source-max-episode-steps", type=int,
-                        help="Source step limit; overrides --max-episode-steps and smoke defaults.")
-    parser.add_argument("--habitat-max-episode-steps", type=int,
-                        help="Habitat step limit; overrides --max-episode-steps and smoke defaults.")
-    parser.add_argument("--max-route-steps", type=int)
-    parser.add_argument(
-        "--existing-run",
-        type=Path,
-        help="Reuse source_pre from an existing thesis pipeline run.",
-    )
-    parser.add_argument(
-        "--source-post-checkpoint",
-        type=Path,
-        help="Run only source-post using an existing Habitat final_ckpt.",
-    )
-    parser.add_argument(
-        "--habitat-cfg",
-        type=config_path_argument,
-        help="Habitat configuration for a single-condition run; incompatible with --all-conditions.",
-    )
-    parser.add_argument(
-        "--habitat-port",
-        type=int,
-    )
-    args = parser.parse_args()
-    
-    if args.habitat_port is not None:
-        global HABITAT_PORT, REPLAY_PORT
-        HABITAT_PORT = args.habitat_port
-        REPLAY_PORT = args.habitat_port + 1
-
-    if args.all_conditions:
-        incompatible = [
-            name
-            for name, value in (
-                ("--existing-run", args.existing_run),
-                ("--source-post-checkpoint", args.source_post_checkpoint),
-                ("--habitat-cfg", args.habitat_cfg),
-            )
-            if value is not None
-        ]
-        if incompatible:
-            parser.error(
-                "--all-conditions cannot be combined with "
-                + ", ".join(incompatible)
-            )
-        if args.seed is None:
-            parser.error("--all-conditions requires --seed")
-        if args.fixed_mean_lr is None:
-            parser.error("--all-conditions requires --fixed-mean-lr calibrated on development data")
-
-        source_episodes = (
-            args.source_episodes
-            if args.source_episodes is not None
-            else (1 if args.smoke_test else SOURCE_EPISODES)
-        )
-        habitat_episodes = (
-            args.habitat_episodes
-            if args.habitat_episodes is not None
-            else (1 if args.smoke_test else HABITAT_EPISODES)
-        )
-        max_episode_steps = (
-            args.max_episode_steps
-            if args.max_episode_steps is not None
-            else (2 if args.smoke_test else None)
-        )
-        max_route_steps = (
-            args.max_route_steps
-            if args.max_route_steps is not None
-            else (1 if args.smoke_test else None)
-        )
-
-        result_dir = run_seed_batch(
-            seed=args.seed,
-            fixed_mean_lr=args.fixed_mean_lr,
-            source_config=args.source_cfg,
-            habitat_base_config=args.habitat_base_cfg or HABITAT_CONFIG,
-            fixed_mean_calibration=args.fixed_mean_calibration,
-            initial_checkpoint=args.initial_checkpoint,
-            source_manifest=args.source_manifest,
-
-            schedule_shuffle_seed=args.schedule_shuffle_seed,
-            source_episodes=source_episodes,
-            habitat_episodes=habitat_episodes,
-            max_episode_steps=max_episode_steps,
-            source_max_episode_steps=args.source_max_episode_steps,
-            habitat_max_episode_steps=args.habitat_max_episode_steps,
-            max_route_steps=max_route_steps,
-            smoke_test=args.smoke_test,
-            output_root=args.output_root,
-        )
-    else:
-        all_condition_only = {
-            "--habitat-base-cfg": args.habitat_base_cfg,
-            "--seed": args.seed,
-            "--fixed-mean-lr": args.fixed_mean_lr,
-            "--fixed-mean-calibration": args.fixed_mean_calibration,
-            "--smoke-test": args.smoke_test or None,
-            "--source-episodes": args.source_episodes,
-            "--habitat-episodes": args.habitat_episodes,
-            "--max-episode-steps": args.max_episode_steps,
-            "--source-max-episode-steps": args.source_max_episode_steps,
-            "--habitat-max-episode-steps": args.habitat_max_episode_steps,
-            "--max-route-steps": args.max_route_steps,
-        }
-        incompatible = [
-            name
-            for name, value in all_condition_only.items()
-            if value is not None
-        ]
-        if incompatible:
-            parser.error(
-                ", ".join(incompatible) + " require --all-conditions"
-            )
-        result_dir = run_pipeline(
-            source_config=args.source_cfg,
-            habitat_config=args.habitat_cfg or HABITAT_CONFIG,
-            existing_run=args.existing_run,
-            source_post_checkpoint=args.source_post_checkpoint,
-
-            output_root=args.output_root,
-        )
-    print(f"[THESIS PIPELINE] Finished: {result_dir}")
+def add_experiment_arguments(parser):
+    """Shared experiment CLI; execution-specific options belong to each launcher."""
+    parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--fixed-mean-lr", type=float, required=True)
+    parser.add_argument("--source-cfg", type=config_path_argument, default=REPLAY_CONFIG)
+    parser.add_argument("--habitat-base-cfg", type=config_path_argument, default=HABITAT_CONFIG)
+    parser.add_argument("--source-manifest", type=Path, default=DEVELOPMENT_MANIFEST)
+    parser.add_argument("--initial-checkpoint", type=Path, default=BASE_CHECKPOINT)
+    parser.add_argument("--fixed-mean-calibration", type=Path)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--source-episodes", type=int, help="Maximum per source dataset; omitted means all entries")
+    parser.add_argument("--habitat-episodes", type=int, help="Maximum Habitat episodes; omitted means all entries")
+    for name in ("max-episode-steps", "source-max-episode-steps", "habitat-max-episode-steps", "max-route-steps"):
+        parser.add_argument("--" + name, type=int)
+    parser.add_argument("--schedule-shuffle-seed", type=int, default=20260827)
+    parser.add_argument("--smoke-test", action="store_true", help="Label a smoke run; specify desired episode/step caps explicitly")
 
 
-if __name__ == "__main__":
-    main()
+def experiment_arguments(args):
+    """Translate CLI names once for both execution coordinators."""
+    values = {name: getattr(args, name) for name in (
+        "seed", "fixed_mean_lr", "fixed_mean_calibration", "source_manifest",
+        "initial_checkpoint", "output_root", "source_episodes", "habitat_episodes",
+        "schedule_shuffle_seed", "smoke_test", "max_episode_steps",
+        "source_max_episode_steps", "habitat_max_episode_steps", "max_route_steps")}
+    values.update(source_config=args.source_cfg, habitat_base_config=args.habitat_base_cfg)
+    return values

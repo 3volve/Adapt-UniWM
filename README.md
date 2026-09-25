@@ -62,7 +62,7 @@ rate to match the one recorded in the schedule.
 
 ### Run the complete thesis pipeline
 
-`thesis_testing_tools/run_thesis_pipeline.py` runs the three-stage protocol:
+`thesis_testing_tools/run_sequential.py` runs the three-stage protocol:
 
 1. **Source pre:** evaluate the common base checkpoint on the source datasets.
 2. **Habitat:** run one online-adaptation condition and save its final adapter.
@@ -72,8 +72,7 @@ rate to match the one recorded in the schedule.
 For the paired core experiment, queue all six conditions for one seed with:
 
 ```bash
-python thesis_testing_tools/run_thesis_pipeline.py \
-  --all-conditions \
+python thesis_testing_tools/run_sequential.py \
   --source-cfg replay_uniwm_cfg.yaml \
   --habitat-base-cfg habitat_uniwm_cfg.yaml \
   --seed 100 \
@@ -101,16 +100,16 @@ the requested workload/checkpoint settings. Other values carry through from
 the selected templates, including the base learning rate (`initial_lr`).
 Action generation also uses the selected Habitat base. Selected templates are
 snapshotted before use, and the generated stage configurations are saved in
-the run directory. The older condition-specific YAMLs remain available for
-single-condition runs through `--habitat-cfg`.
+the run directory. Both entry points run a C0-C5 seed batch; the old
+single-condition/follow-up CLI modes have been removed.
 
 The batch is written below `output/thesis_seed_<seed>_<timestamp>/`.
 `seed_manifest.json` records the full planned queue and generated configuration
 paths, while `seed_summary.json` links the completed per-condition summaries.
 
 For debug runs, `--source-max-episode-steps` and `--habitat-max-episode-steps`
-override the shared `--max-episode-steps` limit independently, including its
-two-step smoke default. Without a shared or stage-specific override, source
+override the shared `--max-episode-steps` limit independently.
+`--smoke-test` labels the run and does not change workload limits. Without a shared or stage-specific override, source
 uses the selected source config limit and Habitat uses the base config limit for all
 conditions. Resolved limits are recorded in the workload metadata.
 
@@ -182,31 +181,11 @@ tables or figures inside a run, refresh it from the repository root:
 python -m thesis_testing_tools.run_manifest "output/thesis_seed_100_<timestamp>"
 ```
 
-Run one complete pipeline per condition:
-
-```bash
-python thesis_testing_tools/run_thesis_pipeline.py \
-  --habitat-cfg habitat_uniwm_cfg_no_learning.yaml \
-  --habitat-port 20001
-
-python thesis_testing_tools/run_thesis_pipeline.py \
-  --habitat-cfg habitat_uniwm_cfg_fixed_learning.yaml \
-  --habitat-port 20003
-
-python thesis_testing_tools/run_thesis_pipeline.py \
-  --habitat-cfg habitat_uniwm_cfg_modulated_learning.yaml \
-  --habitat-port 20005
-```
-
-Each run is written below `output/thesis_pipeline_<timestamp>/`. The primary
-reproducibility artifacts are:
-
-- `pipeline_manifest.json`: commands, configurations, inputs, and checkpoint flow.
-- `source_pre/events.jsonl`: source evaluation events before adaptation.
-- `habitat/events.jsonl`: navigation, learning, and diagnostic events.
-- `habitat/final_ckpt/`: the condition's final PEFT adapter.
-- `source_post/events.jsonl`: source evaluation events after adaptation.
-- `pipeline_summary.json`: execution summary with analysis explicitly disabled.
+Both sequential and Slurm execution evaluate all selected manifest entries by
+default. `--source-episodes N` caps each source dataset at its first N entries;
+`--habitat-episodes N` caps Habitat the same way. Smaller splits run in full.
+There is no balancing, repetition, or implicit smoke-test cap. Actual per-dataset
+counts and selected episode order are recorded in the run metadata.
 
 The thesis defines and interprets the reported metrics. The README records where
 the implementation produces them so a reader can trace thesis tables back to
@@ -244,6 +223,11 @@ See [run reports](docs/run_report.md) for independent generation and metric reus
 
 For the reusable preparation, stage execution and finalization functions, see
 [pipeline structure](docs/pipeline_structure.md).
+
+The sequential entry point is `thesis_testing_tools/run_sequential.py`, paired
+with `run_sequential.sh`. For concurrent C0-C5 seed batches, use `run_slurm.py`
+and `run_slurm.sh`; see [Slurm execution](docs/slurm_pipeline.md), including its
+submission-free `--dry-run` mode. Both entry points use the shared `pipeline.py`.
 
 ### Record the experiment workstation
 

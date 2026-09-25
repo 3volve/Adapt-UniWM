@@ -1,11 +1,12 @@
 # Reusable seed-batch operations
 
-`run_thesis_pipeline.py` keeps `run_seed_batch()` as the sequential coordinator.
+`run_sequential.py` keeps `run_seed_batch()` as the sequential coordinator.
 Its experiment policy is unchanged: one shared source-pre, C0-C5 in order, each
 condition's Habitat episodes in one runner invocation, and source-post after each
 learning condition. C0 records source-pre reuse instead of launching source-post.
 
-The reusable functions remain in the same module:
+The reusable functions live in `thesis_testing_tools/pipeline.py`. Both
+`run_sequential.py` and `run_slurm.py` import this library:
 
 | Function | Responsibility |
 | --- | --- |
@@ -34,8 +35,8 @@ result = execute_seed_stage(stage)
 artifacts = collect_habitat_artifacts(stage)
 ```
 
-Without `run_manifest`, execution does not open or update a shared manifest. A
-future Slurm worker wrapper can persist its result or catch/report its exception.
+Without `run_manifest`, execution does not open or update a shared manifest. The
+Slurm worker wrapper persists its own result and catches/reports its exception.
 The sequential coordinator passes `run_manifest=run_record`, retaining the existing
 snapshot-backed configuration execution and failure-recording context manager.
 An independent caller must supply the intended saved configuration and arrange
@@ -43,13 +44,14 @@ prerequisites before executing a stage; these functions do not schedule dependen
 
 `finalize_seed_run()` handles the existing completed-batch summary. On failure,
 the sequential path still lets `RunManifest` record/close the failed execution,
-then invokes `generate_run_outputs()`. A future distributed finalizer must collect
-worker outcomes and close its consolidated manifest before calling reporting; this
-refactor does not introduce distributed status files or scheduler handling.
+then invokes `generate_run_outputs()`. The Slurm finalizer collects worker outcomes
+and writes its consolidated manifest before calling reporting. See
+[Slurm execution](slurm_pipeline.md) for dependencies and record ownership.
 
-The CLI, output layout, manifest fields, fixed ports, current episode-count
-defaults, C2 development mean, and checkpoint/schedule policy are retained.
-Manifest-driven unlimited selection, Slurm launch settings and the failure-focused
-HTML section remain separate changes. Legacy disconnected metric helpers were
-not removed. The legacy `run_pipeline()` path retains its flow and shares the
-extracted reporting entry point.
+Both entry points share experiment CLI definitions, manifest selection and stage
+command construction in `pipeline.py`. Omitted episode limits select all entries;
+explicit limits cap each dataset independently. `--smoke-test` only labels the run.
+The former sequential single-condition/follow-up modes and `--all-conditions`
+switch are removed: both entry points run C0-C5 seed batches. Scheduling and Slurm
+resource options remain specific to their respective coordinators. The Bash
+launchers run all manifest entries by default and accept explicit debug caps.
