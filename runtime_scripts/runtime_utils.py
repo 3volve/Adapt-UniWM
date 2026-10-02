@@ -22,6 +22,9 @@ def event_values(value):
         return {key: event_values(child) for key, child in value.items()}
     if isinstance(value, (list, tuple)):
         return [event_values(child) for child in value]
+    if isinstance(value, (set, frozenset)):
+        # PEFT configuration dictionaries contain sets of module names.
+        return [event_values(child) for child in sorted(value)]
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, np.ndarray):
