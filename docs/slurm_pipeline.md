@@ -23,13 +23,13 @@ export SLURM_PARTITION=gpu
 export SLURM_FINALIZE_PARTITION=cpu
 export SLURM_ACCOUNT=my_account
 bash thesis_testing_tools/run_slurm.sh \
-  --source-episodes 2 --habitat-episodes 2 --max-episode-steps 5
+  --debug-source-episodes 2 --debug-habitat-episodes 2 --max-episode-steps 5
 ```
 
 The shell launcher contains editable experiment defaults. Trailing CLI arguments
 override them. Omitted episode limits mean all entries in each dataset's `test`
-split, preserving order and unequal dataset sizes. `--source-episodes N` caps
-each source dataset individually; `--habitat-episodes N` caps Habitat. No balancing
+split, preserving order and unequal dataset sizes. `--debug-source-episodes N` caps
+each source dataset individually; `--debug-habitat-episodes N` caps Habitat. No balancing
 or repetition is introduced. Sequential execution uses these same selection rules and CLI definitions.
 
 The repository, output directory, Python environment, datasets and checkpoints

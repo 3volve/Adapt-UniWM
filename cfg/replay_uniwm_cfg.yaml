@@ -69,7 +69,7 @@ runner:
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: replay_source_tools
-  source_max_episodes: 64
+  max_total_episodes: 100
   save_model_weights: false
 
   adapter_params:

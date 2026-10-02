@@ -83,7 +83,7 @@ wrapper:
 runner:
   source_type: "habitat"
   max_episode_steps: 25
-  source_max_episodes: 12
+  max_total_episodes: 100
   stop_on_wrapper_done: true
   log_every_step: true
   source_file_name: habitat_source_tools

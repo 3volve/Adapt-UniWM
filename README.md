@@ -182,8 +182,8 @@ python -m thesis_testing_tools.run_manifest "output/thesis_seed_100_<timestamp>"
 ```
 
 Both sequential and Slurm execution evaluate all selected manifest entries by
-default. `--source-episodes N` caps each source dataset at its first N entries;
-`--habitat-episodes N` caps Habitat the same way. Smaller splits run in full.
+default. `--debug-source-episodes N` caps each source dataset at its first N entries;
+`--debug-habitat-episodes N` caps Habitat the same way. Smaller splits run in full.
 There is no balancing, repetition, or implicit smoke-test cap. Actual per-dataset
 counts and selected episode order are recorded in the run metadata.
 

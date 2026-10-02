@@ -28,6 +28,24 @@ from thesis_testing_tools.run_manifest import RunManifest
 
 
 class ReusableSeedOperationsTests(unittest.TestCase):
+    def test_source_paths_remain_absolute_when_worker_code_is_copied(self):
+        import yaml
+        from thesis_testing_tools.pipeline import write_seed_source_config
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for configured in ("eval_data", str(root / "external_data")):
+                template = root / "template.yaml"
+                template.write_text(Path("cfg/replay_uniwm_cfg.yaml").read_text().replace(
+                    "data_root: eval_data", "data_root: " + json.dumps(configured)))
+                output = root / "stage.yaml"
+                with patch("thesis_testing_tools.pipeline.REPO_ROOT", root):
+                    write_seed_source_config(output, root / "checkpoint", source_config=template,
+                                             source_manifest=root / "selected.json")
+                params = yaml.safe_load(output.read_text())["runner"]["adapter_params"]
+                self.assertEqual(Path(params["data_root"]), (root / configured).resolve())
+                self.assertTrue(Path(params["manifest_path"]).is_absolute())
+                self.assertEqual(params["manifest_split"], "test")
+
     def test_unlimited_selection_and_source_commands_use_actual_counts(self):
         from thesis_testing_tools.pipeline import prepare_seed_configs
         with tempfile.TemporaryDirectory() as directory:
@@ -39,7 +57,7 @@ class ReusableSeedOperationsTests(unittest.TestCase):
             manifest.write_text(json.dumps(entries))
             for cap in (None, 2, 10):
                 run = resolve_seed_run(seed=1, fixed_mean_lr=0.0001, source_manifest=manifest,
-                    source_episodes=cap, habitat_episodes=cap, output_root=root, timestamp=str(cap))
+                    debug_source_episodes=cap, debug_habitat_episodes=cap, output_root=root, timestamp=str(cap))
                 counts = {d: len(entries[d]["test"][:cap]) for d in datasets}
                 self.assertEqual(run.source_episode_counts, counts)
                 self.assertEqual(run.habitat_ids, entries["habitat"]["test"][:cap])
@@ -50,7 +68,8 @@ class ReusableSeedOperationsTests(unittest.TestCase):
                 commands = [pre["command"]] + [c["source_post_command"] for c in conditions if c["source_post_command"]]
                 self.assertEqual(len(commands), 6)
                 for command in commands:
-                    self.assertEqual(json.loads(command[command.index("--source-episode-counts") + 1]), counts)
+                    self.assertNotIn("--source-episode-counts", command)
+                    self.assertNotIn("--num_episodes", command)
 
     def test_resolution_is_read_only_and_preserves_existing_limits(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,7 +79,7 @@ class ReusableSeedOperationsTests(unittest.TestCase):
                                             "go_stanford": {"test": ["a", "b", "c"]}}))
             with patch("thesis_testing_tools.pipeline.generate_action_sequence") as generate:
                 run = resolve_seed_run(seed=7, fixed_mean_lr=0.00005, source_manifest=manifest,
-                                       habitat_episodes=1, source_episodes=2, max_episode_steps=4,
+                                       debug_habitat_episodes=1, debug_source_episodes=2, max_episode_steps=4,
                                        habitat_max_episode_steps=9, output_root=root / "output", timestamp="test")
             generate.assert_not_called()
             self.assertFalse((root / "output").exists())
@@ -74,7 +93,7 @@ class ReusableSeedOperationsTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({**{d: {"test": ["a", "b"]} for d in SOURCE_DATA_IDS.split(",")}, "habitat": {"test": ["352"]}}))
             run = resolve_seed_run(seed=7, fixed_mean_lr=0.00005, source_manifest=manifest,
-                                   habitat_episodes=1, source_episodes=1, max_episode_steps=2,
+                                   debug_habitat_episodes=1, debug_source_episodes=1, max_episode_steps=2,
                                    output_root=root / "output", timestamp="test")
             def actions(episode_id, count, seed_dir, **kwargs):
                 path = seed_dir / "habitat_action_sequences" / "352.json"
@@ -157,7 +176,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({**{d: {"test": ["a", "b"]} for d in SOURCE_DATA_IDS.split(",")}, "habitat": {"test": ["352", "827"]}}))
             run = resolve_seed_run(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest,
-                                   habitat_episodes=3, output_root=root / "output")
+                                   debug_habitat_episodes=3, output_root=root / "output")
             self.assertEqual(run.habitat_ids, ["352", "827"])
             self.assertEqual(run.habitat_episodes, 2)
             self.assertFalse((root / "output").exists())
@@ -177,7 +196,7 @@ class SeedBatchPipelineTests(unittest.TestCase):
                        side_effect=["first.json", RuntimeError("generation failed")]) as generate:
                 with patch("thesis_testing_tools.pipeline.run_stage") as stage:
                     with self.assertRaisesRegex(RuntimeError, "generation failed"):
-                        run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest, habitat_episodes=2,
+                        run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_manifest=manifest, debug_habitat_episodes=2,
                                        source_config=source_template, habitat_base_config=habitat_template,
                                        output_root=root / "output")
                     self.assertEqual([call.args[0] for call in generate.call_args_list], ["352", "827"])
@@ -304,8 +323,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 fixed_mean_calibration=calibration,
                 initial_checkpoint=initial_checkpoint,
                 schedule_shuffle_seed=77,
-                source_episodes=1,
-                habitat_episodes=1,
+                debug_source_episodes=1,
+                debug_habitat_episodes=1,
                 max_episode_steps=2,
                 habitat_max_episode_steps=8,
                 max_route_steps=1,
@@ -361,17 +380,17 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 self.assertIn(f"max_episode_steps: {steps}", config)
                 threshold = "0.31" if command[command.index("--data_id") + 1] == HABITAT_DATA_ID else "0.23"
                 self.assertIn(f"full_replan_threshold: {threshold}", config)
-                self.assertEqual(
-                    command[command.index("--num_episodes") + 1],
-                    "1" if command[command.index("--data_id") + 1] == HABITAT_DATA_ID else "-1",
-                )
+                self.assertNotIn("--num_episodes", command)
 
             source_pre_config = (seed_dir / "source_pre_config.yaml").read_text(
                 encoding="utf-8"
             )
             self.assertIn("max_episode_steps: 2", source_pre_config)
             self.assertIn("max_route_steps: 1", source_pre_config)
-            self.assertIn("eval_dataset_manifest.json", source_pre_config)
+            self.assertIn("selected_source_manifest.json", source_pre_config)
+            selected = json.loads((seed_dir / "selected_source_manifest.json").read_text())
+            self.assertEqual({d: v["test"] for d, v in selected.items()},
+                             json.loads((seed_dir / "run_manifest.json").read_text())["metadata"]["source_episode_order"])
 
             c0_config = (
                 seed_dir / "c0_frozen" / "habitat_config.yaml"
@@ -542,8 +561,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_rejects_invalid_smoke_workload(self) -> None:
-        with self.assertRaisesRegex(ValueError, "source_episodes"):
-            run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, source_episodes=0)
+        with self.assertRaisesRegex(ValueError, "debug_source_episodes"):
+            run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, debug_source_episodes=0)
         for name in ("source_max_episode_steps", "habitat_max_episode_steps"):
             with self.assertRaisesRegex(ValueError, name):
                 run_seed_batch(seed=1, fixed_mean_lr=6.25e-5, **{name: 0})
@@ -565,8 +584,8 @@ class SeedBatchPipelineTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["source_max_episode_steps"], 3)
         self.assertEqual(run.call_args.kwargs["habitat_max_episode_steps"], 8)
         self.assertIsNone(run.call_args.kwargs["max_episode_steps"])
-        self.assertIsNone(run.call_args.kwargs["source_episodes"])
-        self.assertIsNone(run.call_args.kwargs["habitat_episodes"])
+        self.assertIsNone(run.call_args.kwargs["debug_source_episodes"])
+        self.assertIsNone(run.call_args.kwargs["debug_habitat_episodes"])
         self.assertEqual(run.call_args.kwargs["fixed_mean_lr"], 6.25e-5)
         self.assertEqual(run.call_args.kwargs["source_config"], Path("cfg/replay_uniwm_cfg.yaml").resolve())
         self.assertEqual(run.call_args.kwargs["habitat_base_config"], Path("cfg/habitat_uniwm_cfg.yaml").resolve())

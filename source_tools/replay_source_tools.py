@@ -42,11 +42,13 @@ class ReplayEpisodeAdapter(SourceAdapter):
         root_dir = Path(__file__).resolve().parent.parent
         self.data_root = root_dir / data_root
         self.manifest_path = root_dir / manifest_path
-        self.manifest = json.load(self.manifest_path.open("r", encoding="utf-8"))
+        with self.manifest_path.open("r", encoding="utf-8") as handle:
+            self.manifest = json.load(handle)
         self.manifest_split = manifest_split
         
         self.data_id = "replay"
-        self.episode_cursor = 0
+        self.datasets = iter(self.manifest.items())
+        self.episodes = iter(())
         self.current_episode: dict[str, Any] | None = None
         self.current_traj: dict[str, Any] | None = None
         self.image_paths: list[Path] = []
@@ -56,13 +58,21 @@ class ReplayEpisodeAdapter(SourceAdapter):
         self.step_index = 0
         self.last_step: ReplayOutputBundle | None = None
 
-    def reset_ep(self) -> list[ReplayOutputBundle]:
-        self.current_traj_dir = self.traj_dirs[self.episode_cursor]
-        self.current_episode_id = self.manifest[self.data_id][self.manifest_split][self.episode_cursor]
-        self.episode_cursor += 1
+    def next_episode(self) -> list[ReplayOutputBundle] | None:
+        episode_id = next(self.episodes, None)
+        if episode_id is None:
+            dataset = next(self.datasets, None)
+            if dataset is None:
+                return None
+            self.data_id, splits = dataset
+            self.episodes = iter(splits[self.manifest_split])
+            episode_id = next(self.episodes)
+        self.current_episode_id = episode_id
+        self.current_traj_dir = self.data_root / self.data_id / episode_id
 
         traj_dir = self.current_traj_dir
-        self.current_traj = pickle.load((traj_dir / "traj_data.pkl").open("rb"))
+        with (traj_dir / "traj_data.pkl").open("rb") as handle:
+            self.current_traj = pickle.load(handle)
         self.image_paths = sorted(
             [p for p in traj_dir.iterdir() if p.suffix.lower() in [".jpg", ".jpeg", ".png"]],
             key=lambda p: int(p.stem),
@@ -79,22 +89,6 @@ class ReplayEpisodeAdapter(SourceAdapter):
 
         return trajectory_output
     
-    def reset_src(self, data_id: str):
-        self.data_id = data_id
-        self.traj_dirs: list[Path] = []
-        for episode_id in self.manifest[data_id][self.manifest_split]:
-            self.traj_dirs.append(Path(f"{self.data_root}/{data_id}/{episode_id}"))
-            
-        self.episode_cursor = 0
-        self.current_episode: dict[str, Any] | None = None
-        self.current_traj: dict[str, Any] | None = None
-        self.image_paths: list[Path] = []
-        self.images: list[Image.Image] = []
-        self.states_xy_yaw: list[list[float]] = []
-        self.actions: list[list[float]] = []
-        self.step_index = 0
-        self.last_step: ReplayOutputBundle | None = None
-
     def step(self, actions: list[str]) -> list[ReplayOutputBundle]:
         next_actions = self.actions[self.step_index:]
         self.step_index += 1
@@ -159,6 +153,7 @@ class ReplayEpisodeAdapter(SourceAdapter):
     ) -> ReplayOutputBundle:
         step = ReplayOutputBundle(
             episode_id=self.current_episode_id,
+            data_id=self.data_id,
             done=done,
             start_observation=self.images[0],
             goal_observation=self.images[-1],

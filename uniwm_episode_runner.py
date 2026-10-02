@@ -22,6 +22,7 @@ from runtime_scripts.runtime_utils import (
 
 REQUIRED_FIELDS: list[str] = [
     "max_episode_steps",
+    "max_total_episodes",
     "stop_on_wrapper_done",
     "source_file_name",
     "adapter_params",
@@ -49,6 +50,8 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         # Need to normalize these two to ensure proper generation and conversion
         
         validate_config(self.config, REQUIRED_FIELDS)
+        if type(self.config["max_total_episodes"]) is not int or self.config["max_total_episodes"] <= 0:
+            raise ValueError("runner.max_total_episodes must be a positive integer")
         self.full_output_path = full_output_path
 
         self.wrapper = UniWMWrapper(
@@ -68,12 +71,12 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
 
         self.episode_index = 0
 
-    def run_episode(self, data_id: str) -> dict[str, Any]:
+    def run_episode(self, step_results: list[T_OutputBundle]) -> dict[str, Any]:
+        data_id = step_results[0].data_id
         log = self.event_logger
         episode_index = self.episode_index
         setup_key = f"{data_id}/{episode_index}"
         log.feed({"episode_setup": {setup_key: {"outcome": "unfinished"}}})
-        step_results = self.adapter.reset_ep()
         episode_id = str(step_results[0].episode_id)
         converted_obs = self.formatter.convert_from_source(step_results)
         reset_state = self.wrapper.reset_episode(converted_obs, episode_id)
@@ -128,27 +131,30 @@ class UniWMEpisodeRunner(Generic[T_OutputBundle, T_Adapter, T_Formatter]):
         self.episode_index += 1
         return result
 
-    def run_episodes(self, num_episodes: int, data_id: str, full_output_path: Path, source_episode_counts: dict[str, int] | None = None) -> None:
-        if num_episodes == -1:
-            num_episodes = self.config["source_max_episodes"]
-        for source_id in data_id.split(","):
-            self.event_logger.feed({"source_setup": {source_id: {"outcome": "unfinished"}}})
-            self.adapter.reset_src(source_id)
-            self.event_logger.feed({"source_setup": {source_id: {"outcome": "completed"}}})
-            count = source_episode_counts[source_id] if source_episode_counts is not None else num_episodes
-            for _ in range(count):
-                self.run_episode(source_id)
-                key = str(self.episode_index - 1)
-                self.event_logger.feed({"schedule_save": {key: {"outcome": "unfinished"}}})
-                self.wrapper.save_learning_rate_schedule()
-                self.event_logger.feed({"schedule_save": {key: {"outcome": "completed"}}})
-            if self.config["save_model_weights"]:
-                self.event_logger.feed({"checkpoint": {source_id: {"outcome": "unfinished"}}})
-                checkpoint = self.wrapper.engine.save_online_training_state(full_output_path / "final_ckpt")
-                self.event_logger.feed({"checkpoint": {source_id: {"outcome": "completed", "path": str(checkpoint)}}})
-        self.event_logger.feed({"schedule_finalize": {"outcome": "unfinished"}})
+    def run_episodes(self) -> None:
+        log = self.event_logger
+        while True:
+            key = str(self.episode_index)
+            log.feed({"episode_load": {key: {"outcome": "unfinished"}}})
+            initial = self.adapter.next_episode()
+            if initial is None:
+                log.feed({"episode_load": {key: {"outcome": "exhausted"}}})
+                break
+            log.feed({"episode_load": {key: {"outcome": "completed",
+                "data_id": initial[0].data_id, "episode_id": initial[0].episode_id}}})
+            if self.episode_index >= self.config["max_total_episodes"]:
+                raise RuntimeError("Adapter exceeded runner.max_total_episodes before exhaustion")
+            self.run_episode(initial)
+            log.feed({"schedule_save": {key: {"outcome": "unfinished"}}})
+            self.wrapper.save_learning_rate_schedule()
+            log.feed({"schedule_save": {key: {"outcome": "completed"}}})
+        if self.config["save_model_weights"]:
+            log.feed({"checkpoint": {"final": {"outcome": "unfinished"}}})
+            checkpoint = self.wrapper.engine.save_online_training_state(self.full_output_path / "final_ckpt")
+            log.feed({"checkpoint": {"final": {"outcome": "completed", "path": str(checkpoint)}}})
+        log.feed({"schedule_finalize": {"outcome": "unfinished"}})
         self.wrapper.finalize_learning_rate_schedule()
-        self.event_logger.feed({"schedule_finalize": {"outcome": "completed"}})
+        log.feed({"schedule_finalize": {"outcome": "completed"}})
 
     def _load_source_classes(self, data_type: str, bin_step: float, img_size: int) -> tuple[T_Adapter, T_Formatter]:
         source_tools_name = self.config.get("source_file_name")
@@ -196,14 +202,9 @@ if __name__ == '__main__':
     parser.add_argument("--data_id", type=str, default="habitat")
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--run_dir", type=Path)
-    parser.add_argument("--num_episodes", type=int, default=-1)
-    parser.add_argument("--source-episode-counts", type=json.loads,
-                        help="Resolved per-dataset episode counts as a JSON object; overrides --num_episodes")
     parser.add_argument("--seed", type=int,
                         help="Seed Python, NumPy and PyTorch before model initialization.")
     args = parser.parse_args()
-    if args.source_episode_counts is not None:
-        counts = args.source_episode_counts
     if args.seed is not None:
         if not 0 <= args.seed < 2**32:
             parser.error("--seed must be in [0, 2**32)")
@@ -233,6 +234,6 @@ if __name__ == '__main__':
         # Retain changed observations without repeating static environment/settings.
         changed = {key: value for key, value in after.items() if value != before.get(key)}
         log.feed({"runtime": {"after_model": event_values(changed)}, "outcome": "completed"})
-        runner.run_episodes(args.num_episodes, args.data_id, run_dir, args.source_episode_counts)
+        runner.run_episodes()
         log.finish({"outcome": "completed", "episodes": runner.episode_index})
     print("[RUNNER] Ending Run")

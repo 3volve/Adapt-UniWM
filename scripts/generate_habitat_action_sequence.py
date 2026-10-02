@@ -182,7 +182,7 @@ def generate_action_sequence(
     started = time.monotonic()
     adapter = HabitatEpisodeAdapter(**params)
     try:
-        adapter.reset_ep()
+        adapter.next_episode()
         adapter.sim.pathfinder.seed(waypoint_seed)
         agent_id = adapter.sim.habitat_config.default_agent_id
         for space in (adapter.sim.sim_config.agents[agent_id].action_space,

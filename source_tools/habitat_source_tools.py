@@ -118,7 +118,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         event_logger=None,
     ):
         self.event_logger = event_logger
-        self.reset_src()
+        self._initialize_episode_state()
         self.bin_step = float(bin_step)
 
         self.fixed_actions_by_episode: dict[str, list[str]] | None = None
@@ -166,6 +166,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
                 episodes_by_id[str(episode_id)] for episode_id in episode_ids
             ]
 
+        self.selected_episodes = iter(dataset.episodes)
         self.env = habitat.Env(config=self.config, dataset=dataset)
         assert self.env is not None
 
@@ -175,7 +176,11 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.sim: HabitatSim = self.env.sim
         self._update_action_specs()
         
-    def reset_ep(self) -> list[HabitatOutputBundle]:
+    def next_episode(self) -> list[HabitatOutputBundle] | None:
+        episode = next(self.selected_episodes, None)
+        if episode is None:
+            return None
+        self.env.current_episode = episode
         obs: Observations = self.env.reset()
         self._update_action_specs()
         self.current_episode = self.env.current_episode
@@ -216,8 +221,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
             )
         ]
         
-    def reset_src(self, data_id: str = "habitat") -> None:
-        # TODO: Not high prio, but would like to have this start the episodes from the beginning again.
+    def _initialize_episode_state(self) -> None:
         self.current_episode: InstanceImageGoalNavEpisode | Episode | None = None
         self.step_index: int = 0
         self.last_step: HabitatOutputBundle | None = None
@@ -227,8 +231,6 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
         self.episode_fixed_actions: list[str] | None = None
         self.fixed_action_cursor = 0
         
-        # TODO: The main thing left here is to find the function habitat uses to fully reset the env rather than step the episode.
-        # self.current_episode = self.env.
         
     def step(self, actions: list[str]) -> list[HabitatOutputBundle]:
         forced_context = None
@@ -355,6 +357,7 @@ class HabitatEpisodeAdapter(SourceAdapter[HabitatOutputBundle]):
 
         step = HabitatOutputBundle(
             episode_id=episode.episode_id,
+            data_id="habitat",
             done=done,
             start_obs=self.start_obs,
             current_obs=obs,

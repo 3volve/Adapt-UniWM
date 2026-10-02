@@ -197,7 +197,6 @@ def build_torchrun_command(
     config_path: Path,
     data_id: str,
     run_dir: Path,
-    num_episodes: int,
     master_port: int,
     *,
     seed: int | None = None,
@@ -213,8 +212,6 @@ def build_torchrun_command(
         data_id,
         "--run_dir",
         str(run_dir),
-        "--num_episodes",
-        str(num_episodes),
         *([] if seed is None else ["--seed", str(seed)]),
     ]
 
@@ -318,6 +315,12 @@ def write_seed_source_config(
     max_route_steps: int | None = None,
 ) -> None:
     lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
+    import yaml
+    params = yaml.safe_load("".join(lines))["runner"]["adapter_params"]
+    # Workers may execute a copied code tree; data stays in the original repository.
+    data_root = (REPO_ROOT / params["data_root"]).resolve()
+    _replace_yaml_scalar(lines, "data_root", json.dumps(str(data_root)))
+    _replace_yaml_scalar(lines, "manifest_split", "test")
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
     _replace_yaml_scalar(lines, "manifest_path", json.dumps(str(source_manifest)))
     if max_episode_steps is not None:
@@ -651,7 +654,7 @@ def _difference(after: Any, before: Any) -> float | None:
     return float(after) - float(before)
 
 
-def compare_source_episodes(
+def compare_debug_source_episodes(
     source_pre_rows: list[dict[str, Any]],
     source_post_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -964,8 +967,8 @@ def resolve_seed_run(
     initial_checkpoint: Path = BASE_CHECKPOINT,
     source_manifest: Path = DEVELOPMENT_MANIFEST,
     schedule_shuffle_seed: int = 20260827,
-    source_episodes: int | None = None,
-    habitat_episodes: int | None = None,
+    debug_source_episodes: int | None = None,
+    debug_habitat_episodes: int | None = None,
     max_episode_steps: int | None = None,
     source_max_episode_steps: int | None = None,
     habitat_max_episode_steps: int | None = None,
@@ -982,8 +985,8 @@ def resolve_seed_run(
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**32:
         raise ValueError("seed must be an integer in [0, 2**32)")
     for name, value in (
-        ("source_episodes", source_episodes),
-        ("habitat_episodes", habitat_episodes),
+        ("debug_source_episodes", debug_source_episodes),
+        ("debug_habitat_episodes", debug_habitat_episodes),
     ):
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
             raise ValueError(f"{name} must be a positive integer")
@@ -1020,14 +1023,15 @@ def resolve_seed_run(
             or any(not isinstance(ep, str) or not ep for ep in habitat_ids)
             or len(set(habitat_ids)) != len(habitat_ids)):
         raise ValueError(f"{source_manifest}: habitat.test must be a nonempty list of unique episode ID strings")
-    habitat_ids = habitat_ids[:habitat_episodes]
+    habitat_ids = habitat_ids[:debug_habitat_episodes]
     source_order = {}
     for data_id in SOURCE_DATA_IDS.split(","):
         entries = manifest.get(data_id, {}).get("test")
         if (not isinstance(entries, list) or not entries
-                or any(not isinstance(ep, str) or not ep for ep in entries)):
-            raise ValueError(f"{source_manifest}: {data_id}.test must be a nonempty list of episode ID strings")
-        source_order[data_id] = entries[:source_episodes]
+                or any(not isinstance(ep, str) or not ep for ep in entries)
+                or len(set(entries)) != len(entries)):
+            raise ValueError(f"{source_manifest}: {data_id}.test must be a nonempty list of unique episode ID strings")
+        source_order[data_id] = entries[:debug_source_episodes]
     source_counts = {data_id: len(entries) for data_id, entries in source_order.items()}
     habitat_episodes = len(habitat_ids)
 
@@ -1113,11 +1117,9 @@ def prepare_seed_configs(
         source_pre_config,
         SOURCE_DATA_IDS,
         source_pre_dir,
-        -1,
         REPLAY_PORT,
         seed=run.seed,
     )
-    source_pre_command += ["--source-episode-counts", json.dumps(run.source_episode_counts)]
 
     condition_plans: list[dict[str, Any]] = []
     c0_habitat_dir = run.seed_dir / CORE_CONDITIONS[0][0] / "habitat"
@@ -1155,7 +1157,6 @@ def prepare_seed_configs(
             habitat_config,
             HABITAT_DATA_ID,
             habitat_dir,
-            run.habitat_episodes,
             HABITAT_PORT,
             seed=run.seed,
         )
@@ -1176,11 +1177,9 @@ def prepare_seed_configs(
                 source_post_config,
                 SOURCE_DATA_IDS,
                 source_post_dir,
-                -1,
                 REPLAY_PORT,
                 seed=run.seed,
             )
-            source_post_command += ["--source-episode-counts", json.dumps(run.source_episode_counts)]
 
         condition_plans.append(
             {
@@ -1214,7 +1213,11 @@ def prepare_seed_run(run: SeedRun, run_record: RunManifest) -> PreparedSeedRun:
     source_manifest = run.source_manifest
     run_record.capture_environment(ENV_OVERRIDES)
     run_record.snapshot_code()
-    source_manifest = run_record.snapshot(source_manifest, "data_manifest")
+    run_record.snapshot(source_manifest, "data_manifest")
+    source_manifest = run.seed_dir / "selected_source_manifest.json"
+    source_manifest.write_text(json.dumps({data_id: {"test": episodes}
+        for data_id, episodes in run.metadata["source_episode_order"].items()}, indent=2) + "\n", encoding="utf-8")
+    source_manifest = run_record.snapshot(source_manifest, "selected_source_manifest")
     run_record.data["metadata"].update(source_config=str(source_config), habitat_base_config=str(habitat_base_config))
     source_config = run_record.snapshot(source_config, "source_config_template")
     habitat_base_config = run_record.snapshot(habitat_base_config, "habitat_base_config_template")
@@ -1515,8 +1518,8 @@ def add_experiment_arguments(parser):
     parser.add_argument("--initial-checkpoint", type=Path, default=BASE_CHECKPOINT)
     parser.add_argument("--fixed-mean-calibration", type=Path)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--source-episodes", type=int, help="Maximum per source dataset; omitted means all entries")
-    parser.add_argument("--habitat-episodes", type=int, help="Maximum Habitat episodes; omitted means all entries")
+    parser.add_argument("--debug-source-episodes", type=int, help="Maximum per source dataset; omitted means all entries")
+    parser.add_argument("--debug-habitat-episodes", type=int, help="Maximum Habitat episodes; omitted means all entries")
     for name in ("max-episode-steps", "source-max-episode-steps", "habitat-max-episode-steps", "max-route-steps"):
         parser.add_argument("--" + name, type=int)
     parser.add_argument("--schedule-shuffle-seed", type=int, default=20260827)
@@ -1527,7 +1530,7 @@ def experiment_arguments(args):
     """Translate CLI names once for both execution coordinators."""
     values = {name: getattr(args, name) for name in (
         "seed", "fixed_mean_lr", "fixed_mean_calibration", "source_manifest",
-        "initial_checkpoint", "output_root", "source_episodes", "habitat_episodes",
+        "initial_checkpoint", "output_root", "debug_source_episodes", "debug_habitat_episodes",
         "schedule_shuffle_seed", "smoke_test", "max_episode_steps",
         "source_max_episode_steps", "habitat_max_episode_steps", "max_route_steps")}
     values.update(source_config=args.source_cfg, habitat_base_config=args.habitat_base_cfg)

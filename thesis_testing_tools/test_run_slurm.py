@@ -15,25 +15,6 @@ from thesis_testing_tools.run_manifest import write_json, now
 
 
 class SlurmTests(unittest.TestCase):
-    def test_runner_uses_each_dataset_count(self):
-        tree = ast.parse(Path('uniwm_episode_runner.py').read_text())
-        runner = next(n for n in tree.body if isinstance(n, ast.ClassDef) and any(
-            isinstance(m, ast.FunctionDef) and m.name == 'run_episodes' for m in n.body))
-        method = next(n for n in runner.body if isinstance(n, ast.FunctionDef) and n.name == 'run_episodes')
-        scope = {'Path': Path}
-        exec(compile(ast.Module(body=[method], type_ignores=[]), '<runner>', 'exec'), scope)
-        calls = []
-        def episode(dataset):
-            calls.append(dataset)
-            fake.episode_index += 1
-        fake = types.SimpleNamespace(config={'save_model_weights': False}, episode_index=0,
-            event_logger=types.SimpleNamespace(feed=lambda value: None),
-            adapter=types.SimpleNamespace(reset_src=lambda dataset: None),
-            wrapper=types.SimpleNamespace(save_learning_rate_schedule=lambda: None,
-                                          finalize_learning_rate_schedule=lambda: None), run_episode=episode)
-        scope['run_episodes'](fake, 99, 'a,b', Path('.'), {'a': 3, 'b': 1})
-        self.assertEqual(calls, ['a', 'a', 'a', 'b'])
-
     def test_cli_manifest_selection_and_caps(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
             run, _ = self.fixture(Path(temp))
@@ -50,7 +31,7 @@ class SlurmTests(unittest.TestCase):
                 self.assertEqual(counts[first], 3)
                 self.assertEqual(selected.habitat_ids, ['352'])
                 self.assertEqual(selected.metadata['source_episode_order'][first], ['a', 'b', 'c'])
-                slurm.main(args + ['--source-episodes', '1', '--habitat-episodes', '10'])
+                slurm.main(args + ['--debug-source-episodes', '1', '--debug-habitat-episodes', '10'])
                 self.assertEqual(set(submit.call_args.args[1].values()), {1})
 
     def fixture(self, root):
@@ -58,7 +39,7 @@ class SlurmTests(unittest.TestCase):
         manifest.write_text(json.dumps({'habitat': {'test': ['352']},
             **{d: {'test': ['a', 'b']} for d in pipeline.SOURCE_DATA_IDS.split(',')}}))
         run = pipeline.resolve_seed_run(seed=7, fixed_mean_lr=0.00005,
-            source_manifest=manifest, habitat_episodes=1, source_episodes=2,
+            source_manifest=manifest, debug_habitat_episodes=1, debug_source_episodes=2,
             max_episode_steps=2, output_root=root / 'output', timestamp='test')
         resources = dict(repository_root=str(Path.cwd()), cpus=4, memory='32G',
                          time='12:00:00', finalize_time='02:00:00', gres='gpu:1')
@@ -143,7 +124,7 @@ class SlurmTests(unittest.TestCase):
                 self.assertEqual(plan['workload']['source_episode_counts'], registry['source_counts'])
                 source = plan['stages']['source_pre']['command']
                 self.assertIn('--standalone', source)
-                self.assertEqual(json.loads(source[source.index('--source-episode-counts') + 1]), registry['source_counts'])
+                self.assertNotIn('--source-episode-counts', source)
                 def execute(stage, **kwargs):
                     if fail and stage['stage_id'] == 'source_pre':
                         raise subprocess.CalledProcessError(9, stage['command'])

@@ -12,6 +12,7 @@ class OutputBundle:
     source_mode: str = "unknown"
     done: bool = False
     episode_id: str = "-1"
+    data_id: str = ""
 T_OutputBundle = TypeVar("T_OutputBundle", bound=OutputBundle)
 
 class SourceAdapter(ABC, Generic[T_OutputBundle]):
@@ -20,12 +21,9 @@ class SourceAdapter(ABC, Generic[T_OutputBundle]):
     source_mode = "unknown"
 
     @abstractmethod
-    def reset_ep(self) -> list[T_OutputBundle]:
-        pass 
-    
-    @abstractmethod
-    def reset_src(self, data_id: str) -> None:
-        pass 
+    def next_episode(self) -> list[T_OutputBundle] | None:
+        """Load the next selected episode; None means the selection is exhausted."""
+        pass
 
     @abstractmethod
     def step(self, actions: list[str]) -> list[T_OutputBundle]:

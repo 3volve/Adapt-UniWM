@@ -55,3 +55,29 @@ The former sequential single-condition/follow-up modes and `--all-conditions`
 switch are removed: both entry points run C0-C5 seed batches. Scheduling and Slurm
 resource options remain specific to their respective coordinators. The Bash
 launchers run all manifest entries by default and accept explicit debug caps.
+
+## Adapter-owned episode traversal
+
+Preparation validates episode IDs and rejects duplicates within each dataset.
+`--debug-source-episodes` and `--debug-habitat-episodes` truncate the selected
+workload only during preparation. The original manifest is snapshotted unchanged.
+`selected_source_manifest.json` retains source trajectories grouped by dataset;
+all source-pre/post configs reference its saved snapshot. Habitat configs contain
+the selected ordered episode IDs. Replay data paths are made absolute so copied
+Slurm code still accesses the original datasets.
+
+Both adapters implement `next_episode()`, returning initial observations with
+dataset/episode identity, or `None` when the selection is exhausted. Replay moves
+between datasets internally; Habitat explicitly selects each episode before
+resetting the simulator. Loading failures propagate rather than signal exhaustion.
+The runner has no episode-count CLI arguments or dataset-selection loops.
+
+Both runner YAMLs set `max_total_episodes: 100000`. This is an emergency ceiling,
+not a workload cap: exactly that many episodes can finish successfully if the
+adapter then returns `None`; returning another episode raises an error. Existing
+per-episode step limits remain independent. The final checkpoint is saved once,
+after workload exhaustion. Reconciliation uses the saved selection to check
+actual coverage and order.
+
+The standalone `eval_online_*.sh` launchers require a prepared stage YAML as their
+first argument. The general replay template is not a selected workload manifest.

@@ -23,4 +23,4 @@ python -m thesis_testing_tools.run_slurm submit \
     "${cluster_args[@]}" "$@"
 
 # Add --dry-run to inspect the graph without writing files or submitting jobs.
-# For debugging, add explicit --source-episodes / --habitat-episodes and step caps.
+# For debugging, add explicit --debug-source-episodes / --debug-habitat-episodes and step caps.
