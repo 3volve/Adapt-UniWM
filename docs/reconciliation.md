@@ -55,15 +55,27 @@ those inputs as well.
 - Recorded/replayed schedule transition keys, actions, collision/eligibility/skip
   fields, scalars, base learning rate and actual applied replay learning rate.
   Within-episode shuffling is reproduced from the saved seed and aligned schedule.
-- Snapshot hashes, referenced image/checkpoint existence, checkpoint coverage
-  when saving is enabled, and source/schedule lifecycle outcomes.
+- Snapshot hashes, referenced image/checkpoint existence, exactly one `final`
+  checkpoint when saving is enabled, its planned output path (or worker-local
+  `final_ckpt` when no output path is recorded), and source/schedule lifecycle outcomes.
+- Planned input checkpoint versus the saved configuration and startup metadata's
+  actual adapter/processor checkpoint paths. Loading a different checkpoint through
+  `resume_ckpt_path` or `init_lora_ckpt`, or initializing a new adapter, fails these
+  checks. Missing planned input or startup loading evidence remains unknown.
 
 The JSON contains individual `pass`, `fail`, `unknown`, or `not_applicable` checks
 with expected/observed values and stage/event/episode locations where applicable.
 It fingerprints inspected files and records the checker version, code hash and
-path mappings. Checkpoint directories are checked for existence, not loaded or
-declared numerically valid. Images are hashed but not decoded or scored here.
+path mappings. Loaded-checkpoint checks compare recorded paths and initialization
+mode; they do not independently inspect the in-memory model weights. Checkpoint
+directories are checked for existence, not loaded or declared numerically valid.
+Images are hashed but not decoded or scored here.
 This is accounting evidence, not a claim of scientific validity or model quality.
+
+New checkpoint provenance directory hashes sort by case-sensitive relative POSIX
+path strings, so identical directory contents hash identically on Windows and
+Linux. Historical fingerprints are not rewritten; older hashes used native path
+ordering and can differ despite identical per-file hashes.
 
 Reconciliation is an offline derived artifact. It never appends to worker logs,
 changes the pipeline manifest, repairs data, or affects execution. Keeping the

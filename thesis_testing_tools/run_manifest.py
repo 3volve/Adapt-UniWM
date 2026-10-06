@@ -50,7 +50,9 @@ def artifact_fingerprint(path: Path):
         return {"path": str(path), "type": "missing"}
     files = []
     tree_digest = hashlib.sha256()
-    for file_path in sorted(item for item in path.rglob("*") if item.is_file()):
+    # Native Path ordering differs between Windows and POSIX (notably case).
+    for file_path in sorted((item for item in path.rglob("*") if item.is_file()),
+                            key=lambda item: item.relative_to(path).as_posix()):
         relative = file_path.relative_to(path).as_posix()
         size, digest = file_path.stat().st_size, sha256_file(file_path)
         files.append({"relative_path": relative, "bytes": size, "sha256": digest})

@@ -21,15 +21,20 @@ class ReconcileTests(unittest.TestCase):
         self.config = {"runner": {"max_episode_steps": 10, "stop_on_wrapper_done": True,
                                    "adapter_params": {"episode_ids": ["827"]}},
                        "wrapper": {"training_enabled": False, "learning_rate_schedule": False}}
-        self.config["engine"] = {"training": {"hyper_params": {"initial_lr": 0.0001}}}
+        self.config["engine"] = {"training": {"hyper_params": {"initial_lr": 0.0001}},
+                                 "load_model_args": {"model_ckpt": "base_ckpt"}}
         self.stage = dict(name="habitat", stage_id="habitat", data_id="habitat", status="completed",
-                          events="habitat/events.jsonl", run_dir=str(self.worker), config_snapshot="config.yaml")
+                          events="habitat/events.jsonl", run_dir=str(self.worker), config_snapshot="config.yaml",
+                          input_checkpoint_path="base_ckpt")
         self.manifest = dict(schema_version=1, status="completed", metadata={}, stages=[self.stage],
                              references={"pipeline_plan": "pipeline_manifest.json"})
         self.plan = {"stages": [{"run_dir": str(self.worker), "command": ["python"]}]}
         self.save_inputs()
         log = EventLogger(self.worker / "events.jsonl", {"outcome": "completed", "episode_setup": {
             "habitat/0": {"outcome": "completed", "episode_id": "827"}}})
+        log.feed({"runtime": {"after_model": {"model": {"initialization": {
+            "adapter_initialization": "loaded_inference_adapter",
+            "adapter_checkpoint": "base_ckpt", "processor_checkpoint": "base_ckpt"}}}}})
         log.next_step(dict(outcome="completed", data_id="habitat", episode_id="827", episode_index=0,
                            step_idx=0, source_mode="habitat", transition={"outcome": "completed"},
                            action={"requested": "forward", "stop": False},
@@ -220,6 +225,69 @@ class ReconcileTests(unittest.TestCase):
         self.config["engine"]["training"] = False
         self.save_inputs()
         self.assertEqual(self.run_report()["status"], "pass")
+
+    def test_final_checkpoint_coverage_and_output_path(self):
+        checkpoint = self.worker / "final_ckpt"
+        checkpoint.mkdir()
+        self.config["runner"]["save_model_weights"] = True
+        self.stage["output_checkpoint_path"] = str(checkpoint)
+        self.save_inputs()
+        self.mutate(lambda records: records[1].update(checkpoint={
+            "final": {"outcome": "completed", "path": str(checkpoint)}}))
+        self.assertEqual(self.run_report()["status"], "pass")
+        self.mutate(lambda records: records[1]["checkpoint"]["final"].update(path=str(self.worker)))
+        self.assertIn("checkpoint_output_path", self.failures())
+        self.mutate(lambda records: records[1]["checkpoint"]["final"].update(path=None))
+        self.assertIn("checkpoint_coverage", self.failures())
+
+    def test_duplicate_or_failed_final_checkpoint_is_rejected(self):
+        self.config["runner"]["save_model_weights"] = True
+        self.save_inputs()
+        checkpoint = self.worker / "final_ckpt"
+        checkpoint.mkdir()
+        item = {"final": {"outcome": "completed", "path": str(checkpoint)}}
+        self.mutate(lambda records: [r.update(checkpoint=item) for r in records[1:]])
+        self.assertIn("checkpoint_coverage", self.failures())
+        self.mutate(lambda records: records[-1].pop("checkpoint"))
+        self.mutate(lambda records: records[1]["checkpoint"]["final"].update(outcome="failed"))
+        self.assertIn("checkpoint_completed", self.failures())
+
+    def test_loaded_checkpoint_overrides_and_new_adapter_are_rejected(self):
+        for override in ("resume_ckpt_path", "init_lora_ckpt"):
+            with self.subTest(override=override):
+                self.config["engine"]["load_model_args"][override] = "other_ckpt"
+                self.save_inputs()
+                self.mutate(lambda records: records[0]["runtime"]["after_model"]["model"]["initialization"].update(
+                    adapter_checkpoint="other_ckpt", processor_checkpoint="other_ckpt"))
+                self.assertTrue({"loaded_adapter_checkpoint", "loaded_processor_checkpoint"} <= self.failures())
+                del self.config["engine"]["load_model_args"][override]
+        self.mutate(lambda records: records[0]["runtime"]["after_model"]["model"]["initialization"].update(
+            adapter_initialization="new_adapter", adapter_checkpoint=None, processor_checkpoint="base_ckpt"))
+        self.assertTrue({"adapter_loaded_from_checkpoint", "loaded_adapter_checkpoint"} <= self.failures())
+
+    def test_checkpoint_config_mismatch_and_missing_load_evidence(self):
+        self.config["engine"]["load_model_args"]["model_ckpt"] = "wrong_ckpt"
+        self.save_inputs()
+        self.assertIn("configured_checkpoint", self.failures())
+        self.config["engine"]["load_model_args"]["model_ckpt"] = "base_ckpt"
+        self.save_inputs()
+        self.mutate(lambda records: records[0].pop("runtime"))
+        report = self.run_report()
+        self.assertEqual(report["status"], "unknown")
+        self.assertTrue({"adapter_loaded_from_checkpoint", "loaded_adapter_checkpoint", "loaded_processor_checkpoint"}
+                        <= {c["check"] for c in report["checks"] if c["status"] == "unknown"})
+        self.stage.pop("input_checkpoint_path")
+        self.save_inputs()
+        self.assertTrue(any(c["check"] == "loaded_checkpoint" and c["status"] == "unknown"
+                            for c in self.run_report()["checks"]))
+
+    def test_loaded_checkpoint_paths_use_explicit_relocation_mapping(self):
+        self.stage["input_checkpoint_path"] = "/original/base_ckpt"
+        self.save_inputs()
+        self.mutate(lambda records: records[0]["runtime"]["after_model"]["model"]["initialization"].update(
+            adapter_checkpoint="/original/base_ckpt", processor_checkpoint="/original/base_ckpt"))
+        report = Reconciliation(self.root, [("/original", str(self.root))]).run()
+        self.assertEqual(report["status"], "pass", report["checks"])
 
 
 if __name__ == "__main__":

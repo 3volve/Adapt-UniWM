@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import pickle
@@ -16,6 +17,24 @@ from runtime_scripts.event_logger import EventLogger
 
 
 class RunManifestTests(unittest.TestCase):
+    def test_checkpoint_tree_hash_has_portable_case_sensitive_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            contents = {"README.md": b"readme", "adapter.bin": b"weights",
+                        "nested/Z.bin": b"Z", "nested/a.bin": b"a"}
+            for relative, data in contents.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            expected_order = ["README.md", "adapter.bin", "nested/Z.bin", "nested/a.bin"]
+            digest = hashlib.sha256()
+            for relative in expected_order:
+                data = contents[relative]
+                digest.update(f"{relative}\0{len(data)}\0{hashlib.sha256(data).hexdigest()}\n".encode())
+            result = artifact_fingerprint(root)
+            self.assertEqual([f["relative_path"] for f in result["files"]], expected_order)
+            self.assertEqual(result["tree_sha256"], digest.hexdigest())
+
     def test_stage_uses_snapshot_and_indexes_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

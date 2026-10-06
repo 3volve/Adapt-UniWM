@@ -15,7 +15,7 @@ import yaml
 from thesis_testing_tools.generate_metrics import read_events, resolve_image
 from thesis_testing_tools import generate_metrics
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 class InvalidRunData(ValueError):
@@ -94,6 +94,7 @@ class Reconciliation:
             return
         runner = config.get("runner", {})
         wrapper_config = config.get("wrapper", {})
+        self.loaded_checkpoint(stage, config, records[0])
         planned_ceiling = metadata.get("habitat_max_episode_steps" if stage["name"] == "habitat" else "source_max_episode_steps")
         if planned_ceiling is not None:
             self.check("planned_step_ceiling", planned_ceiling, runner.get("max_episode_steps"), stage=name)
@@ -161,8 +162,33 @@ class Reconciliation:
         for record in records:
             self.artifacts(record, path.parent, name)
         if runner.get("save_model_weights"):
-            saved = {key for record in records for key, item in record.get("checkpoint", {}).items() if item.get("path")}
-            self.check("checkpoint_coverage", sorted(observed), sorted(saved), stage=name)
+            saved = [(key, item) for record in records for key, item in record.get("checkpoint", {}).items()
+                     if item.get("path")]
+            self.check("checkpoint_coverage", ["final"], sorted(key for key, _ in saved), stage=name)
+            expected = self.path(stage["output_checkpoint_path"]) if stage.get("output_checkpoint_path") else path.parent / "final_ckpt"
+            for key, item in saved:
+                self.check("checkpoint_output_path", str(expected), str(self.path(item["path"], path.parent)),
+                           stage=name, location=key)
+
+    def loaded_checkpoint(self, stage, config, startup):
+        """Compare the worker's recorded load decisions with its planned input."""
+        name = stage["stage_id"]
+        planned = stage.get("input_checkpoint_path")
+        if not planned:
+            self.note("loaded_checkpoint", "unknown", "No planned input checkpoint path", name)
+            return
+        expected = str(self.path(planned))
+        configured = config.get("engine", {}).get("load_model_args", {}).get("model_ckpt")
+        self.check("configured_checkpoint", expected, str(self.path(configured)), stage=name,
+                   known=configured is not None)
+        initialization = startup.get("runtime", {}).get("after_model", {}).get("model", {}).get("initialization", {})
+        mode = initialization.get("adapter_initialization")
+        self.check("adapter_loaded_from_checkpoint", True,
+                   mode in ("loaded_inference_adapter", "loaded_trainable_adapter"),
+                   stage=name, known=mode is not None)
+        for field in ("adapter_checkpoint", "processor_checkpoint"):
+            self.check("loaded_" + field, expected, str(self.path(initialization.get(field))),
+                       stage=name, known=field in initialization)
 
     def transition(self, record, config, stage):
         location = f"event:{record['_event']['id']}"
