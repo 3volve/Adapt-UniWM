@@ -76,6 +76,22 @@ def thumbnail(path, expected_hash):
     return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def habitat_episode_deltas(workers, tables, metrics):
+    """Use the official episode-pairing rules on saved metric outputs."""
+    baseline = next((w for w in workers if w["stage_id"] == "c0_frozen/habitat"), None)
+    if baseline is None:
+        return {}
+    # CSV fields become the metric generator's canonical comparison inputs.
+    episodes = [{**e, "episode_completed": truth(e["episode_completed"]),
+                 "episode_index": int(e["episode_index"]),
+                 **{m: number(e.get(m)) for m in metrics}} for e in tables["episode_metrics"]]
+    steps = [{**s, "episode_index": int(s["episode_index"]), "step_idx": int(s["step_idx"])}
+             for s in tables["step_metrics"]]
+    return {w["path"]: {(r["data_id"], r["episode_id"]): r for r in
+            gm.compare_source(Path(baseline["path"]), Path(w["path"]), episodes, steps, metrics)}
+            for w in workers if w["name"] == "habitat"}
+
+
 def build_report(root, *, output=None, analysis_dir=None, metrics=("mae", "ssim", "lpips"), path_maps=()):
     root = Path(root).resolve()
     output = Path(output).resolve() if output else root / "run_report.html"
@@ -158,6 +174,8 @@ def build_report(root, *, output=None, analysis_dir=None, metrics=("mae", "ssim"
     issues = [c for c in (reconciliation or {}).get("checks", []) if c["status"] in ("fail", "unknown")]
     metadata = manifest.get("metadata", {})
     condition_rows, coverage_rows, diagnostics_rows, chart_workers, gallery = [], [], [], [], []
+    habitat_deltas = habitat_episode_deltas(workers, tables, metrics_used)
+    pairing_rows = []
     for worker in workers:
         name, path = worker["stage_id"], worker["path"]
         steps = [s for s in tables["step_metrics"] if s["event_file"] == path]
@@ -182,8 +200,15 @@ def build_report(root, *, output=None, analysis_dir=None, metrics=("mae", "ssim"
                                        *[number(row.get(m + "_episode_mean")) for m in ("mae", "ssim", "lpips")]])
         if worker["name"] == "habitat":
             ordered = sorted(episodes, key=lambda e: int(e["episode_index"]))
-            chart_workers.append(dict(name=name, episodes=[dict(x=int(e["episode_index"]), label=e["episode_id"],
-                **{m: number(e.get(m)) for m in ("mae", "ssim", "lpips")}) for e in ordered],
+            chart_episodes = []
+            for e in ordered:
+                paired = habitat_deltas.get(path, {}).get((e["data_id"], e["episode_id"]), {})
+                status = paired.get("status", "frozen_baseline_unavailable")
+                pairing_rows.append([name, e["data_id"], e["episode_id"], status])
+                chart_episodes.append(dict(x=int(e["episode_index"]), label=e["episode_id"],
+                    pairing_status=status, **{m: number(e.get(m)) for m in ("mae", "ssim", "lpips")},
+                    **{m + "_delta": number(paired.get(m + "_post_minus_pre")) for m in ("mae", "ssim", "lpips")}))
+            chart_workers.append(dict(name=name, episodes=chart_episodes,
                 steps=[dict(x=i, label=f"{s['episode_id']} / {s['step_idx']}", episode=s["episode_id"],
                             lr=number(s["applied_learning_rate"]) if truth(s["optimizer_step"]) else None,
                             grad=number(s["grad_norm_before_clip"]), scalar=number(s.get("update_weight"))) for i, s in enumerate(steps)]))
@@ -233,7 +258,8 @@ def build_report(root, *, output=None, analysis_dir=None, metrics=("mae", "ssim"
         links.append(link(reconciliation_path, "Reconciliation"))
     if analysis_manifest:
         links += [link(analysis / filename, filename) for filename in ("analysis_manifest.json", "metric_definitions.json", "step_metrics.csv", "episode_metrics.csv", "source_retention.csv")]
-    provenance = dict(report_version="1.0.0", generated_at=datetime.now(timezone.utc).isoformat(),
+    provenance = dict(report_version="1.1.0", generated_at=datetime.now(timezone.utc).isoformat(),
+                      habitat_comparison="Condition minus C0 on matched completed episodes with identical scored step indices and target hashes; generate_metrics.compare_source",
                       report_script_sha256=gm.sha256(Path(__file__).read_bytes()),
                       template_sha256=gm.sha256(Path(__file__).with_suffix(".html").read_bytes()),
                       run_manifest_sha256=gm.sha256(manifest_path.read_bytes()), event_inputs=fingerprints,
@@ -251,6 +277,7 @@ def build_report(root, *, output=None, analysis_dir=None, metrics=("mae", "ssim"
         "ISSUES": table(["Status", "Worker", "Check", "Location", "Evidence"], [issue_row(c) for c in issues[:8]]) if issues else '<p>No reported failures or unknowns.</p>' if reconciliation else '<p>Reconciliation evidence is unavailable.</p>',
         "ALL_ISSUES": table(["Status", "Worker", "Check", "Location", "Evidence"], [issue_row(c) for c in issues]),
         "RESULTS": table(["Worker", "Dataset", "Scored episodes", "MAE ↓", "SSIM ↑", "LPIPS ↓"], condition_rows),
+        "HABITAT_PAIRING": table(["Worker", "Dataset", "Episode", "Pairing status"], pairing_rows),
         "RETENTION": table(["Worker", "Dataset", "Paired episodes", "Excluded episodes", "Δ MAE", "Δ SSIM", "Δ LPIPS"], retention_rows),
         "COVERAGE": table(["Worker", "Stage", "Worker outcome", "Episodes done/planned", "Attempts", "Completed", "No-ops", "Collisions", "Unfinished", "Failed/interrupted events"], coverage_rows),
         "DIAGNOSTICS": table(["Worker", "Updates", "Uncertain", "Applied LR median [min, max]", "Gradient norm median [min, max]", "Clipped / observed"], diagnostics_rows),

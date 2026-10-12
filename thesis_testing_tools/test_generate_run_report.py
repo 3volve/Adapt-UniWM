@@ -10,8 +10,59 @@ from unittest.mock import patch
 from PIL import Image
 
 from runtime_scripts.event_logger import EventLogger
-from thesis_testing_tools.generate_run_report import build_report
+from thesis_testing_tools.generate_run_report import build_report, habitat_episode_deltas
 from thesis_testing_tools import generate_metrics as gm
+
+
+class HabitatComparisonTests(unittest.TestCase):
+    def setUp(self):
+        self.workers = [dict(stage_id="c0_frozen/habitat", name="habitat", path="frozen"),
+                        dict(stage_id="c5_full/habitat", name="habitat", path="learning")]
+        self.tables = {"episode_metrics": [], "step_metrics": []}
+        # Same episodes in different row and execution orders: pair by identity.
+        for path, episode, index, values in (("frozen", "a", 0, (.6, .4, .8)),
+                ("frozen", "b", 1, (.2, .7, .3)), ("learning", "b", 0, (.3, .6, .4)),
+                ("learning", "a", 1, (.4, .6, .5))):
+            self.tables["episode_metrics"].append(dict(event_file=path, data_id="habitat",
+                episode_id=episode, episode_index=str(index), episode_completed="True",
+                **dict(zip(("mae", "ssim", "lpips"), map(str, values)))))
+            self.tables["step_metrics"].append(dict(event_file=path, data_id="habitat",
+                episode_id=episode, episode_index=str(index), step_idx="0", pair_status="scored",
+                target_sha256="target-" + episode))
+
+    def compare(self):
+        return habitat_episode_deltas(self.workers, self.tables, ("mae", "ssim", "lpips"))
+
+    def test_delta_matches_episode_identity_and_metric_direction(self):
+        comparisons = self.compare()
+        a = comparisons["learning"][("habitat", "a")]
+        self.assertEqual(a["status"], "paired")
+        self.assertAlmostEqual(a["mae_post_minus_pre"], -.2)
+        self.assertAlmostEqual(a["ssim_post_minus_pre"], .2)
+        self.assertAlmostEqual(a["lpips_post_minus_pre"], -.3)
+        self.assertAlmostEqual(comparisons["learning"][("habitat", "b")]["mae_post_minus_pre"], .1)
+        self.assertTrue(all(row["mae_post_minus_pre"] == 0 for row in comparisons["frozen"].values()))
+
+    def test_different_targets_or_step_coverage_do_not_produce_deltas(self):
+        step = self.tables["step_metrics"][-1]
+        for change in (dict(target_sha256="different"), dict(step_idx="1"), dict(pair_status="image_file_missing")):
+            with self.subTest(change=change):
+                original = dict(step)
+                step.update(change)
+                a = self.compare()["learning"][("habitat", "a")]
+                self.assertEqual(a["status"], "image_coverage_mismatch")
+                self.assertIsNone(a["mae_post_minus_pre"])
+                step.update(original)
+
+    def test_partial_missing_episode_and_absent_baseline_remain_unavailable(self):
+        self.tables["episode_metrics"][-1]["episode_completed"] = "False"
+        a = self.compare()["learning"][("habitat", "a")]
+        self.assertEqual(a["status"], "incomplete_episode")
+        self.assertIsNone(a["ssim_post_minus_pre"])
+        self.tables["episode_metrics"].pop(0)
+        self.assertEqual(self.compare()["learning"][("habitat", "a")]["status"], "unmatched_episode")
+        self.workers.pop(0)
+        self.assertEqual(self.compare(), {})
 
 
 class RunReportTests(unittest.TestCase):
@@ -61,6 +112,8 @@ class RunReportTests(unittest.TestCase):
         self.assertTrue(data["gallery"][0]["images"][0].startswith("data:image/png;base64,"))
         self.assertEqual(data["workers"][0]["steps"][0]["lr"], None)
         self.assertEqual(data["workers"][0]["steps"][1]["lr"], 0.001)
+        self.assertIsNone(data["workers"][0]["episodes"][0]["mae_delta"])
+        self.assertEqual(data["workers"][0]["episodes"][0]["pairing_status"], "frozen_baseline_unavailable")
         self.assertNotIn('</script><script>alert(1)</script>', document)
         self.assertNotIn('@@', document)
         for p, raw in originals.items():
@@ -118,11 +171,17 @@ class Element {
  setAttribute(){}
  addEventListener(name,callback){this.listeners[name]=callback;}
 }
-const elements={};for(const id of ['metric','worker','gallery-worker'])elements[id]=new Element('select');
-elements.metric.value='mae';elements['report-data']=new Element('script');elements['report-data'].textContent=JSON.stringify(input.data);
+const elements={};for(const id of ['metric','habitat-view','worker','gallery-worker'])elements[id]=new Element('select');
+elements.metric.value='mae';elements['habitat-view'].value='delta';elements['report-data']=new Element('script');elements['report-data'].textContent=JSON.stringify(input.data);
 global.document={getElementById(id){return elements[id]||(elements[id]=new Element('div'))},createElement:t=>new Element(t),createElementNS:(ns,t)=>new Element(t)};
 vm.runInThisContext(input.script);
-if(!elements.adaptation.children.some(e=>e.tag==='svg') || elements.gallery.children.length!==3)throw Error('Initial charts/gallery missing');
+if(elements.adaptation.children[0].tag!=='p' || elements.gallery.children.length!==3)throw Error('Missing baseline should be unavailable');
+elements['habitat-view'].value='raw';elements['habitat-view'].listeners.change();
+if(!elements.adaptation.children.some(e=>e.tag==='svg'))throw Error('Raw chart missing');
+data.workers[0].episodes[0].mae_delta=-0.2;
+elements['habitat-view'].value='delta';elements['habitat-view'].listeners.change();
+if(!elements.adaptation.children.some(e=>e.tag==='svg'))throw Error('Matched delta chart missing');
+if(!elements.adaptation.children[0].children.some(e=>e.textContent==='Frozen reference (0)'))throw Error('Zero reference missing');
 elements.metric.value='lpips';elements.metric.listeners.change();
 if(elements.adaptation.children[0].tag!=='p')throw Error('Unavailable metric was not labelled');
 elements.worker.listeners.change();elements['gallery-worker'].listeners.change();

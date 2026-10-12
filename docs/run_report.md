@@ -11,8 +11,13 @@ thumbnails are embedded and work offline. Evidence links need the adjacent files
 
 - Reconciliation findings and missing-evidence notices.
 - Official per-worker/dataset MAE, SSIM, LPIPS and matched source-retention deltas.
-  Stage results use completed-episode means. Habitat episode curves can include
-  partial episodes; see completion coverage alongside them.
+  Stage results use completed-episode means. Habitat curves default to condition
+  minus C0 on the same dataset/episode, using the official metric generator's
+  pairing rules: both episodes completed, with identical scored step indices and
+  target-image hashes. Negative MAE/LPIPS or positive SSIM means better than frozen;
+  zero is the frozen reference. Pairing coverage is listed, and unmatched or
+  incomplete episodes remain gaps. The raw-score view retains partial episodes;
+  changes in frozen raw scores reflect episode differences, not optimizer updates.
 - Completed/planned episodes, attempts, completed transitions, no-ops, collisions,
   unfinished attempts and failed/interrupted step events.
 - Confirmed/uncertain updates, applied LR median/range, pre-clipping gradient

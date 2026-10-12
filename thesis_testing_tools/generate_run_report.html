@@ -9,7 +9,11 @@
 @@NOTICES@@
 <section><h2>Execution findings</h2><p class="muted">First eight reconciliation failures or unknowns. A completed process alone does not establish experiment validity.</p>@@ISSUES@@</section>
 <section><h2>Prediction results</h2><p class="muted">Official metric outputs: equal-weight means over completed episodes with scored pairs. Dashes mean unavailable, never zero. Source replay uses forced-action predictions.</p>@@RESULTS@@
-<h3>Habitat adaptation over episode order</h3><label>Metric <select id="metric"><option value="mae">MAE ↓</option><option value="ssim">SSIM ↑</option><option value="lpips">LPIPS ↓</option></select></label><div id="adaptation"></div>
+<h3>Habitat performance relative to the frozen baseline</h3>
+<p class="muted">Default: condition minus C0 on the same dataset and episode, using completed episodes with identical scored steps and target images. Negative MAE/LPIPS or positive SSIM means better than frozen. Zero is the frozen reference. This controls for differences between episodes; it is not a comparison across independent training runs. Raw scores can vary across episodes even without weight updates, and can include partial episodes. Missing or mismatched comparisons remain gaps.</p>
+<label>Metric <select id="metric"><option value="mae">MAE ↓</option><option value="ssim">SSIM ↑</option><option value="lpips">LPIPS ↓</option></select></label>
+<label>View <select id="habitat-view"><option value="delta">Difference from frozen</option><option value="raw">Raw episode scores</option></select></label><div id="adaptation"></div>
+<details><summary>Frozen-baseline pairing coverage</summary>@@HABITAT_PAIRING@@</details>
 <h3>Source retention</h3><p class="muted">Post minus pre, using matched episodes with identical scored target coverage. Positive MAE/LPIPS or negative SSIM indicates deterioration. Unpaired episodes are excluded; reused baselines are not independent measurements.</p>@@RETENTION@@<div id="retention"></div></section>
 <section><h2>Execution and coverage</h2><p class="muted">Counts include all recorded attempts. Collisions and no-ops are legitimate events. “?” means the manifest does not establish planned coverage. Missing workers are listed in reconciliation findings.</p>@@COVERAGE@@</section>
 <section><h2>Adaptation diagnostics</h2><p class="muted">Learning rates summarize confirmed optimizer updates only. Gradients are pre-clipping norms. Clipping uses explicit observed flags; missing flags are excluded from its denominator.</p>@@DIAGNOSTICS@@
@@ -28,16 +32,17 @@ const data=JSON.parse(document.getElementById('report-data').textContent), color
 const node=(tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e};
 const fmt=x=>x===null||x===undefined?'—':Number(x).toPrecision(4);
 function svgNode(tag,attrs,text){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;return e}
-function plot(id,series,key,xlabel,boundaries=[]){
+function plot(id,series,key,xlabel,boundaries=[],zeroReference=false){
  const host=document.getElementById(id);host.replaceChildren();const points=series.flatMap(s=>s.points).filter(p=>p[key]!==null&&p[key]!==undefined);
- if(!points.length){host.append(node('p','No values available.'));return}
+ if(!points.length){host.append(node('p',zeroReference?'No matched frozen-baseline values available. See pairing coverage or select raw scores.':'No values available.'));return}
  const all=series.flatMap(s=>s.points), xmin=Math.min(...all.map(p=>p.x)),xmax=Math.max(xmin+1,...all.map(p=>p.x));
- let ymin=Math.min(...points.map(p=>p[key])),ymax=Math.max(...points.map(p=>p[key]));let pad=(ymax-ymin)*.1||Math.abs(ymax)*.1||.1;ymin-=pad;ymax+=pad;
+ let ymin=Math.min(...points.map(p=>p[key])),ymax=Math.max(...points.map(p=>p[key]));if(zeroReference){ymin=Math.min(ymin,0);ymax=Math.max(ymax,0)}let pad=(ymax-ymin)*.1||Math.abs(ymax)*.1||.1;ymin-=pad;ymax+=pad;
  const x=v=>70+(v-xmin)/(xmax-xmin)*680,y=v=>255-(v-ymin)/(ymax-ymin)*210;
  const svg=svgNode('svg',{viewBox:'0 0 800 305',role:'img','aria-label':key+' by '+xlabel});
  for(let i=0;i<5;i++){const v=ymin+(ymax-ymin)*i/4;svg.append(svgNode('line',{x1:70,y1:y(v),x2:750,y2:y(v),stroke:'#e2e9ef'}),svgNode('text',{x:62,y:y(v)+4,'text-anchor':'end'},fmt(v)))}
  for(let i=0;i<5;i++){const v=xmin+(xmax-xmin)*i/4;svg.append(svgNode('text',{x:x(v),y:278,'text-anchor':'middle'},Number(v.toFixed(1))))}
  svg.append(svgNode('text',{x:400,y:299,'text-anchor':'middle'},xlabel));
+ if(zeroReference)svg.append(svgNode('line',{x1:70,x2:750,y1:y(0),y2:y(0),stroke:'#516478','stroke-dasharray':'6 4'}),svgNode('text',{x:748,y:y(0)-6,'text-anchor':'end'},'Frozen reference (0)'));
  for(const b of boundaries)svg.append(svgNode('line',{x1:x(b),x2:x(b),y1:40,y2:255,stroke:'#a4b4c3','stroke-dasharray':'4 4'}));
  const legend=node('div');legend.className='legend';
  series.forEach((s,index)=>{const color=colors[index%colors.length];let previous=null;
@@ -46,7 +51,7 @@ function plot(id,series,key,xlabel,boundaries=[]){
   const label=node('span',s.name);label.style.setProperty('--series',color);legend.append(label);
  });host.append(svg,legend);
 }
-function metrics(){const key=document.getElementById('metric').value;plot('adaptation',data.workers.map(w=>({name:w.name,points:w.episodes})),key,'Episode order (zero-based)');
+function metrics(){const key=document.getElementById('metric').value,delta=document.getElementById('habitat-view').value==='delta';plot('adaptation',data.workers.map(w=>({name:w.name,points:w.episodes})),delta?key+'_delta':key,'Episode order (zero-based)',[],delta);
  const host=document.getElementById('retention');host.replaceChildren();
  const rows=data.retention.filter(r=>r[key]!==null);if(!rows.length){host.append(node('p','No paired retention values available.'));return}
  const limit=Math.max(...rows.map(r=>Math.abs(r[key])))||1,svg=svgNode('svg',{viewBox:`0 0 1000 ${rows.length*30+45}`,role:'img','aria-label':'Source retention by dataset and condition'});
@@ -60,5 +65,5 @@ function gallery(){const host=document.getElementById('gallery');host.replaceChi
 }
 data.workers.forEach((w,i)=>{const option=node('option',w.name);option.value=i;document.getElementById('worker').append(option)});
 [...new Set(data.gallery.map(g=>g.condition))].forEach(name=>{const option=node('option',name);option.value=name;document.getElementById('gallery-worker').append(option)});
-document.getElementById('metric').addEventListener('change',metrics);document.getElementById('worker').addEventListener('change',diagnostics);document.getElementById('gallery-worker').addEventListener('change',gallery);metrics();diagnostics();gallery();
+document.getElementById('metric').addEventListener('change',metrics);document.getElementById('habitat-view').addEventListener('change',metrics);document.getElementById('worker').addEventListener('change',diagnostics);document.getElementById('gallery-worker').addEventListener('change',gallery);metrics();diagnostics();gallery();
 </script></body></html>
