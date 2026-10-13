@@ -1,83 +1,59 @@
-# Reusable seed-batch operations
+# Pipeline structure
 
-`run_sequential.py` keeps `run_seed_batch()` as the sequential coordinator.
-Its experiment policy is unchanged: one shared source-pre, C0-C5 in order, each
-condition's Habitat episodes in one runner invocation, and source-post after each
-learning condition. C0 records source-pre reuse instead of launching source-post.
+For commands, conditions, and workload settings, see
+[running experiments](running_experiments.md). This guide maps the code used to
+prepare, execute, and record a seed batch.
 
-The reusable functions live in `thesis_testing_tools/pipeline.py`. Both
-`run_sequential.py` and `run_slurm.py` import this library:
+## Responsibilities
 
-| Function | Responsibility |
+| Component | Responsibility |
 | --- | --- |
-| `resolve_seed_run(...)` | Read and validate options/manifest, resolve existing episode and step limits, and return a `SeedRun`. No files or model jobs are created. |
-| `generate_seed_actions(...)` | Generate the shared standalone action files and snapshot them through the preparation owner's manifest. |
-| `prepare_seed_configs(...)` | Write source and condition configurations and construct their existing command descriptions. No model stages run. |
-| `prepare_seed_run(...)` | Capture provenance/snapshots, call action/config preparation, save the existing seed manifest, and return a `PreparedSeedRun`. |
-| `seed_stage(prepared, stage_id)` | Select a source-pre, condition Habitat, or learning-condition source-post command. C0 source-post is not executable. |
-| `execute_seed_stage(stage, ...)` | Run one command and return its outcome/checkpoint references. Exceptions propagate to the caller. |
-| `collect_habitat_artifacts(stage)` | Return checkpoint or controller-schedule fingerprint information without modifying shared provenance. |
-| `record_habitat_artifacts(...)` | Apply that information to the sequential coordinator's provenance and schedule snapshot. |
-| `record_source_pre_reuse(...)` | Write the existing C0 reuse declaration. |
-| `write_condition_summary(...)` | Write a condition summary from the supplied execution records. |
-| `finalize_seed_run(...)` | Write the completed seed summary from collected condition results. |
-| `generate_run_outputs(root)` | Invoke reconciliation and HTML reporting after the execution manifest is closed. |
+| [`pipeline.py`](../thesis_testing_tools/pipeline.py) | Shared experiment arguments, workload selection, action generation, stage configurations, commands, and summaries. |
+| [`run_sequential.py`](../thesis_testing_tools/run_sequential.py) | Sequential stage ordering and execution-manifest ownership. |
+| [`run_slurm.py`](../thesis_testing_tools/run_slurm.py) | Submission, dependencies, worker status, and consolidated finalization. |
+| [`uniwm_episode_runner.py`](../uniwm_episode_runner.py) | Execute a selected workload, advance events, and save final model state. |
+| [Source adapters](../source_tools/) | Load and traverse the selected episodes; translate source-specific actions and observations. |
+| [`run_manifest.py`](../thesis_testing_tools/run_manifest.py) | Capture input/code snapshots, provenance, and execution lifecycle. |
+| [`event_logger.py`](../runtime_scripts/event_logger.py) | Collect component evidence into each process's event file. |
 
-`SeedRun` and `PreparedSeedRun` are plain data containers. They do not schedule,
-execute, serialize themselves, or control lifecycle. Preparation still requires
-one owner of the existing `RunManifest`; it does not launch model stages.
+## Preparation and execution
 
-Individual stages can be called independently:
+`resolve_seed_run()` validates options and episode selections and returns a
+`SeedRun` without writing files or launching jobs. `prepare_seed_run()` captures
+inputs, generates shared actions, writes stage configurations and the seed plan,
+and returns a `PreparedSeedRun`. These objects hold data; the coordinator controls
+execution.
 
-```python
-stage = seed_stage(prepared, "c3_aligned_replay/habitat")
-result = execute_seed_stage(stage)
-artifacts = collect_habitat_artifacts(stage)
-```
+`seed_stage()` selects a prepared command and `execute_seed_stage()` runs it.
+Dependencies are the coordinator's responsibility. Sequential execution supplies
+a `RunManifest` to record each stage. Slurm workers execute saved configurations
+and write their own status files; they do not update the shared manifest.
+Checkpoint and schedule fingerprints are collected for coordinator finalization.
 
-Without `run_manifest`, execution does not open or update a shared manifest. The
-Slurm worker wrapper persists its own result and catches/reports its exception.
-The sequential coordinator passes `run_manifest=run_record`, retaining the existing
-snapshot-backed configuration execution and failure-recording context manager.
-An independent caller must supply the intended saved configuration and arrange
-prerequisites before executing a stage; these functions do not schedule dependencies.
+`finalize_seed_run()` writes the batch summary. After execution evidence closes,
+`generate_run_outputs()` invokes reconciliation and reporting. The sequential
+coordinator also takes this reporting path after handled execution failures;
+the Slurm finalizer assembles worker and scheduler outcomes first. See
+[Slurm execution](slurm_pipeline.md) for its record layout.
 
-`finalize_seed_run()` handles the existing completed-batch summary. On failure,
-the sequential path still lets `RunManifest` record/close the failed execution,
-then invokes `generate_run_outputs()`. The Slurm finalizer collects worker outcomes
-and writes its consolidated manifest before calling reporting. See
-[Slurm execution](slurm_pipeline.md) for dependencies and record ownership.
+## Episode traversal
 
-Both entry points share experiment CLI definitions, manifest selection and stage
-command construction in `pipeline.py`. Omitted episode limits select all entries;
-explicit limits cap each dataset independently. `--smoke-test` only labels the run.
-The former sequential single-condition/follow-up modes and `--all-conditions`
-switch are removed: both entry points run C0-C5 seed batches. Scheduling and Slurm
-resource options remain specific to their respective coordinators. The Bash
-launchers run all manifest entries by default and accept explicit debug caps.
+Preparation checks unique episode IDs within each dataset and applies requested
+debug caps. It snapshots the original manifest and a selected source manifest;
+source-pre/post use the selected snapshot, while Habitat configurations contain
+the ordered episode IDs. Replay data paths are resolved to absolute paths.
 
-## Adapter-owned episode traversal
+Adapters implement `next_episode()`, returning initial observations with dataset
+and episode identity, or `None` at exhaustion. Replay advances between source
+datasets internally. Habitat selects each episode before resetting the simulator.
+Loading errors propagate to the runner.
 
-Preparation validates episode IDs and rejects duplicates within each dataset.
-`--debug-source-episodes` and `--debug-habitat-episodes` truncate the selected
-workload only during preparation. The original manifest is snapshotted unchanged.
-`selected_source_manifest.json` retains source trajectories grouped by dataset;
-all source-pre/post configs reference its saved snapshot. Habitat configs contain
-the selected ordered episode IDs. Replay data paths are made absolute so copied
-Slurm code still accesses the original datasets.
+The runner executes episodes until exhaustion. `runner.max_total_episodes` is a
+safety ceiling: another episode beyond that count raises an error. Per-episode
+step limits control individual episodes. When checkpoint saving is enabled, the
+runner saves the final checkpoint after workload exhaustion. Reconciliation
+compares execution evidence with the saved selection.
 
-Both adapters implement `next_episode()`, returning initial observations with
-dataset/episode identity, or `None` when the selection is exhausted. Replay moves
-between datasets internally; Habitat explicitly selects each episode before
-resetting the simulator. Loading failures propagate rather than signal exhaustion.
-The runner has no episode-count CLI arguments or dataset-selection loops.
-
-Both runner YAMLs set `max_total_episodes: 100000`. This is an emergency ceiling,
-not a workload cap: exactly that many episodes can finish successfully if the
-adapter then returns `None`; returning another episode raises an error. Existing
-per-episode step limits remain independent. The final checkpoint is saved once,
-after workload exhaustion. Reconciliation uses the saved selection to check
-actual coverage and order.
-
-The standalone `eval_online_*.sh` launchers require a prepared stage YAML as their
-first argument. The general replay template is not a selected workload manifest.
+For direct stage execution, the `thesis_testing_tools/eval_online_*.sh` helpers
+accept a prepared stage YAML as their first argument. Start from the preparation
+functions above when arranging a custom execution flow.

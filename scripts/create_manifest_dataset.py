@@ -10,7 +10,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create a symlinked UniWM dataset subset from eval_dataset_manifest.json."
+        description="Create a symlinked source-data subset from an experiment manifest."
     )
 
     parser.add_argument(
@@ -53,9 +53,9 @@ def load_manifest(path: Path) -> dict[str, dict[str, list[str]]]:
         manifest = json.load(f)
 
     return {
-        name: entry
+        name: {split: entry.get(split, []) for split in SPLITS}
         for name, entry in manifest.items()
-        if name != "action_token_vocabulary"
+        if name not in {"action_token_vocabulary", "habitat"}
     }
 
 
@@ -122,9 +122,6 @@ def main() -> None:
                 f"Output directory already exists: {output_data_dir}\n"
                 f"Rerun with --overwrite if you want to recreate it."
             )
-
-    manifest = load_manifest(manifest_path)
-    output_data_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = load_manifest(manifest_path)
     output_data_dir.mkdir(parents=True, exist_ok=True)

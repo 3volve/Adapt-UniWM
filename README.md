@@ -1,417 +1,101 @@
 # Adapt-UniWM
 
-**Online world-model adaptation experiments for UniWM**
+Online world-model adaptation experiments for UniWM.
 
-Adapt-UniWM is the research code and reproducibility artifact for Evo Lamont's
-thesis experiment on stability and plasticity during online visual-navigation
-adaptation. It is a research fork of
-[UniWM](https://github.com/F1y1113/UniWM), not the official UniWM repository. It
-adds a closed-loop Habitat runner, online training, a neuromodulator-inspired
-learning controller, fixed-action evaluation, and a source-retention pipeline.
+Adapt-UniWM is Evo Lamont's research fork of
+[UniWM](https://github.com/F1y1113/UniWM), studying stability and plasticity during
+online visual-navigation adaptation. It combines a Habitat runner, online model
+updates, a neuromodulator-inspired learning controller, and source-retention
+evaluation.
 
-The published experiment compares three conditions on the same Habitat episodes, drawing actions from the same fixed-action reference:
+Each experiment runs six conditions (C0-C5) from the same checkpoint on shared
+Habitat episodes and generated action sequences: frozen, fixed base learning
+rate, fixed mean learning rate, aligned schedule replay, shuffled schedule
+replay, and the full online controller. Source evaluations before and after
+adaptation measure retention on Go Stanford, SACSoN, SCAND, and RECON.
 
-- **Frozen / no learning:** online parameter updates are disabled.
-- **Fixed learning:** online updates use a fixed learning rule without modulators.
-- **Modulated learning:** the same online learning path is controlled by the neuromodulator-inspired signals.
+## Setup
 
-The fixed action reference used by all three configurations is tracked in [`thesis_artifacts/habitat_fixed_actions/no_learning`](thesis_artifacts/habitat_fixed_actions/no_learning/). This replaces the original reference to an ignored local output directory.
-
-### Run the published Habitat configurations
-
-After completing the base and Habitat setup below, launch each condition from the repository root. Use a distinct free `--master_port` if runs overlap.
-
-```bash
-torchrun --nproc_per_node=1 --master_port=20001 uniwm_episode_runner.py \
-  --config_path cfg/habitat_uniwm_cfg_no_learning.yaml \
-  --data_id habitat \
-  --run_dir output/thesis/no_learning/habitat
-
-torchrun --nproc_per_node=1 --master_port=20003 uniwm_episode_runner.py \
-  --config_path cfg/habitat_uniwm_cfg_fixed_learning.yaml \
-  --data_id habitat \
-  --run_dir output/thesis/fixed_learning/habitat
-
-torchrun --nproc_per_node=1 --master_port=20005 uniwm_episode_runner.py \
-  --config_path cfg/habitat_uniwm_cfg_modulated_learning.yaml \
-  --data_id habitat \
-  --run_dir output/thesis/modulated_learning/habitat
-```
-
-The Habitat no-learning configuration also records the controller-derived
-learning-rate schedule without taking optimizer steps. It writes
-`learning_rate_schedule.json` and the deterministically within-episode-shuffled
-`learning_rate_schedule_shuffled.json` in the Habitat run directory.
-
-To train with either saved schedule, use a learning configuration with
-modulators disabled and point `input_path` at that Habitat run directory:
-
-```yaml
-wrapper:
-  training_enabled: true
-  enable_modulators: false
-  learning_rate_schedule:
-    mode: replay
-    input_path: output/thesis/no_learning/habitat
-    shuffled: false  # Set true for the within-episode-shuffled schedule.
-```
-
-Configurations that do not record or replay a schedule use
-`learning_rate_schedule: false`. Replay requires the configured base learning
-rate to match the one recorded in the schedule.
-
-### Run the complete thesis pipeline
-
-`thesis_testing_tools/run_sequential.py` runs the three-stage protocol:
-
-1. **Source pre:** evaluate the common base checkpoint on the source datasets.
-2. **Habitat:** run one online-adaptation condition and save its final adapter.
-3. **Source post:** evaluate that adapted checkpoint on the same source domains
-   to measure retention.
-
-For the paired core experiment, queue all six conditions for one seed with:
-
-```bash
-python thesis_testing_tools/run_sequential.py \
-  --source-cfg replay_uniwm_cfg.yaml \
-  --habitat-base-cfg habitat_uniwm_cfg.yaml \
-  --seed 100 \
-  --fixed-mean-lr "$DEVELOPMENT_MEAN_LR"
-```
-
-C2 requires `--fixed-mean-lr`: supply the mean effective learning rate determined
-from valid Full-controller update opportunities on development data. Set
-`DEVELOPMENT_MEAN_LR` to that calibrated value before running this example.
-C2's configuration is finalized before any model stage; it never estimates its
-rate from the current held-out stream. The batch
-runs source-pre once, starts every C0-C5 Habitat condition from the same initial
-checkpoint, and runs a separate source-post evaluation for C1-C5. Because C0
-does not update the model, its source-post metrics are reused exactly from
-source-pre without launching another model process. C0 records both aligned and
-within-episode-shuffled learning-rate schedules, which C3 and C4 consume from
-C0's Habitat output directory.
-
-`--source-cfg` selects the source-pre/post template. `--habitat-base-cfg`
-selects one shared Habitat template for all six conditions. Bare filenames are
-resolved under `cfg/`; repository-relative and absolute paths also work. These
-arguments default to the files shown above. The pipeline overrides training,
-modulator and schedule settings for each condition, C2's learning rate, and
-the requested workload/checkpoint settings. Other values carry through from
-the selected templates, including the base learning rate (`initial_lr`).
-Action generation also uses the selected Habitat base. Selected templates are
-snapshotted before use, and the generated stage configurations are saved in
-the run directory. Both entry points run a C0-C5 seed batch; the old
-single-condition/follow-up CLI modes have been removed.
-
-The batch is written below `output/thesis_seed_<seed>_<timestamp>/`.
-`seed_manifest.json` records the full planned queue and generated configuration
-paths, while `seed_summary.json` links the completed per-condition summaries.
-
-For debug runs, `--source-max-episode-steps` and `--habitat-max-episode-steps`
-override the shared `--max-episode-steps` limit independently.
-`--smoke-test` labels the run and does not change workload limits. Without a shared or stage-specific override, source
-uses the selected source config limit and Habitat uses the base config limit for all
-conditions. Resolved limits are recorded in the workload metadata.
-
-The batch passes `--seed` to every runner process, including source evaluation.
-Before model initialization, the runner seeds Python, NumPy and PyTorch (CPU
-and CUDA). Seeds must be integers from 0 through 2**32 - 1. Dropout remains
-enabled during training; strict deterministic GPU algorithms are not forced.
-The model seed is recorded in workload metadata and stage commands.
-
-Every new pipeline invocation now has a `run_manifest.json` as its provenance
-entry point. It links organized files rather than embedding large logs or model
-metadata in a single JSON document:
-
-- `run_manifest.json`: run identity, seed/settings, selected episode order for
-  seed batches, input snapshots and hashes, stage commands/status/timing, failure
-  details, and references to plans, checkpoint provenance, and summaries.
-- `provenance/snapshots/`: copies of configuration templates, executed stage
-  configurations, the data manifest, Python implementation/analysis files,
-  generated or reused action references, controller schedule, and any supplied
-  development calibration artifact. Each snapshot has a SHA-256 in the manifest.
-  Model stages execute their saved configuration; seed batches also use the
-  saved source manifest and standalone action sequences.
-- `provenance/environment.json` and `working_tree_diff.json`: Python/packages,
-  platform, GPU/driver query, selected environment and Slurm variables, and Git
-  working-tree changes. Git commit/branch/status are in the master manifest.
-- `<stage>/events.jsonl`, startup record:
-  worker seeds and RNG fingerprints, actual Torch/CUDA/cuDNN determinism and TF32
-  settings, GPU details, LoRA initialization, resolved model settings, dropout,
-  trainable parameters, and optimizer settings. Before-model evidence survives
-  caught initialization failures. Capture observes settings without reseeding or
-  enabling deterministic algorithms.
-- `provenance/artifact_index.json`: relative paths and sizes for saved logs,
-  checkpoints, metrics, tables, figures, and other run files. Large checkpoint
-  hashes remain in `provenance.json` for seed batches; legacy pipelines record
-  checkpoint fingerprints in the master manifest. Checkpoint weights are not
-  duplicated into the snapshot directory.
-
-To preserve the evidence behind C2's supplied rate, also pass
-`--fixed-mean-calibration path/to/development_calibration.json`. This optional
-file can be a JSON report, CSV, or other single calibration record; it is copied
-and hashed. Omission is recorded as `null`. This records the reference and rate;
-it does not validate the calibration methodology or derive a replacement rate.
-
-Existing `seed_manifest.json`, `provenance.json`, `pipeline_manifest.json`, and
-summary files remain available. Follow-up runs get their own master manifest;
-post-only invocations store their manifest and new outputs under
-`source_post_invocations/<timestamp>/` to preserve previous results. References
-to the reused source-pre and Habitat artifacts point outside that subdirectory.
-
-Caught failures and keyboard interrupts retain partial artifacts and a traceback.
-`completed` means execution finished. Automatic legacy metric generation is
-temporarily disabled; smoke coverage is marked `not_evaluated`.
-An uncatchable kill or node loss can leave `running`, which must not be interpreted
-as success. Each runner now writes `events.jsonl` with explicit
-prediction/target availability, update outcomes, skip reasons, and caught failures,
-including when detailed step logging is disabled. See
-[EventLogger](docs/event_logger.md) for the current contract. The coordinator has
-its own event file. Legacy writer implementations are retained but disconnected;
-metric readers are temporarily incompatible. Past-run action replay is retired:
-all-conditions runs generate fresh standalone sequences shared across conditions.
-Sample-count auditing and schedule reconciliation remain a separate pending change.
-Snapshots preserve provenance but do not package external datasets,
-model downloads, or make absolute paths relocatable automatically.
-
-The artifact index is finalized when the invocation exits. After adding offline
-tables or figures inside a run, refresh it from the repository root:
-
-```bash
-python -m thesis_testing_tools.run_manifest "output/thesis_seed_100_<timestamp>"
-```
-
-Both sequential and Slurm execution evaluate all selected manifest entries by
-default. `--debug-source-episodes N` caps each source dataset at its first N entries;
-`--debug-habitat-episodes N` caps Habitat the same way. Smaller splits run in full.
-There is no balancing, repetition, or implicit smoke-test cap. Actual per-dataset
-counts and selected episode order are recorded in the run metadata.
-
-The thesis defines and interprets the reported metrics. The README records where
-the implementation produces them so a reader can trace thesis tables back to
-run artifacts without duplicating the manuscript's methods section.
-
-### Regenerate metrics from EventLogger outputs
-
-The versioned offline metric generator reads worker event files and their saved
-images, producing per-attempt, episode, dataset and optional source-retention
-reports with input/code/output hashes and explicit exclusion counts:
-
-```bash
-python -m thesis_testing_tools.generate_metrics \
-  --events output/my_run/habitat/events.jsonl \
-  --output output/my_run/analysis_v1
-```
-
-See [metric generation](docs/metric_generation.md) for metric definitions,
-pre/post pairing, downloaded-path mappings, dependencies and citation guidance.
-The command can also be used independently of the pipeline's automatic run report.
-
-The pipeline automatically reconciles planned workload against recorded execution
-after finalizing each run, including failed runs. To run the check independently:
-
-```bash
-python -m thesis_testing_tools.reconcile_run output/my_seed_run
-```
-
-See [pipeline reconciliation](docs/reconciliation.md) for checks, exit codes,
-downloaded-path mappings and the separate `reconciliation.json` evidence report.
-
-The pipeline then generates an offline `run_report.html` with results, coverage,
-adaptation diagnostics and prediction examples, using the official metric generator.
-See [run reports](docs/run_report.md) for independent generation and metric reuse.
-
-For the reusable preparation, stage execution and finalization functions, see
-[pipeline structure](docs/pipeline_structure.md).
-
-The sequential entry point is `thesis_testing_tools/run_sequential.py`, paired
-with `run_sequential.sh`. For concurrent C0-C5 seed batches, use `run_slurm.py`
-and `run_slurm.sh`; see [Slurm execution](docs/slurm_pipeline.md), including its
-submission-free `--dry-run` mode. Both entry points use the shared `pipeline.py`.
-
-### Record the experiment workstation
-
-The thesis experiments ran on this reference workstation:
-
-| Component | Recorded configuration |
-| --- | --- |
-| OS | 64-bit Linux, kernel `7.0.0-28-generic` |
-| CPU | AMD Ryzen Threadripper PRO 7965WX, 24 cores / 48 threads |
-| System memory | 125 GiB RAM, 8 GiB swap |
-| GPUs | 2× NVIDIA RTX 6000 Ada Generation, 48 GiB VRAM each |
-| NVIDIA stack | driver 580.173.02; CUDA compiler 12.4 |
-| PyTorch stack | Python 3.10.20; PyTorch 2.4.0+cu121; cuDNN 9.1 |
-
-Two concurrent experiment processes occupied approximately 22 GiB on each GPU
-when the report was collected. That is an observation, not a measured peak or a
-guaranteed minimum-memory requirement; a 24 GiB GPU may be borderline depending
-on allocator state and configuration. The published commands use one process
-per condition.
-
-### Fork provenance and licensing status
-
-Adapt-UniWM contains substantial modifications by Evo Lamont; the main additions are summarized above and are visible in this fork's Git history. The upstream UniWM repository does not currently provide a `LICENSE` file, despite previously displaying an MIT badge. Accordingly, this fork does not assert a repository-wide MIT license. Third-party code, datasets, model weights, and Habitat assets remain subject to their respective terms. Resolve the upstream licensing grant and asset redistribution terms before treating a tagged release as redistributable software.
-
-The included PEFT checkpoint descends from Meta Chameleon through GAIR's Anole
-and the Hugging Face conversion `leloy/Anole-7b-v0.1-hf`. GAIR states that the
-Anole weights follow the Chameleon Research License. Releases containing the
-checkpoint must therefore include that license and the attribution in `NOTICE`,
-and are limited to the uses permitted by those terms.
-
-The exact third-party model terms are included in
-[`docs/CHAMELEON_RESEARCH_LICENSE.txt`](docs/CHAMELEON_RESEARCH_LICENSE.txt).
-
-In this repository, provenance means recording what each external artifact is,
-where it came from, why the experiment needs it, and which terms govern reuse:
-
-| Component | Experimental role | Source and redistribution status |
-| --- | --- | --- |
-| UniWM code | Upstream model and navigation implementation | [UniWM](https://github.com/F1y1113/UniWM); no explicit repository license currently published |
-| Thesis base checkpoint | Common starting PEFT adapter for all three conditions | `checkpoints/base_ckpt`; Chameleon → Anole → Hugging Face conversion → UniWM adapter; Chameleon Research License |
-| Source-domain data | Source-pre/source-post retention evaluation | Downloaded directly from the MIT-labeled [UniWM dataset release](https://huggingface.co/datasets/fly1113/UniWM_Dataset) at a pinned revision; not redistributed by this fork |
-| Habitat-Lab and Habitat-Sim | Online navigation environment | Installed from pinned upstream revisions by `scripts/setup_habitat025_uniwm.sh` |
-| HM3D and InstanceImageNav data | Habitat scenes and evaluation episodes | Acquired separately under the providers' access terms; not vendored here |
-
-## Installation
+Use a Linux environment with an NVIDIA GPU and CUDA support. From the repository
+root, create and activate the base environment:
 
 ```bash
 conda env create -f environment.yml
 conda activate uniwm
 ```
 
-To update an existing base environment in place:
+The model loader uses FlashAttention 2, installed separately from the base
+environment:
 
 ```bash
-conda env update -f environment.yml --prune
-```
-
-### Optional: Install flash-attn
-If your environment supports `flash-attn`, then you can install it separately:
-
-```bash
-# While the uniwm conda environment is active
 conda install -c nvidia cuda
 pip install flash-attn==2.5.9.post1 --no-build-isolation
 ```
 
-## Habitat Setup
+Then prepare the experiment inputs:
 
-For the current Habitat setup inside the existing `uniwm` Python 3.10 environment, see [docs/habitat025_uniwm_setup.md](docs/habitat025_uniwm_setup.md). The reproducible files live in [envs/uniwm-habitat025-addons.yml](envs/uniwm-habitat025-addons.yml), [envs/uniwm-habitat025-pip.txt](envs/uniwm-habitat025-pip.txt), and [scripts/setup_habitat025_uniwm.sh](scripts/setup_habitat025_uniwm.sh).
+1. Install Habitat using the [Habitat setup guide](docs/habitat025_uniwm_setup.md).
+   HM3D scenes and InstanceImageNav episodes must be acquired separately and
+   placed at the paths configured in
+   [`cfg/habitat_uniwm_cfg.yaml`](cfg/habitat_uniwm_cfg.yaml).
+2. Prepare source trajectories following [source-data setup](docs/source_data_setup.md),
+   including the download command and manifest selection.
+3. Use the included [base adapter](checkpoints/base_ckpt/README.md). The model
+   loader also needs access to `leloy/Anole-7b-v0.1-hf`; the full base model is
+   downloaded separately through Hugging Face.
 
-The base `environment.yml` intentionally excludes Habitat. The setup scripts clone `habitat-lab/` and `habitat-sim/` into the repo root as local ignored checkouts rather than vendoring those upstream trees into this fork.
+## Run an experiment
 
-## Implementation
-
-### Data
-
-Source data is intentionally not committed. The source-pre and source-post stages
-use `go_stanford`, `recon`, `sacson`, and `scand` trajectories published in the
-MIT-labeled [UniWM Hugging Face dataset](https://huggingface.co/datasets/fly1113/UniWM_Dataset).
-Download the manifest-selected subset from the pinned upstream revision and
-build the expected `eval_data/` tree with:
-
-```bash
-bash download_eval_dataset.sh
-```
-
-The complete archives are several gigabytes. See
-[`docs/source_data_setup.md`](docs/source_data_setup.md) for provenance, expected
-layout, preprocessing behavior, and which pipeline stages require this data.
-
-### Training
-
-To train the model on multiple datasets, use the following `torchrun` command.
-The frozen thesis helper is [`thesis_testing_tools/train_offline.sh`](thesis_testing_tools/train_offline.sh).
+With the environment active and inputs available, run one sequential seed batch:
 
 ```bash
-torchrun --nproc_per_node={GPU_NUM_PER_NODE} train.py \
-    --model anole \
-    --data go_stanford,scand,sacson,recon \
-    --data_dir ./eval_data \
-    --decoder_type anole \
-    --image_seq_length 784 \
-    --input_format anole \
-    --output /path/to/save/output \
-    --note {experiment_note} \
-    --report_to none \
-    --do_train \
-    --bfloat16
+bash thesis_testing_tools/run_sequential.sh
 ```
 
-### Evaluation
+The launcher supplies seed 100, the development manifest, and a development mean
+learning rate of `6.98e-5`. Review these defaults for your experiment. Outputs go
+under `output/sequential_runs/thesis_seed_<seed>_<timestamp>/`.
 
-To evaluate a trained model, use the command below. The scripts under
-[`thesis_testing_tools`](thesis_testing_tools/) contain the frozen thesis
-examples.
+See [running experiments](docs/running_experiments.md) for condition definitions,
+calibration, configuration, workload selection, and smaller debug runs. For
+concurrent conditions on a cluster, use the [Slurm guide](docs/slurm_pipeline.md).
 
-``` bash
-torchrun --nproc_per_node=<GPU_NUM_PER_NODE> train.py \
-    --model anole \
-    --model_ckpt /path/to/your/checkpoint \
-    --data go_stanford,scand,sacson,recon \
-    --data_dir ./eval_data \
-    --decoder_type anole \
-    --image_seq_length 784 \
-    --input_format anole \
-    --output /path/to/save/eval_results \
-    --note {experiment_note} \
-    --report_to none \
-    \
-    # Choose ONE of the following evaluation flags for different eval mode:
-    --do_single_step_eval
-    # --do_task_level_eval
-    # --do_rollout_eval
+## Inspect results
 
-    # Optional: --use_memory_bank_inference
-```
-#### Evaluation Flags (choose one):
+Start with `run_report.html` in the seed directory. It presents image metrics,
+source retention, execution coverage, adaptation diagnostics, and prediction
+examples. Check its notices and `reconciliation.json` before interpreting results.
+`run_manifest.json` links the execution evidence and saved inputs.
 
-`--do_single_step_eval`: Evaluates the model's performance on a single step of prediction.
+| Guide | Purpose |
+| --- | --- |
+| [Run reports](docs/run_report.md) | Interpret or regenerate the offline HTML report. |
+| [Metric generation](docs/metric_generation.md) | Measurement definitions, exclusions, pairing, and reproducibility. |
+| [Reconciliation](docs/reconciliation.md) | Check planned workload against recorded execution. |
+| [Pipeline structure](docs/pipeline_structure.md) | Find the main execution components when modifying the code. |
+| [EventLogger](docs/event_logger.md) | Understand the event collector's API and record lifecycle. |
 
-`--do_task_level_eval`: Evaluates the model on the full end-to-end task across an entire trajectory. You can optionally enable the memory bank mechanism by adding the `--use_memory_bank_inference` flag to the command. If this flag is omitted, the evaluation runs with the memory bank disabled.
+## Attribution and licensing
 
-`--do_rollout_eval`: Generates a full trajectory autoregressively (i.e., the model uses its own previous predictions and ground truth actions as input for the next step) and evaluates the result.
+For UniWM-native training and evaluation workflows, refer to the
+[upstream repository](https://github.com/F1y1113/UniWM). This fork also builds on
+[Anole](https://arxiv.org/abs/2407.06135) and [MVOT](https://arxiv.org/abs/2501.07542).
 
-## Relationship to upstream work
+This fork does not assert a repository-wide MIT license. Third-party code, data,
+models, and Habitat assets retain their respective terms. Model attribution is
+in [NOTICE](NOTICE); the bundled model terms are in the
+[Chameleon Research License](docs/CHAMELEON_RESEARCH_LICENSE.txt). See the
+[checkpoint README](checkpoints/base_ckpt/README.md) for adapter provenance.
 
-Adapt-UniWM extends the official
-[UniWM implementation](https://github.com/F1y1113/UniWM) with the online
-adaptation runner, fixed-action comparison protocol, learning modulators, and
-source-retention pipeline described above. UniWM's original authors and paper
-remain credited through the upstream citation below.
+## Citation
 
-<p align="center">
-  <img src="assists/comparison.png" alt="UniWM task comparison" width="660"/>
-</p>
+For Adapt-UniWM experiments, cite Evo Lamont's *Adapt-UniWM: Online Adaptation
+Experiments for UniWM* and identify the repository commit used. For reported
+metrics, also identify the analysis manifest as described in the
+[metric guide](docs/metric_generation.md#citing-the-implementation).
 
-The implementation also builds on
-[Anole](https://arxiv.org/abs/2407.06135) and
-[MVOT](https://arxiv.org/abs/2501.07542).
+Please also cite the upstream UniWM paper:
 
-## Scope and limitations
-
-This is research-grade code for reproducing a specific thesis experiment, not a
-general navigation framework or production system. The published configurations
-target the recorded software stack, checkpoint, episode set, and fixed-action
-protocol; results may change with different model conversions, Habitat assets,
-hardware, or dependency versions. Broader methodological limitations and the
-interpretation of results belong in the thesis.
-
-## 🌟 Citation
-
-For the adaptation software and thesis experiment, cite the `thesis-final` repository release:
-
-```bibtex
-@software{lamont2026adaptuniwm,
-  author  = {Evo Lamont},
-  title   = {Adapt-UniWM: Online Adaptation Experiments for UniWM},
-  year    = {2026},
-  version = {thesis-final},
-  url     = {https://github.com/3volve/Adapt-UniWM/tree/thesis-final}
-}
-```
-
-Adapt-UniWM is derived from UniWM. Please also cite the upstream paper:
 ```bibtex
 @misc{dong2025unifiedworldmodelsmemoryaugmented,
       title={Unified World Models: Memory-Augmented Planning and Foresight for Visual Navigation}, 

@@ -1,51 +1,48 @@
-# General run report
+# Run reports
 
-After finalizing execution evidence, the thesis pipeline runs reconciliation and
-then generates `run_report.html` and `run_report_metrics/`. This also happens after
-execution failure, without replacing the original experiment status or exception.
-These derived outputs are referenced by the manifest, after its execution artifact
-index was written. Open the HTML directly in a browser: plots, controls and selected
-thumbnails are embedded and work offline. Evidence links need the adjacent files.
+Open `run_report.html` in the seed directory to inspect results. Plots, controls,
+and selected thumbnails are embedded and work offline; evidence links require
+the adjacent files. The pipeline invokes report generation after reconciliation,
+including after handled execution failures.
 
-## Contents and interpretation
+## Read the results
 
-- Reconciliation findings and missing-evidence notices.
-- Official per-worker/dataset MAE, SSIM, LPIPS and matched source-retention deltas.
-  Stage results use completed-episode means. Habitat curves default to condition
-  minus C0 on the same dataset/episode, using the official metric generator's
-  pairing rules: both episodes completed, with identical scored step indices and
-  target-image hashes. Negative MAE/LPIPS or positive SSIM means better than frozen;
-  zero is the frozen reference. Pairing coverage is listed, and unmatched or
-  incomplete episodes remain gaps. The raw-score view retains partial episodes;
-  changes in frozen raw scores reflect episode differences, not optimizer updates.
-- Completed/planned episodes, attempts, completed transitions, no-ops, collisions,
-  unfinished attempts and failed/interrupted step events.
-- Confirmed/uncertain updates, applied LR median/range, pre-clipping gradient
-  median/range, and clipped/observed flags. Attempt curves mark episode boundaries.
-  C0's unapplied controller scalars are separate from applied learning rates.
-- Deterministic typical-MAE, highest-MAE and lowest-spatial-variation examples per
-  Habitat worker. Variation is mean within-channel spatial standard deviation in
-  RGB [0,1], not a collapse diagnosis. Examples may repeat across categories.
-- Expandable exclusions, settings, provenance hashes and evidence links.
+Start with execution status, reconciliation findings, and missing-evidence
+notices. A report can be partial even when HTML generation succeeds.
 
-C0 source-post reuse is labelled, not presented as an independently measured zero
-delta. Missing values remain unavailable. There are no significance tests or
-multi-seed conclusions. Metric calculations and pairing belong exclusively to
-`generate_metrics.py`; the report reads its outputs.
+| View | Interpretation |
+| --- | --- |
+| Prediction results | Per-worker/dataset MAE, SSIM, and LPIPS, using equal-weight completed-episode means. |
+| Habitat comparison | Condition minus C0 for matched episodes. Negative MAE/LPIPS or positive SSIM means better than frozen; zero is the reference. Unmatched episodes remain gaps. |
+| Raw Habitat scores | Includes available partial-episode scores. Variation in C0 scores reflects episode differences, not parameter updates. |
+| Source retention | Post minus pre on matched episodes. Positive MAE/LPIPS or negative SSIM indicates deterioration. C0 reuse is labelled separately. |
+| Coverage | Planned/completed episodes, attempts, transitions, no-ops, collisions, and incomplete or failed events. |
+| Adaptation diagnostics | Confirmed/uncertain updates, applied learning rates, pre-clipping gradient norms, and clipping flags. C0's unapplied controller scalars are separate. |
+| Prediction examples | Deterministically selected typical-MAE, highest-MAE, and lowest-spatial-variation examples per Habitat worker. Categories can share examples. |
 
-## Commands
+Pairing requires completed episodes with identical scored step indices and target
+image hashes. See [metric generation](metric_generation.md#measurement-definitions)
+for exact scoring, exclusions, and aggregation. Spatial variation measures
+within-channel RGB variation; low variation alone does not establish collapse.
+Missing measurements stay unavailable. The report does not perform significance
+tests or combine seeds into a statistical conclusion.
+
+## Generate or reuse a report
 
 ```bash
 python -m thesis_testing_tools.generate_run_report path/to/seed_run
 ```
 
-The default requests MAE, SSIM and LPIPS in the thesis environment, including the
-official calculator's normal pretrained-weight requirements. Use `--metrics mae`
-for an explicitly MAE-only report. If calculation fails, the HTML prominently
-states why and retains diagnostics extracted through the existing generator's
-functions. It never silently substitutes another image metric.
+This creates `run_report.html` and `run_report_metrics/` using the official
+metric generator. Defaults are MAE, SSIM, and LPIPS, with the dependencies and
+pretrained weights described in the [metric guide](metric_generation.md).
+Use `--metrics mae` for an MAE-only report.
 
-To reuse existing official metrics without recalculation:
+If metric calculation fails, the HTML records the reason and retains available
+execution diagnostics. Missing or unreadable workers are listed and excluded
+from calculation. Inspect notices before using the results.
+
+To reuse existing metric outputs without recalculation:
 
 ```bash
 python -m thesis_testing_tools.generate_run_report path/to/seed_run \
@@ -53,18 +50,18 @@ python -m thesis_testing_tools.generate_run_report path/to/seed_run \
   --output path/to/seed_run/run_report_review2.html
 ```
 
-Existing HTML/analysis outputs are not overwritten. A successful HTML write
-returns 0, including partial reports; inspect notices and reconciliation for
-experiment validity. Invalid top-level input or output-write failure returns 1.
-Missing/unreadable workers are listed and excluded from metric generation.
+Existing HTML and analysis directories are protected. A successful HTML write
+returns **0**, including partial reports. Invalid top-level input or an output
+write failure returns **1**; CLI usage errors return **2**. The exit code does
+not certify the experiment's validity.
 
-For downloaded runs, add repeatable `--path-map OLD=NEW` prefix mappings, e.g.
-`--path-map /cluster/output/seed_run=./seed_run`. External source-pre/image paths
-may need separate mappings. Analysis CSV hashes and event-input hashes/coverage
-are verified before reuse. Gallery files must match the recorded image hashes.
-The HTML includes report/template and input-manifest hashes; the metric analysis
-manifest retains its full calculation provenance.
+For downloaded runs, add repeatable `--path-map OLD=NEW` prefix mappings, such as
+`--path-map /cluster/output/seed_run=./seed_run`. External image/source-pre paths
+may need additional mappings. Reuse verifies analysis CSV hashes and event-input
+hashes/coverage; gallery images must match recorded hashes.
 
-Implementation: one Python module for evidence loading, summaries and selection,
-and one HTML template with native SVG/JavaScript controls. No web server, external
-chart library or separate debug metric implementation is used.
+The HTML records report/template and input-manifest hashes. Calculation
+provenance remains in `run_report_metrics/analysis_manifest.json`. Report files
+are referenced by the run manifest and are produced after its execution artifact
+index; see [running experiments](running_experiments.md#outputs-and-evidence)
+for refreshing that index.

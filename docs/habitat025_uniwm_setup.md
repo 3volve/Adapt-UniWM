@@ -1,114 +1,92 @@
-# Habitat 0.2.5 In `uniwm`
+# Habitat setup
 
-This document captures the working Habitat setup inside the existing `uniwm` conda environment. The target is not PPO training and not a full benchmark runtime. The target is the lightest setup that can later support a custom runner which:
+The adaptation pipeline uses Habitat-Lab and Habitat-Sim `v0.2.5` in the
+Python 3.10 `uniwm` environment. Complete the [base setup](../README.md#setup)
+first. Run the following commands from the repository root on Linux.
 
-- imports `habitat` and `habitat_sim`
-- reaches `InstanceImageNav` task code in Habitat-Lab
-- sends actions into the environment and receives observations back after stepping
-
-## Pinned Baseline
-
-- Python: `3.10`
-- Habitat-Sim source ref: `v0.2.5`
-- Habitat-Lab source ref: `v0.2.5`
-- Build mode: headless source build
-- GUI viewers: disabled
-- Bullet: disabled
-- CUDA: disabled
-- No `habitat-baselines`
-- No datasets, benchmark assets, or test scenes
-
-`InstanceImageNav` is present in Habitat-Lab `v0.2.5`, and this version is a better fit for Python 3.10 than the old `0.2.3` prebuilt-package path.
-
-## Why Source Build
-
-The `aihabitat` prebuilt simulator packages for the older Habitat 0.2.x line do not cover the Python 3.10 shape of `uniwm`. For this workstation, the stable path is:
-
-- install the Linux graphics and build prerequisites into the conda env
-- build `habitat-sim` from source
-- install `habitat-lab` core only in editable mode
-
-That keeps the setup lightweight and repo-trackable while staying compatible with the current UniWM Python version.
-
-## Reproducible Files
-
-- [envs/uniwm-habitat025-addons.yml](../envs/uniwm-habitat025-addons.yml)
-- [envs/uniwm-habitat025-pip.txt](../envs/uniwm-habitat025-pip.txt)
-- [scripts/setup_habitat025_uniwm.sh](../scripts/setup_habitat025_uniwm.sh)
-- [docs/habitat025_uniwm_setup.md](habitat025_uniwm_setup.md)
-
-If we later add task assets, a custom runner, or stricter dependency pins, update these files together.
-
-## Install Flow
-
-From the repo root:
+## Install the simulator and task code
 
 ```bash
+conda activate uniwm
 bash scripts/setup_habitat025_uniwm.sh
 ```
 
-That script will:
+The script installs the [graphics dependencies](../envs/uniwm-habitat025-addons.yml)
+and [Python additions](../envs/uniwm-habitat025-pip.txt), checks out both Habitat
+repositories at `v0.2.5`, builds Habitat-Sim, and installs Habitat-Lab core in
+editable mode. The ignored `habitat-sim/` and `habitat-lab/` checkouts stay at the
+repository root. A C/C++ build toolchain and CMake must be available.
 
-1. Update the existing `uniwm` env with the required conda-side graphics and build packages.
-2. Install the small Python dependency delta needed by Habitat-Lab core.
-3. Clone or checkout `habitat-sim` and `habitat-lab` at `v0.2.5` into repo-root local source directories.
-4. Sync Habitat-Sim submodules.
-5. Build Habitat-Sim from source in headless mode with Bullet and CUDA disabled.
-6. Install Habitat-Lab core only with `--no-deps`.
-7. Verify `import habitat_sim` and `import habitat`.
+The simulator build is headless with Bullet and simulator CUDA support disabled;
+the world model still uses CUDA. Build flags and library paths are maintained in
+the [setup script](../scripts/setup_habitat025_uniwm.sh), including its conda zlib
+and OpenEXR settings. Rerunning it rebuilds the simulator's build directory.
 
-Those repo-root `habitat-sim/` and `habitat-lab/` directories are intentionally gitignored in this fork. They are treated as reproducible local upstream checkouts, not vendored project contents.
+The script finishes by importing both packages and printing their versions and
+locations. It also reports the NumPy metadata conflict: the base environment pins
+NumPy 1.24.3, while Habitat-Sim 0.2.5 declares NumPy below 1.24. Successful imports
+alone do not verify scene loading; perform the check below with your assets.
 
-## Exact Build Shape
+## Install scenes and episodes
 
-The working Habitat-Sim source install used:
+The setup script installs software only. Acquire these assets separately:
 
-- `python setup.py install --cmake --headless --no-bullet --no-update-submodules`
-- `HEADLESS=True`
-- `WITH_BULLET=False`
-- `WITH_CUDA=False`
-- explicit CMake hints into `${CONDA_PREFIX}/include` and `${CONDA_PREFIX}/lib`
-- `OPENEXR_FORCE_INTERNAL_ZLIB=ON`
-- `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+- **HM3D-Semantics v0.2 validation scenes**, including semantic assets and scene
+  configuration files. Follow the access and download instructions in
+  [Habitat-Sim's dataset guide](https://github.com/facebookresearch/habitat-sim/blob/v0.2.5/DATASETS.md).
+- **InstanceImageNav v3 episodes**, linked by the
+  [Habitat Challenge dataset instructions](https://github.com/facebookresearch/habitat-challenge#objectnavimagenav-baselines-and-dd-ppo-training-starter-code):
+  [episode archive](https://dl.fbaipublicfiles.com/habitat/data/datasets/imagenav/hm3d/v3/instance_imagenav_hm3d_v3.zip).
+  Keep the validation directory and any companion content files together.
 
-The `OPENEXR_FORCE_INTERNAL_ZLIB=ON` and `zlib` conda package matter on this workstation. Without them, the build can fall into a bad install path for zlib during the vendored OpenEXR step.
+Match the asset locations to `runner.adapter_params` in
+[`cfg/habitat_uniwm_cfg.yaml`](../cfg/habitat_uniwm_cfg.yaml):
 
-## Current Conflict Note
+| Setting | Configured value |
+| --- | --- |
+| `config_path` | `benchmark/nav/instance_imagenav/instance_imagenav_hm3d_v2.yaml` |
+| `split` | `val` |
+| `data_path` | `data/datasets/instance_imagenav/hm3d/instance_imagenav_hm3d_v3/val/val.json.gz` |
+| `scenes_dir` | `data/scene_datasets` |
 
-One dependency conflict remains at the metadata level:
+`config_path` selects task configuration from the installed Habitat-Lab package.
+The episode archive is v3; its location is supplied separately by `data_path`.
+Place or link the extracted assets at these locations, or edit the path settings
+to match your storage. Run from the repository root so relative paths resolve
+consistently. Preserve scene subdirectories referenced by the episode data.
 
-- `habitat-sim==0.2.5` declares `numpy<1.24.0`
-- `uniwm` currently has `numpy==1.24.3`
+The experiment manifest's `habitat.test` list selects episode IDs from this
+validation dataset. It does not select a different Habitat dataset split.
 
-Current status on this machine:
+## Verify an episode
 
-- `import habitat_sim` succeeds
-- `import habitat` succeeds
-- the install completed without downgrading UniWM's NumPy
+This check constructs the actual adapter, loads the manifest's selected episode
+IDs, and resets the first episode without loading UniWM model weights:
 
-Assessment:
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+import yaml
+from source_tools.habitat_source_tools import HabitatEpisodeAdapter
 
-- likely resolvable by pinning NumPy to `1.23.5` if a runtime issue appears later
-- not changed yet to avoid unnecessary churn in the existing UniWM environment
-- nightly Habitat-Sim is not the preferred fallback right now because the pinned `0.2.5` source build already works and is more reproducible against Habitat-Lab `0.2.5`
+config = yaml.safe_load(Path('cfg/habitat_uniwm_cfg.yaml').read_text())
+manifest = json.loads(Path('cfg/eval_dataset_manifest.json').read_text())
+params = dict(config['runner']['adapter_params'])
+params['episode_ids'] = manifest['habitat']['test']
+params['fixed_action_files_dir'] = None
+adapter = HabitatEpisodeAdapter(**params)
+try:
+    adapter.next_episode()
+    print('Loaded episode:', adapter.current_episode.episode_id)
+    print('Scene:', adapter.current_episode.scene_id)
+finally:
+    adapter.close()
+PY
+```
 
-## Verified Local Result
-
-On April 17, 2026 in the local `uniwm` environment:
-
-- `import habitat_sim` succeeded from the conda env site-packages install
-- `import habitat` succeeded from the editable repo checkout
-- both reported version `0.2.5`
-
-## Historical Note
-
-## Intentionally Out Of Scope
-
-- `habitat-baselines`
-- PPO or DD-PPO training
-- benchmark and test asset downloads
-- InstanceImageNav datasets and scenes
-- middleware code
-- custom runner implementation
-
-Those should be layered on top later, and when they are, this document and the setup script should be extended instead of creating a separate undocumented install path.
+Use the manifest intended for your run in this check. A missing episode ID means
+the selected episode dataset does not contain that ID; a missing scene or asset
+requires checking the extracted layout and configured paths. This checks the
+first selected scene. The [small pipeline run](running_experiments.md#configuration-and-workload)
+then exercises action generation, model execution, and reporting together.

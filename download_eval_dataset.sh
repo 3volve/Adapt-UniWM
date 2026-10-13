@@ -4,9 +4,18 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-manifest="$repo_root/cfg/eval_dataset_manifest.json"
+# Usage: bash download_eval_dataset.sh [MANIFEST] [OUTPUT_DIR]
+if (( $# > 2 )); then
+    echo "Usage: bash download_eval_dataset.sh [MANIFEST] [OUTPUT_DIR]" >&2
+    exit 2
+fi
+manifest="${1:-$repo_root/cfg/eval_dataset_manifest.json}"
+if [[ ! -f "$manifest" ]]; then
+    echo "[ERROR] Manifest not found: $manifest" >&2
+    exit 1
+fi
 source_data_dir="$repo_root/data"
-output_data_dir="$repo_root/eval_data"
+output_data_dir="${2:-$repo_root/eval_data}"
 download_dir="$repo_root/output/dataset_downloads"
 dataset_revision="6585488b03fb5b60be1aba222999fa2a10c4e5b5"
 
@@ -39,11 +48,11 @@ with open(manifest_path, encoding="utf-8") as handle:
 requested = set()
 
 for logical_dataset, entry in manifest.items():
-    if logical_dataset == "action_token_vocabulary":
+    if logical_dataset in {"action_token_vocabulary", "habitat"}:
         continue
 
     for split in ("train", "validation", "test"):
-        for reference in entry[split]:
+        for reference in entry.get(split, []):
             if "/" in reference:
                 ref_source, trajectory_id = reference.split("/", 1)
             else:

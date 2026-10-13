@@ -1,69 +1,49 @@
 # EventLogger
 
-`runtime_scripts/event_logger.py` implements the shared collector used by the
-runner and pipeline coordinator. Existing writer implementations remain in the
-repository but are disconnected. Analysis readers have not been migrated, and
-automatic metric generation is disabled. The standalone
-[metric generator](metric_generation.md) can now analyze completed worker outputs.
-No reconciliation checks were added.
+[`runtime_scripts/event_logger.py`](../runtime_scripts/event_logger.py) collects
+JSON-serializable dictionaries into one process-owned `events.jsonl`. It uses
+only the Python standard library. The runner and coordinator each own a separate
+logger. [Metrics](metric_generation.md) and [reconciliation](reconciliation.md)
+consume saved evidence; experiment execution uses its own runtime state.
 
 ## Runtime integration
 
-The runner passes one collector through component construction. Only the runner
-advances events. Each attempted transition has `transition.outcome`; setup,
-episode completion, schedule saving and checkpoint saving contribute their own
-top-level sections, keyed by episode or source where they may repeat. A save
-failure marks the overall event failed while preserving a completed transition.
-An unfinished nested section means its final outcome was never supplied.
+Components feed the current event; the runner alone advances worker event
+boundaries. Each attempted transition has `transition.outcome`. Episode loading,
+setup, completion, schedule saving, and checkpoint saving contribute separate
+sections. A save failure can mark the event failed while its transition remains
+completed. An unfinished section means its final outcome was not supplied.
 
-The coordinator writes its own `events.jsonl`; `run_manifest.json` indexes worker
-event files. Static provenance snapshots and operational schedules, actions,
-images and checkpoints remain separate artifacts. Runtime execution never reads
-the collector or its output.
+Startup records capture model/environment metadata. Event collection is
+independent of `log_every_step`. Images, checkpoints, actions, schedules, and
+provenance snapshots remain separate artifacts linked from the run evidence.
 
-`log_every_step` no longer suppresses event collection. Legacy `episode_logs.json`,
-`runner_events.jsonl`, `transition_events.jsonl`, per-step/per-episode CSVs and
-runtime-metadata JSON files are no longer produced. Before-model metadata and
-changed after-model observations are in the startup record. Old metric helpers
-are temporarily incompatible; pipeline summaries explicitly mark analysis disabled.
-Smoke workloads still execute, but metric-based coverage is `not_evaluated`.
+## Collector example
 
-Past-run action replay and `--habitat-action-run` are retired. The all-conditions
-pipeline generates standalone action sequences and supplies `fixed_action_files_dir`.
-
-The module uses only the Python standard library. Each worker owns one logger
-and one new JSONL file. There is no cross-worker shared event or combined output.
-
-## Usage
+This demonstrates the collector API; field names other than `_event` are supplied
+by the caller. The runner's producers define the fields required by analysis.
 
 ```python
 from runtime_scripts.event_logger import EventLogger
 
-with EventLogger("output/example/events.jsonl", {"run_id": "example", "seed": 100}) as log:
-    # The constructor has already opened a startup event.
-    log.feed({"outcome": "completed"})
-
+with EventLogger("output/example/events.jsonl", {"seed": 100}) as log:
+    log.feed({"outcome": "completed"})  # Startup event.
     log.next_step({"episode_id": "ep-1", "step_idx": 0})
     log.feed({"training": {"state": "entered"}})
-    log.feed({"training": {"state": "completed", "loss": 0.72, "optimizer_step": True}})
+    log.feed({"training": {"state": "completed", "loss": 0.72}})
     log.feed({"outcome": "completed"})
-
-    log.next_step({"episode_id": "ep-1", "step_idx": 1})
-    log.feed({"action": {"converted": []}, "outcome": "no_op"})
-
-    # Final global details go in their own summary, not into the last step.
-    log.finish({"outcome": "completed", "checkpoint": "output/example/final_ckpt"})
+    log.finish({"outcome": "completed"})
 ```
 
-This produces four lines: startup, step 0, step 1, and run summary. The context
-manager does not finish a second time after an explicit `finish()`.
+This writes startup, step, and run-summary records. Explicit `finish()` prevents
+a second finish on context exit. Use a new output path for each invocation.
 
 ## Lifecycle and ownership
 
 - Construction creates a new file and an in-memory startup event. Existing files
   are rejected, never truncated or appended to by another invocation.
-- `feed(dictionary)` updates only the current in-memory event.
-- `next_step(dictionary=None)` writes the previous event, then opens the next.
+- `feed(fields)` updates only the current in-memory event.
+- `next_step(fields=None)` writes the previous event, then opens the next.
   Its optional dictionary supplies identifiers or other initial fields.
 - `finish(run_details=None)` writes the last event and a run-summary record.
   Further calls to `feed`, `next_step`, or `finish` raise `RuntimeError`.

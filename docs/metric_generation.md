@@ -2,12 +2,10 @@
 
 Method version **1.1.0** is implemented in
 [`thesis_testing_tools/generate_metrics.py`](../thesis_testing_tools/generate_metrics.py).
-It reads EventLogger schema-1 **worker** logs and the images they reference. It
-does not rerun the world model, change checkpoints, read legacy episode logs, or influence
-experiment execution. The pipeline's general run report invokes this generator
-automatically; it can also be run independently after downloading or completing
-an experiment. Version 1.1.0 adds clipping flags and within-channel spatial
-variation diagnostics; image metric formulas and aggregation are unchanged.
+It reads EventLogger schema-1 **worker** logs and their saved images to produce
+image metrics, diagnostic summaries, and source-retention comparisons. The
+pipeline's [run report](run_report.md) invokes it automatically; the commands
+below generate a separate analysis from completed or downloaded runs.
 
 ## Generate reports
 
@@ -15,7 +13,7 @@ From the repository root:
 
 ```bash
 python -m thesis_testing_tools.generate_metrics \
-  --events output/my_run/habitat/events.jsonl \
+  --events output/my_run/c5_full/habitat/events.jsonl \
   --output output/my_run/analysis_v1
 ```
 
@@ -34,16 +32,14 @@ python -m thesis_testing_tools.generate_metrics \
   --output output/my_run/retention_v1
 ```
 
-A frozen condition that reuses source-pre does not have a new source-post worker;
-do not fabricate a second measurement. Its reuse manifest remains the evidence
-for that reuse. This tool currently requires explicit worker paths rather than
-interpreting pipeline reuse manifests automatically.
+C0 reuses source-pre and has no separate source-post worker. Supply explicit
+worker paths for C1-C5 comparisons; the run report labels C0's reuse separately.
 
 Downloaded logs may contain absolute paths from another machine:
 
 ```bash
 python -m thesis_testing_tools.generate_metrics \
-  --events downloaded/run/habitat/events.jsonl \
+  --events downloaded/run/c5_full/habitat/events.jsonl \
   --path-map /cluster/project/output/run=downloaded/run \
   --output downloaded/run/analysis_v1
 ```
@@ -64,8 +60,7 @@ Both images are decoded to RGB at their saved resolution, converted to float32
 in `[0,1]`, and required to have identical shapes. No resizing is performed.
 
 - **MAE:** arithmetic mean absolute difference over all RGB pixels, using float64
-  accumulation. Lower is better. This avoids accumulating the mean in float32 as
-  the older pipeline did; tiny rounding differences are therefore possible.
+  accumulation. Lower is better.
 - **SSIM:** `pytorch_msssim.ssim`, data range 1, Gaussian window size 11 and sigma
   1.5, `K=(0.01,0.03)`, `size_average=True`, `nonnegative_ssim=False`. Higher is
   better. Dimensions below 11 are excluded rather than scored with a smaller window.
@@ -124,8 +119,8 @@ remain distinct from wrapper-level collision-transition counts.
 The report preserves all input logs. Missing terminal run summaries are rejected
 unless `--allow-incomplete` is explicitly set and recorded. Malformed/truncated
 JSON lines remain errors even with that flag. Unwritten in-memory events cannot
-be recovered. These checks define input suitability for analysis; they are not
-the deferred schedule/manifest reconciliation system.
+be recovered. For workload, action, and schedule checks, use
+[reconciliation](reconciliation.md).
 
 To reproduce a report, retain the logs and image artifacts, its source snapshot,
 software versions and pretrained weights. Re-run the recorded settings, using
@@ -143,14 +138,6 @@ the path `thesis_testing_tools/generate_metrics.py`, and method version `1.1.0`.
 For a particular result table, also identify its `analysis_manifest.json` and
 `script_sha256`. This is an implementation citation, not a substitute for citing
 the original SSIM and LPIPS methods in the thesis bibliography.
-
-Suggested wording:
-
-> Metrics were regenerated from saved EventLogger v1 worker records and image
-> artifacts using Adapt-UniWM's offline metric generator, method version 1.1.0
-> (`thesis_testing_tools/generate_metrics.py`, repository revision [commit]).
-> Input hashes, preprocessing, exclusion counts and software versions accompany
-> each result in its analysis manifest.
 
 Validation uses synthetic image pairs with analytically known MAE, unequal episode
 lengths, missing artifacts, moved paths, interrupted logs, late save failures and
