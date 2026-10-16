@@ -46,3 +46,8 @@ source episode per dataset, two Habitat episodes, and ten steps per episode.
 Current reconciliation passed 5,203 checks (15 not applicable). That timing and
 48 GiB device capacity are observations, not minimum requirements or a forecast.
 The next validation step is a small run on the collaborator's hardware.
+
+Handoff checks on 2026-10-16: all 101 lightweight tests passed on Windows with
+Python 3.13.7. Inventory consistency, YAML pins and all remote model/processor
+revision arguments were checked. GPU execution and fresh installation were not
+retested.

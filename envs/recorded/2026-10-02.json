@@ -1,0 +1,403 @@
+{
+  "description": "Recovered execution inventory; not an installable lockfile or fresh-install validation.",
+  "prepared_on": "2026-10-16",
+  "recorded_at": "2026-10-02T11:09:40.759025-07:00",
+  "run_id": "thesis_seed_100_20261002_110940",
+  "execution": {
+    "status": "completed",
+    "git_commit": "8bad90d8ab3dbc158ef967114c6b0e4dec4ac735",
+    "working_tree_status": [
+      "M thesis_testing_tools/run_sequential.py",
+      " M thesis_testing_tools/run_sequential.sh"
+    ],
+    "seed": 100,
+    "source_episode_counts": {
+      "go_stanford": 1,
+      "sacson": 1,
+      "scand": 1,
+      "recon": 1
+    },
+    "habitat_episode_ids": [
+      "827",
+      "352"
+    ],
+    "source_max_episode_steps": 10,
+    "habitat_max_episode_steps": 10,
+    "duration_seconds": 31333.975671797,
+    "fixed_mean_calibration": null
+  },
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "python": "3.10.20 | packaged by conda-forge | (main, Jun 11 2026, 03:31:56) [GCC 14.3.0]",
+  "cpu_count": 48,
+  "driver_version": "580.173.02",
+  "visible_gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA RTX 6000 Ada Generation",
+      "capability": [
+        8,
+        9
+      ],
+      "memory_bytes": 50862161920
+    }
+  ],
+  "torch_version": "2.4.0+cu121",
+  "torch_cuda_build": "12.1",
+  "cudnn_version": 90100,
+  "determinism": {
+    "algorithms_enabled": false,
+    "warn_only": false,
+    "cudnn_deterministic": false,
+    "cudnn_benchmark": false,
+    "cudnn_allow_tf32": true,
+    "matmul_allow_tf32": false,
+    "float32_matmul_precision": "highest"
+  },
+  "stage_environment_overrides": {
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "NCCL_P2P_DISABLE": "1"
+  },
+  "base_model": {
+    "name_or_path": "leloy/Anole-7b-v0.1-hf",
+    "revision": "96df52301e844d8a624a13953051ead4c008343b"
+  },
+  "python_packages": {
+    "GitPython": "3.1.46",
+    "ImageIO": "2.37.3",
+    "Jinja2": "3.1.6",
+    "MarkupSafe": "3.0.3",
+    "PyYAML": "6.0.1",
+    "Pygments": "2.20.0",
+    "accelerate": "0.33.0",
+    "aiohappyeyeballs": "2.6.1",
+    "aiohttp": "3.13.5",
+    "aiosignal": "1.4.0",
+    "annotated-types": "0.7.0",
+    "antlr4-python3-runtime": "4.9.3",
+    "apsw": "3.53.0.0",
+    "argcomplete": "3.6.3",
+    "async-timeout": "5.0.1",
+    "attrs": "26.1.0",
+    "certifi": "2026.2.25",
+    "charset-normalizer": "3.4.7",
+    "click": "8.3.2",
+    "cloudpickle": "3.1.2",
+    "colorama": "0.4.6",
+    "contourpy": "1.3.2",
+    "cycler": "0.12.1",
+    "dask": "2023.4.1",
+    "datasets": "2.20.0",
+    "dill": "0.3.8",
+    "distributed": "2023.4.1",
+    "docker-pycreds": "0.4.0",
+    "dreamsim": "0.2.1",
+    "einops": "0.8.0",
+    "evaluate": "0.4.2",
+    "evo": "1.31.1",
+    "filelock": "3.29.0",
+    "flash-attn": "2.5.9.post1",
+    "fonttools": "4.62.1",
+    "frozenlist": "1.8.0",
+    "fsspec": "2024.5.0",
+    "ftfy": "6.3.1",
+    "gitdb": "4.0.12",
+    "gym": "0.23.0",
+    "gym-notices": "0.1.0",
+    "habitat-lab": "0.2.5",
+    "habitat_sim": "0.2.5",
+    "hf-xet": "1.4.3",
+    "hjson": "3.1.0",
+    "huggingface_hub": "0.36.2",
+    "hydra-core": "1.3.2",
+    "idna": "3.12",
+    "imageio-ffmpeg": "0.6.0",
+    "importlib_metadata": "9.0.0",
+    "kiwisolver": "1.5.0",
+    "lightning-utilities": "0.15.3",
+    "llvmlite": "0.47.0",
+    "locket": "1.0.0",
+    "lpips": "0.1.4",
+    "lz4": "4.4.5",
+    "magnum": "0.0.0",
+    "matplotlib": "3.10.8",
+    "mpmath": "1.3.0",
+    "msgpack": "1.1.2",
+    "multidict": "6.7.1",
+    "multiprocess": "0.70.16",
+    "natsort": "8.4.0",
+    "networkx": "3.4.2",
+    "ninja": "1.11.1.1",
+    "numba": "0.65.1",
+    "numexpr": "2.14.1",
+    "numpy": "1.24.3",
+    "numpy-quaternion": "2023.0.4",
+    "nvidia-cublas-cu12": "12.1.3.1",
+    "nvidia-cuda-cupti-cu12": "12.1.105",
+    "nvidia-cuda-nvrtc-cu12": "12.1.105",
+    "nvidia-cuda-runtime-cu12": "12.1.105",
+    "nvidia-cudnn-cu12": "9.1.0.70",
+    "nvidia-cufft-cu12": "11.0.2.54",
+    "nvidia-curand-cu12": "10.3.2.106",
+    "nvidia-cusolver-cu12": "11.4.5.107",
+    "nvidia-cusparse-cu12": "12.1.0.106",
+    "nvidia-nccl-cu12": "2.20.5",
+    "nvidia-nvjitlink-cu12": "12.9.86",
+    "nvidia-nvtx-cu12": "12.1.105",
+    "omegaconf": "2.3.0",
+    "open_clip_torch": "3.3.0",
+    "opencv-python": "4.11.0.86",
+    "packaging": "24.1",
+    "pandas": "2.3.3",
+    "partd": "1.4.2",
+    "peft": "0.15.2",
+    "pillow": "10.4.0",
+    "pip": "26.1.2",
+    "platformdirs": "4.9.6",
+    "propcache": "0.4.1",
+    "protobuf": "5.29.6",
+    "psutil": "7.2.2",
+    "py-cpuinfo": "9.0.0",
+    "pyarrow": "24.0.0",
+    "pyarrow-hotfix": "0.7",
+    "pydantic": "2.13.3",
+    "pydantic_core": "2.46.3",
+    "pyparsing": "3.3.2",
+    "python-dateutil": "2.9.0.post0",
+    "pytorch-msssim": "1.0.0",
+    "pytz": "2026.1.post1",
+    "regex": "2026.4.4",
+    "requests": "2.32.2",
+    "rosbags": "0.11.1",
+    "ruamel.yaml": "0.19.1",
+    "safetensors": "0.7.0",
+    "scipy": "1.10.1",
+    "seaborn": "0.13.2",
+    "sentencepiece": "0.2.0",
+    "sentry-sdk": "2.58.0",
+    "setproctitle": "1.3.7",
+    "setuptools": "82.0.1",
+    "six": "1.17.0",
+    "smmap": "5.0.3",
+    "sortedcontainers": "2.4.0",
+    "sympy": "1.14.0",
+    "tblib": "3.2.2",
+    "timm": "1.0.26",
+    "tokenizers": "0.19.1",
+    "toolz": "1.1.0",
+    "torch": "2.4.0",
+    "torch-fidelity": "0.3.0",
+    "torchaudio": "2.4.0",
+    "torchmetrics": "1.2.0",
+    "torchvision": "0.19.0",
+    "tornado": "6.5.5",
+    "tqdm": "4.66.4",
+    "transformers": "4.45.0.dev0",
+    "triton": "3.0.0",
+    "typing-inspection": "0.4.2",
+    "typing_extensions": "4.15.0",
+    "tzdata": "2026.1",
+    "urllib3": "2.6.3",
+    "wandb": "0.17.4",
+    "wcwidth": "0.6.0",
+    "wheel": "0.46.3",
+    "xxhash": "3.6.0",
+    "yarl": "1.23.0",
+    "zict": "3.0.0",
+    "zipp": "3.23.1",
+    "zstandard": "0.25.0"
+  },
+  "direct_sources_from_pip_freeze": [
+    "-e git+https://github.com/facebookresearch/habitat-lab.git@17ec6b3c1d6e0f71d2834e62b52a308b567ad843#egg=habitat_lab&subdirectory=habitat-lab",
+    "transformers @ git+https://github.com/leloykun/transformers.git@dae439cb93e7c2ef61943554b7a2f4590c2118cd"
+  ],
+  "local_build_packages": {
+    "magnum": "Recorded as installed from the local Habitat-Sim build tree; absolute path omitted."
+  },
+  "unknown": [
+    "Complete Conda package/build/channel inventory",
+    "nvcc version and CUDA toolkit used to build extensions",
+    "Host C/C++ build compiler (Python's compiler string is not sufficient)",
+    "Habitat-Sim Git revision and actual build flags",
+    "Peak process RAM and GPU memory"
+  ],
+  "setup_recipe_differences": {
+    "cuda_toolkit": "12.1.1 is a proposed build target matching the recorded Torch CUDA 12.1 runtime, not a recovered nvcc version.",
+    "build_tools": "Setup selects setuptools>=75,<80, wheel==0.45.1 and cmake>=3.18,<4; this inventory records later runtime setuptools/wheel, without CMake.",
+    "dependency_conflict": "Habitat-Sim 0.2.5 declares NumPy<1.24; execution used NumPy 1.24.3."
+  },
+  "checkpoint_files": [
+    {
+      "relative_path": "README.md",
+      "bytes": 1865,
+      "sha256": "9b2b379be8d67c6009bbe1ef882a891a7dc77c35406aaad03ae95044f9c3913a",
+      "matches_handoff_git_blob": false
+    },
+    {
+      "relative_path": "action_tokens.json",
+      "bytes": 14399,
+      "sha256": "05d7d5610ae1ce135734568d5de7caf5f0eb651af26ca24dc207c0c781b87638",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "adapter_config.json",
+      "bytes": 14455,
+      "sha256": "af194d3f345edb8f597316b548a1dc9e6524352893805f410fd57bc5c3c99840",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "adapter_model.safetensors",
+      "bytes": 50595560,
+      "sha256": "31502dc5817e3eeab366e647dc3062fe055491c1c70980672224a5a8aa2a2aa1",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "preprocessor_config.json",
+      "bytes": 460,
+      "sha256": "1b06f252be55b327689a882a3a4cf6b3ad4ed33cdead47a9148dbb546f922f0a",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "processor_config.json",
+      "bytes": 101,
+      "sha256": "baa20a366a908d28e2650cb380edd9f705d8959b778b3577cd87c4f2178a6f73",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "rng_state_0.pth",
+      "bytes": 14448,
+      "sha256": "5e66f8681e778f1026768fecbd60f99862b6f5063aed959881bf3ecc14640224",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "rng_state_1.pth",
+      "bytes": 14448,
+      "sha256": "103c1a50b1d760804a020b9e3048a9a3e9b8ec2f3569ca5d67eb23ad2b31a883",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "special_tokens_map.json",
+      "bytes": 700,
+      "sha256": "2a7de61d658bb56d8b23c3d1b06c925a48e3e4a3f220edd9fefdb83263264f3b",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "tokenizer.json",
+      "bytes": 5731173,
+      "sha256": "1e0b6b1d9f94c02fe600c43520ab28031664405a09055eaf19dc2b64acc7b414",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "tokenizer_config.json",
+      "bytes": 3015430,
+      "sha256": "9a1436cb8324e13fd1efe5c3d68368cdd581cfaff1524a73fb1cd548284e44c0",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "trainer_state.json",
+      "bytes": 16062,
+      "sha256": "00975cbf733041df0db62ff70096714bce7b931519168f7086d8194415fe0d76",
+      "matches_handoff_git_blob": true
+    },
+    {
+      "relative_path": "training_args.bin",
+      "bytes": 2384828,
+      "sha256": "c135ae173f73416c5ca025123eece715ed4e7b6d3b4029aebe386bd552ad86b0",
+      "matches_handoff_git_blob": true
+    }
+  ],
+  "stage_environment_consistency": [
+    {
+      "stage": "source_pre",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c0_frozen/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c1_fixed_base/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c1_fixed_base/source_post",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c2_fixed_mean/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c2_fixed_mean/source_post",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c3_aligned_replay/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c3_aligned_replay/source_post",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c4_shuffled_replay/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c4_shuffled_replay/source_post",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c5_full/habitat",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    },
+    {
+      "stage": "c5_full/source_post",
+      "torch_version": "2.4.0+cu121",
+      "base_model_revision": "96df52301e844d8a624a13953051ead4c008343b"
+    }
+  ],
+  "reconciliation_of_saved_evidence": {
+    "status": "pass",
+    "counts": {
+      "pass": 5203,
+      "not_applicable": 15
+    },
+    "method_version": "1.1.0",
+    "implementation_sha256": "2ad9901cccce82de3a9b2fb31008bad72ca67b5962b475c83857685086d24f41",
+    "event_reader_sha256": "c226650425478d7bc5cc2669aa9cb4643afa483aecbd09112bd79eb89797e2a9"
+  },
+  "evidence": [
+    {
+      "path_relative_to_repository": "output/sequential_runs/thesis_seed_100_20261002_110940/provenance/environment.json",
+      "sha256": "a1d4efadc1324e5f999bc486b0adf907958dd72b9b4f7950b3abda948d7e82d4"
+    },
+    {
+      "path_relative_to_repository": "output/sequential_runs/thesis_seed_100_20261002_110940/run_manifest.json",
+      "sha256": "a5acf2d4905a86b7f4b4af9c6f16242ff2aa5d99717f5717d29c0d04c59ed05f"
+    },
+    {
+      "path_relative_to_repository": "output/sequential_runs/thesis_seed_100_20261002_110940/provenance.json",
+      "sha256": "7a26795f0effbc5960cd8c07763a12c5ece9a4c76d6f2b15e5576ce61a26ba75"
+    },
+    {
+      "path_relative_to_repository": "output/sequential_runs/thesis_seed_100_20261002_110940/source_pre/events.jsonl",
+      "sha256": "60bc18533b3ba0e5d3c1cfd8badad478886b19c3efee57b8d8fc00bf50ad2172"
+    },
+    {
+      "path_relative_to_repository": "output/handoff_review_20261015/reconciliation_current.json",
+      "sha256": "b88dc78b7ee0b00f9d99b19a9c56241cfdd765da90a49c36c2a9d91132291a37"
+    }
+  ]
+}
