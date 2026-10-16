@@ -15,7 +15,8 @@ The script installs the [graphics dependencies](../envs/uniwm-habitat025-addons.
 and [Python additions](../envs/uniwm-habitat025-pip.txt), checks out both Habitat
 repositories at `v0.2.5`, builds Habitat-Sim, and installs Habitat-Lab core in
 editable mode. The ignored `habitat-sim/` and `habitat-lab/` checkouts stay at the
-repository root. A C/C++ build toolchain and CMake must be available.
+repository root. CMake is included in the Habitat Conda additions; a C/C++ build
+toolchain must be available on the machine.
 
 The simulator build is headless with Bullet and simulator CUDA support disabled;
 the world model still uses CUDA. Build flags and library paths are maintained in

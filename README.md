@@ -16,8 +16,9 @@ adaptation measure retention on Go Stanford, SACSoN, SCAND, and RECON.
 
 ## Setup
 
-Use a Linux environment with an NVIDIA GPU and CUDA support. From the repository
-root, create and activate the base environment:
+Use Linux x86_64 with an NVIDIA GPU. The [recorded working environment](docs/working_environment.md)
+identifies the tested hardware/software and remaining setup uncertainties.
+From the repository root, create and activate the base environment:
 
 ```bash
 conda env create -f environment.yml
@@ -28,9 +29,14 @@ The model loader uses FlashAttention 2, installed separately from the base
 environment:
 
 ```bash
-conda install -c nvidia cuda
+conda install -c nvidia/label/cuda-12.1.1 cuda=12.1.1
 pip install flash-attn==2.5.9.post1 --no-build-isolation
 ```
+
+CUDA 12.1.1 is the proposed build-toolkit target for the recorded Torch CUDA 12.1
+runtime; the workstation's actual compiler/toolkit was not captured. On a cluster,
+an administrator-provided CUDA 12.1 toolkit can serve this role. This revised
+installation recipe still needs a fresh-machine pilot.
 
 Then prepare the experiment inputs:
 
@@ -42,7 +48,8 @@ Then prepare the experiment inputs:
    including the download command and manifest selection.
 3. Use the included [base adapter](checkpoints/base_ckpt/README.md). The model
    loader also needs access to `leloy/Anole-7b-v0.1-hf`; the full base model is
-   downloaded separately through Hugging Face.
+   downloaded separately through Hugging Face at the revision pinned in
+   [`scripts/load_model.py`](scripts/load_model.py).
 
 ## Run an experiment
 

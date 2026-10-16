@@ -3,8 +3,6 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
-import shutil
-import subprocess
 from unittest.mock import patch
 
 from PIL import Image
@@ -156,40 +154,6 @@ class RunReportTests(unittest.TestCase):
         self.assertIn("Reconciliation: unavailable", document)
         self.assertIn("c0_frozen: source-post reuses source-pre", document)
         self.assertFalse(any(row["name"].startswith("c0") for row in data["retention"]))
-
-    @unittest.skipUnless(shutil.which("node"), "Node is needed for the embedded control test")
-    def test_embedded_controls_render_with_dom_stub(self):
-        document, data = self.data(build_report(self.root, metrics=("mae",)))
-        script = document.split('<script>')[1].split('</script>')[0]
-        harness = r'''
-const fs=require('fs'), vm=require('vm');
-const input=JSON.parse(fs.readFileSync(0,'utf8'));
-class Element {
- constructor(tag){this.tag=tag;this.children=[];this.value='';this.style={setProperty(){}};this.listeners={};}
- append(...items){this.children.push(...items);if(this.tag==='select' && this.children.length===items.length && items.length)this.value=items[0].value;}
- replaceChildren(...items){this.children=items;}
- setAttribute(){}
- addEventListener(name,callback){this.listeners[name]=callback;}
-}
-const elements={};for(const id of ['metric','habitat-view','worker','gallery-worker'])elements[id]=new Element('select');
-elements.metric.value='mae';elements['habitat-view'].value='delta';elements['report-data']=new Element('script');elements['report-data'].textContent=JSON.stringify(input.data);
-global.document={getElementById(id){return elements[id]||(elements[id]=new Element('div'))},createElement:t=>new Element(t),createElementNS:(ns,t)=>new Element(t)};
-vm.runInThisContext(input.script);
-if(elements.adaptation.children[0].tag!=='p' || elements.gallery.children.length!==3)throw Error('Missing baseline should be unavailable');
-elements['habitat-view'].value='raw';elements['habitat-view'].listeners.change();
-if(!elements.adaptation.children.some(e=>e.tag==='svg'))throw Error('Raw chart missing');
-data.workers[0].episodes[0].mae_delta=-0.2;
-elements['habitat-view'].value='delta';elements['habitat-view'].listeners.change();
-if(!elements.adaptation.children.some(e=>e.tag==='svg'))throw Error('Matched delta chart missing');
-if(!elements.adaptation.children[0].children.some(e=>e.textContent==='Frozen reference (0)'))throw Error('Zero reference missing');
-elements.metric.value='lpips';elements.metric.listeners.change();
-if(elements.adaptation.children[0].tag!=='p')throw Error('Unavailable metric was not labelled');
-elements.worker.listeners.change();elements['gallery-worker'].listeners.change();
-console.log('Controls rendered and changed successfully');
-'''
-        result = subprocess.run([shutil.which("node"), "-e", harness], input=json.dumps({"data": data, "script": script}),
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

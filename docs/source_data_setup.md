@@ -6,7 +6,8 @@ The Habitat stage uses [separate scenes and episodes](habitat025_uniwm_setup.md)
 
 ## Download and prepare
 
-From the repository root, with the `uniwm` environment active and `wget` available:
+From the repository root, with the `uniwm` environment active (`wget` is included
+in the base environment):
 
 ```bash
 bash download_eval_dataset.sh

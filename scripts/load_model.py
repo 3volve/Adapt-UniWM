@@ -5,6 +5,10 @@ from peft.peft_model import PeftModel
 from transformers import AutoProcessor
 from scripts.action_utils import ActionTokenVocabulary
 
+BASE_MODEL = "leloy/Anole-7b-v0.1-hf"
+# Resolved model revision recorded by the completed 2026-10-02 GPU run.
+BASE_MODEL_REVISION = "96df52301e844d8a624a13953051ead4c008343b"
+
 def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
     print("image_seq_length received:", args.image_seq_length)
     model_name = args.model
@@ -19,7 +23,8 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
             from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
             print("Loading MemoryBankAnoleForConditionalGeneration for prediction task")
             model = MemoryBankAnoleForConditionalGeneration.from_pretrained(
-                "leloy/Anole-7b-v0.1-hf",
+                BASE_MODEL,
+                revision=BASE_MODEL_REVISION,
                 device_map="cuda",
                 torch_dtype=torch.bfloat16,
                 attn_implementation="flash_attention_2",
@@ -28,7 +33,8 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
         else:
             from uniwm.wrapped_visualizer import AnoleforConditionalGeneration
             model = AnoleforConditionalGeneration.from_pretrained(
-                "leloy/Anole-7b-v0.1-hf",
+                BASE_MODEL,
+                revision=BASE_MODEL_REVISION,
                 device_map="cuda",
                 torch_dtype=torch.bfloat16,
                 attn_implementation="flash_attention_2",
@@ -56,7 +62,8 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
         else:
             print("Loading processor from base.")
             processor = AutoProcessor.from_pretrained(
-                "leloy/Anole-7b-v0.1-hf",
+                BASE_MODEL,
+                revision=BASE_MODEL_REVISION,
                 image_seq_length=image_token_num,
             )
 
@@ -146,11 +153,12 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
             'processor': processor,
             'model': lora_model,
             'initialization_metadata': {
-                'base_model': 'leloy/Anole-7b-v0.1-hf',
+                'base_model': BASE_MODEL,
+                'base_model_revision': BASE_MODEL_REVISION,
                 'adapter_initialization': adapter_initialization,
                 'adapter_checkpoint': (init_lora_ckpt_path or peft_ckpt_path)
                     if adapter_initialization != 'new_adapter' else None,
-                'processor_checkpoint': processor_ckpt_path or 'leloy/Anole-7b-v0.1-hf',
+                'processor_checkpoint': processor_ckpt_path or BASE_MODEL,
                 'embeddings_resized': model_embedding_size != tokenizer_size,
             },
         }

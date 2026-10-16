@@ -2,9 +2,13 @@ name: uniwm
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.10.20
   - pip
   - git
+  - wget
+  # Habitat-Sim uses setup.py install; retain its installer support.
+  - setuptools>=75,<80
+  - wheel=0.45.1
   - pip:
       # Base UniWM environment only.
 
@@ -14,11 +18,13 @@ dependencies:
       #   - scripts/setup_habitat025_uniwm.sh
 
       # flash-attn is installed separately via:
-      #   - conda install -c nvidia cuda
+      #   - conda install -c nvidia/label/cuda-12.1.1 cuda=12.1.1
       #   - pip install flash-attn==2.5.9.post1 --no-build-isolation
-      - torch==2.4.0
-      - torchvision==0.19.0
-      - torchaudio==2.4.0
+      # Match the recorded Torch CUDA runtime; see docs/working_environment.md.
+      - --extra-index-url https://download.pytorch.org/whl/cu121
+      - torch==2.4.0+cu121
+      - torchvision==0.19.0+cu121
+      - torchaudio==2.4.0+cu121
       - torchmetrics==1.2.0
       - torch-fidelity==0.3.0
       - pytorch-msssim==1.0.0
@@ -34,7 +40,7 @@ dependencies:
       - ninja==1.11.1.1
       - numpy==1.24.3
       - packaging==24.1
-      - peft>=0.15.0,<0.16
+      - peft==0.15.2
       - pillow==10.4.0
       - pyyaml==6.0.1
       - requests==2.32.2
