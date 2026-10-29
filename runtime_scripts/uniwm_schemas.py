@@ -16,6 +16,7 @@ class UniWMInputBundle:
     collision: bool = False
     source_done: bool = False
     input_source: str | int | None = None
+    prediction_seed: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | list[str] | None]:

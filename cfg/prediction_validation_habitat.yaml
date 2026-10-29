@@ -37,6 +37,7 @@ engine:
       return_dict_in_generate: true
       return_legacy_cache: true
       output_scores: true
+      do_sample: true
     visualization:
       max_new_tokens: 800
       num_beams: 1
@@ -48,7 +49,7 @@ engine:
       return_dict_in_generate: true
       return_legacy_cache: true
       output_scores: true
-      do_sample: false
+      do_sample: true
 
   training:
     diagnostics: true
@@ -68,6 +69,7 @@ engine:
       log_prefix: "habitat_loss_"
 
 wrapper:
+  seed: 100
   max_route_steps: 1
   full_replan_threshold: 0.18
   divergence_metric: mean_absolute_error

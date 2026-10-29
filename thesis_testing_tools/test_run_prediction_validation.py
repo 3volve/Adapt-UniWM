@@ -11,8 +11,8 @@ from thesis_testing_tools.run_prediction_validation import condition_config, sel
 class ValidationTests(unittest.TestCase):
     def base(self):
         return {"engine": {"training": {"hyper_params": {"initial_lr": 0.001}},
-                "generation": {"visualization": {}}, "load_model_args": {"model_ckpt": "base"}},
-                "wrapper": {"enable_modulators": True},
+                "generation": {"visualization": {"do_sample": True, "temperature": 1.0}}, "load_model_args": {"model_ckpt": "base"}},
+                "wrapper": {"enable_modulators": True, "seed": 100},
                 "runner": {"source_type": "habitat", "adapter_params": {}}}
 
     def test_conditions_match_except_memory_and_update_switches(self):
@@ -26,6 +26,8 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(frozen["wrapper"]["add_global_memories"])
         self.assertEqual(frozen["wrapper"]["max_route_steps"], 1)
         self.assertEqual(frozen["runner"]["max_total_episodes"], 1)
+        self.assertEqual(frozen["engine"]["generation"]["visualization"], base["engine"]["generation"]["visualization"])
+        self.assertEqual(frozen["wrapper"]["seed"], 100)
 
     def test_normal_generator_receives_selected_episodes_and_shared_seed(self):
         import sys
@@ -69,6 +71,7 @@ class ValidationTests(unittest.TestCase):
         class Bundle:
             action_text: str = "original"
             input_source: str = "input.png"
+            prediction_seed: int = 123
         route = SimpleNamespace(steps=[SimpleNamespace(visualization="image", action_text="original",
                                 logging_info={"generation_id": 1})])
         class Base:
@@ -79,6 +82,7 @@ class ValidationTests(unittest.TestCase):
             def reset_episode(self, *args): pass
             def predict_route(self, *args): return route
             def eval_step(self, bundle):
+                assert bundle.prediction_seed == 123
                 self.calls.append((bundle.action_text, random.random()))
                 return SimpleNamespace(visualization=None, logging_info={"generation_id": len(self.calls) + 1})
         modules = {

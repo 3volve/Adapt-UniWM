@@ -28,6 +28,18 @@ from thesis_testing_tools.run_manifest import RunManifest
 
 
 class ReusableSeedOperationsTests(unittest.TestCase):
+    def test_habitat_batch_sets_both_prediction_and_adapter_seeds(self):
+        from thesis_testing_tools.pipeline import write_seed_habitat_config
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "habitat.yaml"
+            write_seed_habitat_config(Path("cfg/habitat_uniwm_cfg.yaml"), output,
+                condition_id="c0_frozen", initial_checkpoint=Path("checkpoint"), seed=321,
+                schedule_shuffle_seed=17)
+            seed_lines = [line.strip() for line in output.read_text().splitlines()
+                          if line.lstrip().startswith("seed:")]
+            self.assertEqual(seed_lines, ["seed: 321", "seed: 321"])
+            self.assertIn("shuffled_seed: 17", output.read_text())
+
     def test_source_paths_remain_absolute_when_worker_code_is_copied(self):
         import yaml
         from thesis_testing_tools.pipeline import write_seed_source_config
@@ -40,7 +52,8 @@ class ReusableSeedOperationsTests(unittest.TestCase):
                 output = root / "stage.yaml"
                 with patch("thesis_testing_tools.pipeline.REPO_ROOT", root):
                     write_seed_source_config(output, root / "checkpoint", source_config=template,
-                                             source_manifest=root / "selected.json")
+                                             source_manifest=root / "selected.json", seed=321)
+                self.assertEqual(yaml.safe_load(output.read_text())["wrapper"]["seed"], 321)
                 params = yaml.safe_load(output.read_text())["runner"]["adapter_params"]
                 self.assertEqual(Path(params["data_root"]), (root / configured).resolve())
                 self.assertTrue(Path(params["manifest_path"]).is_absolute())
@@ -65,6 +78,10 @@ class ReusableSeedOperationsTests(unittest.TestCase):
                 pre, conditions = prepare_seed_configs(run, source_config=run.source_config,
                     habitat_base_config=run.habitat_base_config, source_manifest=manifest,
                     action_files_dir=root / "actions")
+                configs = [run.seed_dir / "source_pre_config.yaml"]
+                configs += [c["source_post_config"] for c in conditions if c["source_post_command"]]
+                for config_path in configs:
+                    self.assertIn(f"  seed: {run.seed}\n", config_path.read_text())
                 commands = [pre["command"]] + [c["source_post_command"] for c in conditions if c["source_post_command"]]
                 self.assertEqual(len(commands), 6)
                 for command in commands:

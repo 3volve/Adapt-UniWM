@@ -313,8 +313,11 @@ def write_seed_source_config(
     source_manifest: Path = DEVELOPMENT_MANIFEST,
     max_episode_steps: int | None = None,
     max_route_steps: int | None = None,
+    seed: int | None = None,
 ) -> None:
     lines = source_config.read_text(encoding="utf-8").splitlines(keepends=True)
+    if seed is not None:
+        _replace_yaml_scalar(lines, "seed", str(seed))
     import yaml
     params = yaml.safe_load("".join(lines))["runner"]["adapter_params"]
     # Workers may execute a copied code tree; data stays in the original repository.
@@ -351,7 +354,11 @@ def write_seed_habitat_config(
     _replace_yaml_scalar(lines, "training_enabled", "false" if condition_id == "c0_frozen" else "true")
     _replace_yaml_scalar(lines, "enable_modulators", "true" if condition_id in ("c0_frozen", "c5_full") else "false")
     _replace_yaml_scalar(lines, "model_ckpt", json.dumps(str(initial_checkpoint)))
-    _replace_yaml_scalar(lines, "seed", str(seed))
+    # Both wrapper prediction seeds and Habitat adapter seeds belong to this run.
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("seed:"):
+            indentation = line[:len(line) - len(line.lstrip())]
+            lines[index] = f"{indentation}seed: {seed}\n"
     _replace_yaml_scalar(
         lines,
         "save_model_weights",
@@ -1110,6 +1117,7 @@ def prepare_seed_configs(
         run.initial_checkpoint,
         source_config=source_config,
         source_manifest=source_manifest,
+        seed=run.seed,
         max_episode_steps=run.source_max_episode_steps,
         max_route_steps=run.max_route_steps,
     )
@@ -1170,6 +1178,7 @@ def prepare_seed_configs(
                 final_checkpoint,
                 source_config=source_config,
                 source_manifest=source_manifest,
+                seed=run.seed,
                 max_episode_steps=run.source_max_episode_steps,
                 max_route_steps=run.max_route_steps,
             )

@@ -65,7 +65,6 @@ def condition_config(base, condition, steps, selected, manifest, actions):
     if adapted and engine["training"] is False:
         raise ValueError("Adapted conditions require a training mapping; supply --training-config")
     engine["generation"]["diagnostics"] = True
-    engine["generation"]["visualization"]["do_sample"] = False
     engine["load_model_args"]["use_memory_bank_inference"] = memory
     if engine["training"] is not False:
         engine["training"]["diagnostics"] = True

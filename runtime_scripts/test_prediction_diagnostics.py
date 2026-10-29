@@ -1,6 +1,8 @@
 """Exercise diagnostic recording without loading the GPU model stack."""
 import ast
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
+import hashlib
+import random
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -34,15 +36,87 @@ def load_method(name, scope, filename="runtime_engine.py", class_name="UniWMEngi
     return scope[name]
 
 
+tree = ast.parse(Path(__file__).with_name("runtime_utils.py").read_text())
+seed_function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "prediction_seed")
+seed_scope = {"hashlib": hashlib}
+exec(compile(ast.Module(body=[seed_function], type_ignores=[]), "runtime_utils.py", "exec"), seed_scope)
+prediction_seed = seed_scope["prediction_seed"]
+
+
+class FakeTorchRNG:
+    """Exercise the engine's RNG scope without requiring a Torch installation."""
+    def __init__(self):
+        self.rng = random.Random(42)
+        self.random = SimpleNamespace(fork_rng=self.fork_rng)
+        self.manual_seed = self.rng.seed
+        self.no_grad = nullcontext
+        self.autocast = lambda **kw: nullcontext()
+        self.FloatTensor = Tensor
+
+    @contextmanager
+    def fork_rng(self):
+        state = self.rng.getstate()
+        try:
+            yield
+        finally:
+            self.rng.setstate(state)
+
+
 class DiagnosticTests(unittest.TestCase):
+    def test_seed_is_stable_and_varies_with_each_input(self):
+        self.assertEqual(prediction_seed(100, "827", 0), 854184014379973614)
+        seeds = {prediction_seed(run, episode, step)
+                 for run in (100, 101) for episode in ("827", "352") for step in range(25)}
+        self.assertEqual(len(seeds), 100)
+        self.assertTrue(all(0 <= seed < 2 ** 64 for seed in seeds))
+
+    def test_training_and_recording_share_forward_rng_and_restore_outer_state(self):
+        torch = FakeTorchRNG()
+        train = load_method("train_viz_step", {"torch": torch})
+        record = load_method("record_viz_step", {"torch": torch})
+        draws = []
+        def compute(prediction):
+            draws.append(torch.rng.random())
+            return 1.0, {"base_loss": draws[-1]}
+        backward_draws = []
+        def update(*args):
+            backward_draws.append(torch.rng.random())
+            return {"grad_norm_before_clip": 1.0}
+        model = SimpleNamespace(training=False)
+        model.train = lambda: setattr(model, "training", True)
+        model.eval = lambda: setattr(model, "training", False)
+        engine = SimpleNamespace(model=model,
+            event_logger=SimpleNamespace(feed=lambda value: None),
+            config={"training": {"hyper_params": {"initial_lr": 0.001}, "loss": {"log_prefix": ""}}},
+            _optimizer=SimpleNamespace(param_groups=[{}], zero_grad=lambda **kw: None),
+            _compute_viz_step_loss=compute, _update_weights=update)
+        prediction = SimpleNamespace(input_bundle=SimpleNamespace(prediction_seed=123))
+        state = torch.rng.getstate()
+        recorded = record(engine, prediction, 1.0)
+        trained = train(engine, prediction, 1.0)
+        train(engine, prediction, 1.0)
+        self.assertEqual(recorded["base_loss"], trained["base_loss"])
+        self.assertEqual(len(set(draws)), 1)
+        self.assertEqual(backward_draws[0], backward_draws[1])
+        self.assertEqual(torch.rng.getstate(), state)
+        self.assertFalse(model.training)
+        prediction.input_bundle.prediction_seed = 124
+        record(engine, prediction, 1.0)
+        self.assertNotEqual(draws[-1], draws[0])
+
     def test_generation_records_survive_merge_and_do_not_change_decoding(self):
         for enabled in (False, True):
             with self.subTest(enabled=enabled), TemporaryDirectory() as directory:
                 path = Path(directory) / "events.jsonl"
                 decoded = []
                 tokens = Tensor([[71, 72]])
+                torch = FakeTorchRNG()
+                draws = []
+                def generate(**kw):
+                    draws.append(torch.rng.random())
+                    return SimpleNamespace(scores=(1, 2))
                 scope = {
-                    "torch": SimpleNamespace(FloatTensor=Tensor, no_grad=nullcontext, autocast=lambda **kw: nullcontext()),
+                    "torch": torch,
                     "cast": lambda kind, value: value,
                     "GenerateDecoderOnlyOutput": object,
                     "extract_generated_tokens": lambda outputs, length, count: tokens,
@@ -55,12 +129,15 @@ class DiagnosticTests(unittest.TestCase):
                         event_logger=logger, memory_count=4, processor=None, _current_input_source="real.png",
                         config={"generation": {"visualization": {}, "diagnostics": enabled}},
                         model=SimpleNamespace(dtype=None, model=SimpleNamespace(bpe_indices=[]),
-                            generate=lambda **kw: SimpleNamespace(scores=(1, 2))),
+                            generate=generate),
                         _get_viz_kwargs=lambda kw: ({"use_memory_bank": False, "use_global_memory_bank": False}, True),
                         _calculate_entropy=lambda *a, **kw: Tensor([[0]]),
                     )
+                    state = torch.rng.getstate()
                     for _ in range(2):
-                        self.assertEqual(predict(engine, {"input_ids": Tensor([[1, 2, 3]])}), ("image", 0.5, True))
+                        self.assertEqual(predict(engine, {"input_ids": Tensor([[1, 2, 3]])}, 123), ("image", 0.5, True))
+                    self.assertEqual(torch.rng.getstate(), state)
+                    self.assertEqual(draws[0], draws[1])
                 event = json.loads(path.read_text().splitlines()[0])
                 self.assertEqual(decoded, [[[71, 72]], [[71, 72]]])
                 self.assertEqual(engine._generation_id, 2)
@@ -100,18 +177,20 @@ class DiagnosticTests(unittest.TestCase):
             goal_observation: object
             current_observation: object
             input_source: object = None
+            prediction_seed: int | None = None
         saved, received = [], []
-        scope = {"replace": replace,
+        scope = {"replace": replace, "prediction_seed": prediction_seed,
                  "build_img_paths": lambda root, episode, names: [name + ".png" for name in names],
                  "save_img": lambda image, path: saved.append(path)}
         reset = load_method("reset_episode", scope, "uniwm_wrapper.py", "UniWMWrapper")
-        wrapper = SimpleNamespace(output_path="output", _reset_wrapper_state=lambda: None,
+        wrapper = SimpleNamespace(output_path="output", config={"seed": 100}, _reset_wrapper_state=lambda: None,
             engine=SimpleNamespace(reset_episode=lambda episode, bundle: received.append(bundle)),
             _plan_route=lambda bundle, reason: received.append(bundle), get_state_snapshot=lambda: {})
         start = object()
         reset(wrapper, Bundle(start, object(), start), "episode")
         self.assertEqual([bundle.input_source for bundle in received], ["start.png", "start.png"])
         self.assertEqual(saved, ["start.png", "goal.png"])
+        self.assertEqual([bundle.prediction_seed for bundle in received], [prediction_seed(100, "episode", 0)] * 2)
 
     def test_training_batch_logged_without_altering_supervision(self):
         with TemporaryDirectory() as directory:

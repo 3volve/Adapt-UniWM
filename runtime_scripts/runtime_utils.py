@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import shutil
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,12 @@ from transformers.generation.utils import GenerateDecoderOnlyOutput
 from scripts.postprocess_logits_utils import split_token_sequence
 
 VERBOSE_UTILS = False
+
+def prediction_seed(run_seed: int, episode_id: str, step_index: int) -> int:
+    """Derive a stable 64-bit PyTorch seed; hash collisions are possible but unlikely."""
+    key = f"{run_seed}:{episode_id}:{step_index}".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(key).digest()[:8], "big")
+
 
 def event_values(value):
     """Convert producer metadata to small JSON values before feeding the logger."""

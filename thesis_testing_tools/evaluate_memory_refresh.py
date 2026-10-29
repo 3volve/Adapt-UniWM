@@ -283,7 +283,7 @@ def run(args):
     from runtime_scripts.event_logger import EventLogger
     from runtime_scripts.runtime_engine import UniWMEngine
     from runtime_scripts.uniwm_schemas import StepPrediction
-    from runtime_scripts.runtime_utils import is_stop_action, load_config
+    from runtime_scripts.runtime_utils import is_stop_action, load_config, prediction_seed
     from thesis_testing_tools.generate_metrics import ImageCalculator
 
     config = load_config(str(args.config))
@@ -333,7 +333,8 @@ def run(args):
                     if action is None or is_stop_action(action):
                         break
                     log.next_step({"episode_id": episode_id, "step": step})
-                    current = replace(bundle, action_text=action)
+                    current = replace(bundle, action_text=action,
+                        prediction_seed=prediction_seed(config["wrapper"]["seed"], episode_id, step))
                     use_memory = engine.memory_count >= engine.config["memory"]["min_memories"]
                     eligible = (use_memory and bool(engine.history_inputs) and sampled < len(sample_after)
                                 and step >= sample_after[sampled])

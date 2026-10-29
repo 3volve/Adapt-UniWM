@@ -33,6 +33,7 @@ engine:
       return_dict_in_generate: true
       return_legacy_cache: true
       output_scores: true
+      do_sample: true
     visualization:
       max_new_tokens: 800
       num_beams: 1
@@ -44,11 +45,13 @@ engine:
       return_dict_in_generate: true
       return_legacy_cache: true
       output_scores: true
+      do_sample: true
 
   training: false
 
 wrapper:
-  max_route_steps: 5
+  seed: 100
+  max_route_steps: 1
   full_replan_threshold: 0.12
   divergence_metric: mean_absolute_error
   replan_on_route_exhausted: true

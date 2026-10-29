@@ -26,10 +26,12 @@ from runtime_scripts.runtime_utils import (
     build_img_paths,
     save_img,
     ema_smoothing,
+    prediction_seed,
 )
 
 
 REQUIRED_FIELDS: list[str] = [
+    "seed",
     "max_route_steps",
     "full_replan_threshold",
     "divergence_metric",
@@ -103,7 +105,9 @@ class UniWMWrapper:
         start_img_path, goal_img_path = build_img_paths(self.output_path, episode_id, ["start", "goal"])
         save_img(initial_bundle.start_observation, start_img_path)
         save_img(initial_bundle.goal_observation, goal_img_path)
-        initial_bundle = replace(initial_bundle, input_source=start_img_path)
+        
+        initial_bundle = replace(initial_bundle, input_source=start_img_path, prediction_seed=
+                                 prediction_seed(self.config["seed"], episode_id, 0))
         
         self._reset_wrapper_state()
         self.latest_bundle = initial_bundle
@@ -166,7 +170,8 @@ class UniWMWrapper:
             self.event_logger.feed({'wrapper': {'predicted_obs_path': save_path_viz}})
         
         input_source = save_path_real if real_obs is not None and self.config["log_real_obs"] else None
-        observed_bundle = replace(observed_bundle, input_source=input_source)
+        observed_bundle = replace(observed_bundle, input_source=input_source, prediction_seed=
+                                  prediction_seed(self.config["seed"], self.episode_id, step_idx + 1))
         if len(self.current_route) > self.route_idx:
             next_step = self.current_route.steps[self.route_idx]
             next_step.real_input_obs = real_obs

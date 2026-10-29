@@ -262,12 +262,16 @@ class UniWMEngine:
 
         self.model.train()
         self._optimizer.zero_grad(set_to_none=True)
-        loss, components = self._compute_viz_step_loss(prediction)
-        self.event_logger.feed({'training': {'visual_loss': components[f"{self.config['training']['loss']['log_prefix']}base_loss"]}})
-        self.event_logger.feed({'training': {'visual_loss_missing_reason': None}})
+        
+        with torch.random.fork_rng():
+            torch.manual_seed(prediction.input_bundle.prediction_seed)
+            loss, components = self._compute_viz_step_loss(prediction)
+            self.event_logger.feed({'training': {'visual_loss': components[f"{self.config['training']['loss']['log_prefix']}base_loss"]}})
+            self.event_logger.feed({'training': {'visual_loss_missing_reason': None}})
 
-        gradient_log = self._update_weights(loss_scaler, loss, max_grad_norm)
-        self.event_logger.feed({'training': {'phase': 'restore_eval_mode'}})
+            gradient_log = self._update_weights(loss_scaler, loss, max_grad_norm)
+            self.event_logger.feed({'training': {'phase': 'restore_eval_mode'}})
+            
         self.model.eval()
 
         self.event_logger.feed({"training": {"phase": "completed"}})
@@ -294,7 +298,9 @@ class UniWMEngine:
         """Compute the online visualization loss without updating parameters."""
         self.event_logger.feed({"training": {"phase": "record_loss", "optimizer_step": False}})
         self.model.train()
-        with torch.no_grad():
+        
+        with torch.no_grad(), torch.random.fork_rng():
+            torch.manual_seed(prediction.input_bundle.prediction_seed)
             _, components = self._compute_viz_step_loss(prediction)
         self.model.eval()
 
@@ -395,7 +401,7 @@ class UniWMEngine:
         
         action_text, raw_action_text, act_entropy = input_bundle.action_text, input_bundle.action_text, 0
         if action_text is None:
-            action_text, raw_action_text, act_entropy = self._predict_action(action_inputs)
+            action_text, raw_action_text, act_entropy = self._predict_action(action_inputs, input_bundle.prediction_seed)
             
             if input_bundle.collision:
                 action_text = self._zero_act_translations(action_text)
@@ -414,7 +420,7 @@ class UniWMEngine:
                 )
             )
             
-            viz, viz_entropy, used_memory = self._predict_visualization(visualization_inputs)
+            viz, viz_entropy, used_memory = self._predict_visualization(visualization_inputs, input_bundle.prediction_seed)
             
         step_output = StepPrediction(input_bundle, action_text, viz, act_entropy, viz_entropy, self._context_familiarity, self._context_stability)
         step_output.logging_info["raw_action_text"] = raw_action_text
@@ -435,59 +441,63 @@ class UniWMEngine:
         
         return result
 
-    def _predict_action(self, processor_inputs: Any) -> tuple[str, str, float]:
+    def _predict_action(self, processor_inputs: Any, prediction_seed: int) -> tuple[str, str, float]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
         kwargs = self._memory_manager.get_action_kwargs(
             action_gen_kwargs=dict(self.config["generation"]["action"])
         )
         
-        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
-            outputs = cast(
-                GenerateDecoderOnlyOutput,
-                self.model.generate(**processor_inputs, **kwargs)
-            )
+        with torch.random.fork_rng():
+            torch.manual_seed(prediction_seed)
+            with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
+                outputs = cast(
+                    GenerateDecoderOnlyOutput,
+                    self.model.generate(**processor_inputs, **kwargs)
+                )
+                
+            action_token_ids = [cast(
+                    list[int],
+                    self.tokenizer.convert_tokens_to_ids(self.action_vocabulary.tokens_by_axis[axis])
+                ) for axis in ACTION_AXES]
             
-        action_token_ids = [cast(
-                list[int],
-                self.tokenizer.convert_tokens_to_ids(self.action_vocabulary.tokens_by_axis[axis])
-            ) for axis in ACTION_AXES]
+            scores = cast(tuple[torch.FloatTensor], outputs.scores)
+            generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
         
-        scores = cast(tuple[torch.FloatTensor], outputs.scores)
-        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
-    
-        decoded_text, raw_text, token_position_info = decode_action(self.processor, generated_tokens, action_token_ids)
-        
-        entropy = 0.0
-        if not is_stop_action(decoded_text) and len(token_position_info) > 0:
-            entropy_tensor = torch.stack([
-                self._calculate_entropy(generated_tokens, scores, ids, position)
-                for position, ids in token_position_info
-            ])
+            decoded_text, raw_text, token_position_info = decode_action(self.processor, generated_tokens, action_token_ids)
             
-            entropy = float(entropy_tensor.mean().detach().cpu())
+            entropy = 0.0
+            if not is_stop_action(decoded_text) and len(token_position_info) > 0:
+                entropy_tensor = torch.stack([
+                    self._calculate_entropy(generated_tokens, scores, ids, position)
+                    for position, ids in token_position_info
+                ])
+                
+                entropy = float(entropy_tensor.mean().detach().cpu())
 
-        return decoded_text, raw_text, entropy
+            return decoded_text, raw_text, entropy
 
-    def _predict_visualization(self, processor_inputs: Any) -> tuple[Image.Image | None, float, bool]:
+    def _predict_visualization(self, processor_inputs: Any, prediction_seed: int) -> tuple[Image.Image | None, float, bool]:
         prompt_length = processor_inputs["input_ids"].shape[-1]
         kwargs, used_memory = self._get_viz_kwargs(
             dict(self.config["generation"]["visualization"])
         )
             
-        with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
-            outputs = cast(
-                GenerateDecoderOnlyOutput,
-                self.model.generate(**processor_inputs, **kwargs)
-            )
+        with torch.random.fork_rng():
+            torch.manual_seed(prediction_seed)
+            with torch.no_grad(), torch.autocast(device_type='cuda', dtype=self.model.dtype):
+                outputs = cast(
+                    GenerateDecoderOnlyOutput,
+                    self.model.generate(**processor_inputs, **kwargs)
+                )
+                
+            scores = cast(tuple[torch.FloatTensor], outputs.scores)
+            generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
             
-        scores = cast(tuple[torch.FloatTensor], outputs.scores)
-        generated_tokens = extract_generated_tokens(outputs, prompt_length, len(scores)).clone()
-        
-        entropy = self._calculate_entropy(
-            generated_tokens,
-            scores,
-            token_ids=cast(list[int], self.model.model.bpe_indices),
-        )
+            entropy = self._calculate_entropy(
+                generated_tokens,
+                scores,
+                token_ids=cast(list[int], self.model.model.bpe_indices),
+            )
         
         entropy_value = float(entropy.mean().detach().cpu())
         del outputs, scores, entropy
