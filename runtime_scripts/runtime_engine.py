@@ -87,6 +87,9 @@ class UniWMEngine:
             self.model, using_memory, event_logger=event_logger, **self.config["memory_bank_args"]
         )
             
+        self._generation_id = 0
+        self._diagnostic_update_count = 0
+
         self.config["generation"]["action"]["use_memory_bank"] = using_memory
         self.config["generation"]["action"]["use_global_memory_bank"] = using_memory
         self.config["generation"]["visualization"]["use_memory_bank"] = using_memory
@@ -141,7 +144,7 @@ class UniWMEngine:
         self.memory_count = 0
         self.prior_actions.clear()
             
-        self.update_working_memory(bundle.current_observation, bundle.start_pose_str)
+        self.update_working_memory(bundle.current_observation, bundle.start_pose_str, input_source=bundle.input_source)
         
     def store_working_memory(self):
         if self._start_tok_obs is None or self._goal_tok_obs is None:
@@ -150,8 +153,9 @@ class UniWMEngine:
         if self._memory_manager.store_step_memory():
             self.memory_count += 1
             
-    def update_working_memory(self, real_obs: Image.Image, start_pose_str: str, update_context_ema: bool = True):
-        self._current_tok_obs = self._image_to_vq_bpe_tokens(real_obs)
+    def update_working_memory(self, input_obs: Image.Image, start_pose_str: str, update_context_ema: bool = True, *, input_source: str | int | None = None):
+        self._current_tok_obs = self._image_to_vq_bpe_tokens(input_obs)
+        self._current_input_source = input_source
         
         action_inputs = self._processor_inputs_from_prompt(
             input_text=build_action_prompt(
@@ -170,13 +174,14 @@ class UniWMEngine:
     def get_current_context(self):
         return self._context_familiarity, self._context_stability 
         
-    def _store_state(self) -> tuple[torch.LongTensor, float, float, int, deque]:
+    def _store_state(self) -> tuple[torch.LongTensor, float, float, int, deque, str | int | None]:
         self._memory_manager.cache_step_state()
-        return self._current_tok_obs, self._context_familiarity, self._context_stability, self.memory_count, self.prior_actions.copy()
+        return self._current_tok_obs, self._context_familiarity, self._context_stability, self.memory_count, self.prior_actions.copy(), self._current_input_source
         
-    def _restore_state(self, tok_obs: torch.LongTensor, familiarity: float, stability: float, mem_count: int, stored_actions: deque):
+    def _restore_state(self, tok_obs: torch.LongTensor, familiarity: float, stability: float, mem_count: int, stored_actions: deque, input_source: str | int | None):
         self._memory_manager.load_cached_state()
         self._current_tok_obs = tok_obs
+        self._current_input_source = input_source
         self._context_familiarity = familiarity
         self._context_stability = stability
         self.memory_count = mem_count
@@ -186,9 +191,9 @@ class UniWMEngine:
             self,
             bundle: UniWMInputBundle,
     ) -> StepPrediction:
-        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions = self._store_state()
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source = self._store_state()
         step = self._predict_step(bundle)
-        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
+        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source)
         return step
 
     def predict_route(
@@ -196,14 +201,14 @@ class UniWMEngine:
         bundle: UniWMInputBundle,
         max_steps: int,
     ) -> RoutePrediction:
-        current, actions = bundle.current_observation, bundle.action_text
+        current, actions, real_input_source = bundle.current_observation, bundle.action_text, bundle.input_source
         if isinstance(actions, str):
             actions = None
         elif isinstance(actions, list):
             actions = None if len(actions) <= 1 else actions[1:]
 
         steps: list[StepPrediction] = []
-        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions = self._store_state()
+        cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source = self._store_state()
         
         predict_range = max_steps
         if actions is not None:
@@ -214,6 +219,7 @@ class UniWMEngine:
                 bundle,
                 action_text=None if actions is None else actions[route_idx],
                 current_observation=current,
+                input_source=self._current_input_source,
                 collision=bundle.collision if route_idx == 0 else False
             )
             
@@ -223,22 +229,22 @@ class UniWMEngine:
             steps.append(step)
                 
             if is_stop_action(step.action_text):
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source)
                 return RoutePrediction(steps=steps, stopped=True, stop_reason="stop_action")
             
             if step.visualization is None:
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source)
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="missing_visualization")
             current = step.visualization
             
             if route_idx < max_steps - 1:
-                self.update_working_memory(current, bundle.start_pose_str, False)
+                self.update_working_memory(current, bundle.start_pose_str, False, input_source=step.logging_info.get("generation_id"))
                 
             if route_idx == max_steps - 1:
-                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
+                self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source)
                 return RoutePrediction(steps=steps, stopped=False, stop_reason="max_steps")
             
-        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions)
+        self._restore_state(cached_current_tok_obs, real_mem_familiarity, real_context_stability, real_mem_count, real_prior_actions, real_input_source)
         return RoutePrediction(steps=steps, stopped=True, stop_reason="out_of_forced_actions")
 
     def train_viz_step(
@@ -333,6 +339,18 @@ class UniWMEngine:
             dict(self.config["training"]["visualization"]),
             prediction.viz_used_memory,
         )
+        if self.config["training"]["diagnostics"]:
+            self.event_logger.feed({"diagnostics": {"teacher_forced": {
+                "generation_id": prediction.logging_info.get("generation_id"),
+                "completed_updates": self._diagnostic_update_count,
+                "input_source": self._current_input_source,
+                "action": prediction.action_text,
+                "prompt_length": visualization_inputs["input_ids"].shape[-1],
+                "ignore_index": self.config["training"]["loss"]["ignore_index"],
+                "batch": {key: value.detach().cpu().tolist() for key, value in training_inputs.items()},
+                "use_memory_bank": memory_kwargs.get("use_memory_bank", False),
+                "use_global_memory_bank": memory_kwargs.get("use_global_memory_bank", False),
+            }}})
 
         with torch.autocast(device_type="cuda", dtype=self.model.dtype):
             outputs = self.model(
@@ -403,6 +421,8 @@ class UniWMEngine:
         step_output.logging_info["act_entropy"] = act_entropy
         step_output.logging_info["viz_entropy"] = viz_entropy
         step_output.viz_used_memory = used_memory
+        if not is_stop_action(action_text):
+            step_output.logging_info["generation_id"] = self._generation_id
         return step_output
     
     def _zero_act_translations(self, action_text) -> str:
@@ -472,6 +492,20 @@ class UniWMEngine:
         entropy_value = float(entropy.mean().detach().cpu())
         del outputs, scores, entropy
         
+        self._generation_id += 1
+        if self.config["generation"]["diagnostics"]:
+            self.event_logger.feed({"diagnostics": {"generations": {
+                str(self._generation_id): {
+                    "completed_updates": self._diagnostic_update_count,
+                    "input_source": self._current_input_source,
+                    "prompt_length": prompt_length,
+                    "prompt_token_ids": processor_inputs["input_ids"].detach().cpu().tolist(),
+                    "decoded_token_ids": generated_tokens.detach().cpu().tolist(),
+                    "memory_count": self.memory_count,
+                    "use_memory_bank": kwargs.get("use_memory_bank", False),
+                    "use_global_memory_bank": kwargs.get("use_global_memory_bank", False),
+                }
+            }}})
         generated_img = decode_image(self.model, self.processor, generated_tokens)
         return generated_img, entropy_value, used_memory
 
@@ -504,6 +538,9 @@ class UniWMEngine:
         # If step() raises, an update may have partially happened; do not claim False.
         self.event_logger.feed({'training': {'optimizer_step': None}})
         self._optimizer.step()
+        self._diagnostic_update_count += 1
+        if self.config["training"].get("diagnostics", False):
+            self.event_logger.feed({"diagnostics": {"completed_updates": self._diagnostic_update_count}})
         self.event_logger.feed({'training': dict(optimizer_step=True, applied_learning_rate=self._optimizer.param_groups[0]['lr'])})
         
 

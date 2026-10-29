@@ -26,6 +26,7 @@ engine:
     img_size: 448
 
   generation:
+    diagnostics: false
     action:
       max_new_tokens: 24
       pad_token_id: 2
@@ -48,6 +49,7 @@ engine:
       do_sample: false
 
   training:
+    diagnostics: false
     hyper_params:
       initial_lr: 1e-4
       max_grad_norm: 1.0

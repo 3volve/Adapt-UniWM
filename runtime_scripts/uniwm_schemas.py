@@ -15,6 +15,7 @@ class UniWMInputBundle:
     action_text: str | list[str] | None = None
     collision: bool = False
     source_done: bool = False
+    input_source: str | int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def unpack(self) -> tuple[Image.Image, Image.Image, Image.Image, str, str | list[str] | None]:
@@ -52,7 +53,8 @@ class StepPrediction:
     real_next_obs: Image.Image | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"action": self.action_text, "available": self.visualization is not None,
+        return {"generation_id": self.logging_info.get("generation_id"),
+                "action": self.action_text, "available": self.visualization is not None,
                 "raw_action_text": self.logging_info.get("raw_action_text"),
                 "act_entropy": self.act_entropy, "viz_entropy": self.viz_entropy,
                 "context_familiarity": self.context_familiarity,

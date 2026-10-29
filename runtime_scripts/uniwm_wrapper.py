@@ -103,6 +103,7 @@ class UniWMWrapper:
         start_img_path, goal_img_path = build_img_paths(self.output_path, episode_id, ["start", "goal"])
         save_img(initial_bundle.start_observation, start_img_path)
         save_img(initial_bundle.goal_observation, goal_img_path)
+        initial_bundle = replace(initial_bundle, input_source=start_img_path)
         
         self._reset_wrapper_state()
         self.latest_bundle = initial_bundle
@@ -164,6 +165,8 @@ class UniWMWrapper:
             save_img(transition_step.visualization, save_path_viz)
             self.event_logger.feed({'wrapper': {'predicted_obs_path': save_path_viz}})
         
+        input_source = save_path_real if real_obs is not None and self.config["log_real_obs"] else None
+        observed_bundle = replace(observed_bundle, input_source=input_source)
         if len(self.current_route) > self.route_idx:
             next_step = self.current_route.steps[self.route_idx]
             next_step.real_input_obs = real_obs
@@ -249,7 +252,8 @@ class UniWMWrapper:
             self.engine.update_working_memory(
                 real_obs,
                 observed_bundle.start_pose_str,
-                not observed_bundle.collision
+                not observed_bundle.collision,
+                input_source=observed_bundle.input_source,
             )
 
         self.event_logger.feed({'wrapper': {'controller_state': modulator_state or {}}})
@@ -405,6 +409,7 @@ class UniWMWrapper:
         eval_prediction = self.engine.eval_step(observed_bundle)
         eval_divergence, _ = self.compute_divergence(eval_prediction.visualization, target_obs)
         
+        eval_log["generation_id"] = eval_prediction.logging_info.get("generation_id")
         eval_log["forced_action"] = eval_prediction.action_text
         eval_log["divergence"] = eval_divergence
         eval_log["viz_entropy"] = eval_prediction.viz_entropy
