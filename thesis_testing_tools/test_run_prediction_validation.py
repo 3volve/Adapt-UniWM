@@ -57,6 +57,10 @@ class ValidationTests(unittest.TestCase):
     def test_replay_requires_explicit_training_settings(self):
         cfg = self.base()
         cfg["engine"]["training"] = False
+        for condition in ("frozen_off", "frozen_on"):
+            frozen = condition_config(cfg, condition, 1, {"habitat": ["7"]}, Path("m"), None)
+            self.assertIs(frozen["engine"]["training"], False)
+            self.assertFalse(frozen["wrapper"]["training_enabled"])
         with self.assertRaisesRegex(ValueError, "training mapping"):
             condition_config(cfg, "adapted_off", 1, {"habitat": ["7"]}, Path("m"), None)
 
@@ -79,18 +83,23 @@ class ValidationTests(unittest.TestCase):
                 self.action_vocabulary = SimpleNamespace(bin_step=0.01, tokens_by_axis={"dyaw": ["<dyaw_pos_bin_20>"]})
                 self.event_logger = SimpleNamespace(feed=lambda value: None)
                 self.calls = []
+                self.records = []
+                self.event_logger = SimpleNamespace(feed=self.records.append)
+                self._diagnostic_update_count = 0
+                self.memory_count = 0
             def reset_episode(self, *args): pass
             def predict_route(self, *args): return route
             def eval_step(self, bundle):
                 assert bundle.prediction_seed == 123
                 self.calls.append((bundle.action_text, random.random()))
-                return SimpleNamespace(visualization=None, logging_info={"generation_id": len(self.calls) + 1})
+                return SimpleNamespace(visualization=None, viz_used_memory=self.memory_count > 0,
+                                       logging_info={"generation_id": len(self.calls) + 1})
         modules = {
             "runtime_scripts.runtime_utils": SimpleNamespace(save_img=lambda *args: None),
             "thesis_testing_tools.evaluate_memory_refresh": SimpleNamespace(rng_state=random.getstate, restore_rng=random.setstate),
         }
         with patch.dict(sys.modules, modules):
-            engine = make_probe_engine(Base, Path("unused"), 20)()
+            engine = make_probe_engine(Base, Path("unused"), 20, [0, 2])()
         engine.reset_episode("7", Bundle())
         state = random.getstate()
         self.assertIs(engine.predict_route(Bundle(), 1), route)
@@ -99,6 +108,19 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(len({value for action, value in engine.calls}), 1)
         engine.predict_route(Bundle(), 1)
         self.assertEqual(len(engine.calls), 3)
+        engine._diagnostic_update_count = 2
+        engine.memory_count = 2
+        engine.predict_route(Bundle(), 1)
+        self.assertEqual(len(engine.calls), 6)
+        self.assertEqual(random.getstate(), state)
+        record = next(iter(engine.records[-1]["validation_probes"].values()))
+        self.assertEqual((record["episode_id"], record["step"], record["completed_updates"]), ("7", 2, 2))
+        self.assertTrue(record["memory_used"])
+        engine.reset_episode("8", Bundle())
+        engine.predict_route(Bundle(), 1)
+        self.assertEqual(len(engine.calls), 9)
+        record = next(iter(engine.records[-1]["validation_probes"].values()))
+        self.assertEqual((record["episode_id"], record["step"]), ("8", 0))
 
     def test_report_uses_actual_next_frame_and_copy_baseline(self):
         from PIL import Image
@@ -114,6 +136,7 @@ class ValidationTests(unittest.TestCase):
                      "diagnostics": {"generations": {"1": {"input_source": str(root / "input.png"), "completed_updates": 0}}}}
             (condition / "events.jsonl").write_text(json.dumps(event) + "\n")
             report(root, ["mae"])
+            self.assertEqual(set(json.loads((root / "summary.json").read_text())["conditions"]), {"frozen_off"})
             summary = json.loads((root / "summary.json").read_text())["conditions"]["frozen_off"]
             self.assertEqual(summary["mae"], 0)
             self.assertEqual(summary["copy_mae"], 1)

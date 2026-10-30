@@ -90,22 +90,25 @@ def generate_validation_actions(config, config_path, episodes, output, steps, se
     return output / "habitat_action_sequences"
 
 
-def make_probe_engine(base, output, turn_bins):
-    """Probe after normal route prediction, once per episode, with RNG/state restored."""
+def make_probe_engine(base, output, turn_bins, probe_steps=(0,)):
+    """Probe selected zero-based steps of the tester's single-step routes."""
     from runtime_scripts.runtime_utils import save_img
     from scripts.action_utils import action_to_text
     from thesis_testing_tools.evaluate_memory_refresh import rng_state, restore_rng
 
     class ProbeEngine(base):
         def reset_episode(self, episode_id, bundle):
-            self._probe_pending = True
+            self._probe_step = 0
+            self._probe_episode = episode_id
             super().reset_episode(episode_id, bundle)
 
         def predict_route(self, bundle, max_steps):
+            assert max_steps == 1, "Validation probe steps require single-step routes"
+            step = self._probe_step
+            self._probe_step += 1
             route = super().predict_route(bundle, max_steps)
-            if not self._probe_pending or not route.steps or route.steps[0].visualization is None:
+            if step not in probe_steps or not route.steps or route.steps[0].visualization is None:
                 return route
-            self._probe_pending = False
             state = rng_state()
             bin_step = self.action_vocabulary.bin_step
             actions = {"original": route.steps[0].action_text,
@@ -124,6 +127,10 @@ def make_probe_engine(base, output, turn_bins):
                         save_img(prediction.visualization, str(path))
                     self.event_logger.feed({"validation_probes": {str(generation_id): {
                         "name": name, "action": action, "input_source": bundle.input_source,
+                        "episode_id": self._probe_episode, "step": step,
+                        "completed_updates": self._diagnostic_update_count,
+                        "memory_count": self.memory_count,
+                        "memory_used": prediction.viz_used_memory,
                         "prediction_path": str(path) if prediction.visualization is not None else None,
                         "reference_generation_id": route.steps[0].logging_info["generation_id"],
                     }}})
@@ -147,7 +154,7 @@ def worker(args):
     cfg = load_config(str(args.config))
     source = cfg["runner"]["source_type"]
     with EventLogger(args.output / "events.jsonl") as log:
-        engine_cls = make_probe_engine(UniWMEngine, args.output, args.turn_bins)
+        engine_cls = make_probe_engine(UniWMEngine, args.output, args.turn_bins, args.probe_steps)
         engine = engine_cls(source, str(args.config), event_logger=log)
         runner = UniWMEpisodeRunner(str(args.config), source, args.output, event_logger=log, engine=engine)
         log.feed({"runtime": event_values(runtime_metadata(torch, seed=args.seed, engine=engine)), "outcome": "completed"})
@@ -235,7 +242,7 @@ def report(output, metrics):
     with (output / "transitions.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields); writer.writeheader(); writer.writerows(rows)
     summary = {}
-    for condition in CONDITIONS:
+    for condition in run_status:
         group = [row for row in rows if row["condition"] == condition]
         summary[condition] = {"transitions": len(group), "scored": sum("unscored_reason" not in row for row in group)}
         for metric in [*metrics, *("copy_" + m for m in metrics)]:
@@ -261,17 +268,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--training-config", type=Path)
+    parser.add_argument("--conditions", nargs="+", choices=CONDITIONS, default=list(CONDITIONS))
     parser.add_argument("--episode", action="append", default=[])
     parser.add_argument("--actions", type=Path, help="Optional existing Habitat actions; otherwise generate once per episode")
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--turn-bins", type=int, default=20, help="Positive yaw probe magnitude in action bins")
+    parser.add_argument("--probe-steps", nargs="+", type=int, default=[0],
+                        help="Zero-based prediction steps to probe in each episode (default: 0)")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--report-only", action="store_true")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--metrics", nargs="+", choices=("mae", "ssim", "lpips"), default=["mae", "ssim", "lpips"])
     args = parser.parse_args()
+    args.conditions = list(dict.fromkeys(args.conditions))
+    if any(step < 0 for step in args.probe_steps):
+        parser.error("--probe-steps must be nonnegative")
     args.output = args.output.resolve()
     os.chdir(ROOT)
     if args.worker:
@@ -280,6 +293,8 @@ def main():
         report(args.output, args.metrics); return
     if args.config is None or not args.episode or args.steps < 1 or args.turn_bins < 1:
         parser.error("Provide --config, at least one --episode, and positive --steps/--turn-bins")
+    if any(step >= args.steps for step in args.probe_steps):
+        parser.error("--probe-steps must be smaller than --steps")
     import yaml
     from thesis_testing_tools.run_manifest import RunManifest, artifact_fingerprint
     cfg = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -295,7 +310,8 @@ def main():
             parser.error("--actions directory does not exist")
     args.output.mkdir(parents=True, exist_ok=False)
     with RunManifest(args.output, repo_root=ROOT, run_type="prediction_validation",
-                     metadata={"seed": args.seed, "selected": selected, "steps": args.steps,
+                     metadata={"seed": args.seed, "selected": selected, "steps": args.steps, "conditions": args.conditions,
+                               "probe_steps": args.probe_steps,
                                "prepare_only": args.prepare_only}, capture=capture) as record:
         record.capture_environment({})
         record.snapshot_code()
@@ -335,7 +351,7 @@ def main():
         manifest = args.output / "development_subset.json"
         manifest.write_text(json.dumps({dataset: {"test": episodes} for dataset, episodes in selected.items()}, indent=2))
         commands = []
-        for condition in CONDITIONS:
+        for condition in args.conditions:
             condition_cfg = condition_config(cfg, condition, args.steps, selected, manifest, args.actions)
             path = args.output / f"{condition}.yaml"
             path.write_text(yaml.safe_dump(condition_cfg, sort_keys=False), encoding="utf-8")
@@ -343,11 +359,12 @@ def main():
             directory.mkdir()
             command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=1",
                        "--module", "thesis_testing_tools.run_prediction_validation", "--worker", "--config", str(path),
-                       "--output", str(directory), "--seed", str(args.seed), "--turn-bins", str(args.turn_bins)]
+                       "--output", str(directory), "--seed", str(args.seed), "--turn-bins", str(args.turn_bins),
+                       "--probe-steps", *map(str, args.probe_steps)]
             commands.append(command)
         (args.output / "commands.json").write_text(json.dumps(commands, indent=2))
         if not args.prepare_only:
-            for condition, command in zip(CONDITIONS, commands):
+            for condition, command in zip(args.conditions, commands):
                 with record.stage(condition, command, args.output / condition, args.output / f"{condition}.yaml", cfg["runner"]["source_type"]):
                     subprocess.run(command, cwd=ROOT, check=True)
             report(args.output, args.metrics)
