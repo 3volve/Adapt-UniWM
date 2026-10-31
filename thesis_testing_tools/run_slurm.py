@@ -59,7 +59,7 @@ def snapshot_code(root):
     return destination
 
 
-def sbatch_command(name, parents, ids, root, code_root, resources):
+def sbatch_command(name, parents, ids, root, code_root, resources, test_only=False):
     args = ["sbatch", "--parsable", "--nodes=1", "--ntasks=1", "--no-requeue", "--export=ALL",
             f"--job-name={root.name}-{name.replace('/', '-')}", f"--chdir={resources['repository_root']}",
             f"--output={root / 'slurm' / (name.replace('/', '-') + '-%j.out')}",
@@ -71,11 +71,14 @@ def sbatch_command(name, parents, ids, root, code_root, resources):
     partition = resources.get("finalize_partition") if name == "finalize" else resources.get("partition")
     if partition:
         args.append(f"--partition={partition}")
-    if name != "finalize":
-        args.append(f"--gres={resources['gres']}")
-    if name == "prepare":
+    gres = resources.get("finalize_gres") if name == "finalize" else resources["gres"]
+    if gres:
+        args.append(f"--gres={gres}")
+    if name == "prepare" and not test_only:
         args.append("--hold")
-    if parents:
+    if test_only:
+        args.append("--test-only")
+    if parents and not test_only:
         kind = "afterany" if name == "finalize" else "afterok"
         args += [f"--dependency={kind}:" + ":".join(ids[p] for p in parents), "--kill-on-invalid-dep=yes"]
     command = [sys.executable, str(code_root / "thesis_testing_tools/run_slurm.py"), "worker",
@@ -84,7 +87,7 @@ def sbatch_command(name, parents, ids, root, code_root, resources):
     return args
 
 
-def submit(run, counts, resources, *, dry_run=False, runner=subprocess.run):
+def submit(run, counts, resources, *, dry_run=False, test_only=False, runner=subprocess.run):
     root = run.seed_dir
     graph = job_graph()
     code_root = root / "slurm/code"
@@ -92,13 +95,26 @@ def submit(run, counts, resources, *, dry_run=False, runner=subprocess.run):
     preview = []
     for name, parents in graph.items():
         preview.append({"stage": name, "depends_on": parents,
-                        "command": sbatch_command(name, parents, ids, root, code_root, resources)})
+                        "command": sbatch_command(name, parents, ids, root, code_root, resources, test_only)})
         ids[name] = f"JOB_{len(ids) + 1}"
     if dry_run:
         print(json.dumps({"run_dir": str(root), "source_selection": run.metadata["source_episode_order"],
                           "habitat_selection": run.habitat_ids, "source_counts": counts,
                           "checkpoint": str(run.initial_checkpoint), "seed": run.seed,
                           "schedule_producer": "c0_frozen/habitat", "jobs": preview}, indent=2))
+        return
+    if test_only:
+        results = []
+        for job in preview:
+            print(f"Checking {job['stage']}", file=sys.stderr, flush=True)
+            result = runner(job["command"], check=False, capture_output=True, text=True)
+            results.append({**job, "returncode": result.returncode,
+                            "stdout": result.stdout, "stderr": result.stderr})
+        accepted = all(job["returncode"] == 0 for job in results)
+        print(json.dumps({"mode": "test-only", "status": "accepted" if accepted else "rejected",
+                          "jobs": results}, indent=2))
+        if not accepted:
+            raise SystemExit(1)
         return
     (root / "slurm").mkdir(parents=True, exist_ok=False)
     code_root = snapshot_code(root)
@@ -118,7 +134,7 @@ def submit(run, counts, resources, *, dry_run=False, runner=subprocess.run):
     ids = {}
     try:
         for name, parents in graph.items():
-            command = sbatch_command(name, parents, ids, root, code_root, resources)
+            command = sbatch_command(name, parents, ids, root, code_root, resources, test_only)
             result = runner(command, check=True, capture_output=True, text=True)
             job_id = result.stdout.strip().split(";", 1)[0]
             if not job_id.isdecimal():
@@ -311,11 +327,14 @@ def main(argv=None):
     launch.add_argument("--finalize-partition")
     launch.add_argument("--account")
     launch.add_argument("--gres", default="gpu:1")
+    launch.add_argument("--finalize-gres", help="Optional finalizer resources, e.g. gpu:1 for GPU-only accounts")
     launch.add_argument("--cpus", type=int, default=4)
     launch.add_argument("--memory", default="32G")
     launch.add_argument("--time", default="12:00:00")
     launch.add_argument("--finalize-time", default="02:00:00")
     launch.add_argument("--dry-run", action="store_true")
+    launch.add_argument("--test-only", action="store_true",
+                        help="Validate each resource request with sbatch without submitting jobs; emit JSON results")
     worker = sub.add_parser("worker")
     worker.add_argument("--run-dir", type=Path, required=True)
     worker.add_argument("--stage", choices=list(job_graph()), required=True)
@@ -339,9 +358,9 @@ def main(argv=None):
     if not args.output_root.resolve().is_relative_to(REPO_ROOT):
         parser.error("output-root must be inside the repository for the Habitat action generator")
     run = pipeline.resolve_seed_run(**pipeline.experiment_arguments(args))
-    resources = {key: getattr(args, key) for key in ("partition", "finalize_partition", "account", "gres", "cpus", "memory", "time", "finalize_time")}
+    resources = {key: getattr(args, key) for key in ("partition", "finalize_partition", "account", "gres", "finalize_gres", "cpus", "memory", "time", "finalize_time")}
     resources["repository_root"] = str(REPO_ROOT)
-    submit(run, run.source_episode_counts, resources, dry_run=args.dry_run)
+    submit(run, run.source_episode_counts, resources, dry_run=args.dry_run, test_only=args.test_only)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ class SlurmTests(unittest.TestCase):
                 self.assertEqual(selected.metadata['source_episode_order'][first], ['a', 'b', 'c'])
                 slurm.main(args + ['--debug-source-episodes', '1', '--debug-habitat-episodes', '10'])
                 self.assertEqual(set(submit.call_args.args[1].values()), {1})
+                slurm.main(args + ['--finalize-gres', 'gpu:1'])
+                self.assertEqual(submit.call_args.args[2]['finalize_gres'], 'gpu:1')
 
     def fixture(self, root):
         manifest = root / 'manifest.json'
@@ -63,6 +65,49 @@ class SlurmTests(unittest.TestCase):
             self.assertFalse(any(v.startswith('--gres') for v in final))
             self.assertIn('--no-requeue', final)
             self.assertIn('--kill-on-invalid-dep=yes', final)
+            resources['finalize_gres'] = 'gpu:1'
+            final = slurm.sbatch_command('finalize', graph['finalize'], ids, run.seed_dir, Path(temp), resources)
+            self.assertIn('--gres=gpu:1', final)
+
+    def test_scheduler_validation_reports_all_jobs_without_submission_files(self):
+        for rejected in (False, True):
+            with self.subTest(rejected=rejected), tempfile.TemporaryDirectory() as temp:
+                run, resources = self.fixture(Path(temp))
+                resources['finalize_gres'] = 'gpu:1'
+                calls = []
+                def validate(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(command[0], 'sbatch')
+                    self.assertIn('--test-only', command)
+                    self.assertNotIn('--hold', command)
+                    self.assertNotIn('--kill-on-invalid-dep=yes', command)
+                    self.assertFalse(any(arg.startswith('--dependency=') for arg in command))
+                    fail = rejected and len(calls) == 2
+                    return types.SimpleNamespace(returncode=int(fail), stdout='',
+                        stderr='allocation denied' if fail else 'Job would start')
+                with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                    if rejected:
+                        with self.assertRaises(SystemExit) as error:
+                            slurm.submit(run, {}, resources, test_only=True, runner=validate)
+                        self.assertEqual(error.exception.code, 1)
+                    else:
+                        slurm.submit(run, {}, resources, test_only=True, runner=validate)
+                report = json.loads(output.getvalue())
+                self.assertEqual(report['status'], 'rejected' if rejected else 'accepted')
+                self.assertEqual(len(calls), 14)
+                self.assertIn('--gres=gpu:1', calls[-1])
+                self.assertEqual(report['jobs'][1]['stderr'], 'allocation denied' if rejected else 'Job would start')
+                self.assertFalse(run.seed_dir.exists())
+
+    def test_combined_dry_run_test_only_does_not_contact_scheduler(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run, resources = self.fixture(Path(temp))
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                slurm.submit(run, {}, resources, dry_run=True, test_only=True,
+                    runner=lambda *a, **k: self.fail('dry run contacted scheduler'))
+            commands = [job['command'] for job in json.loads(output.getvalue())['jobs']]
+            self.assertTrue(all('--test-only' in command for command in commands))
+            self.assertFalse(run.seed_dir.exists())
 
     def test_dry_run_and_partial_submission(self):
         with tempfile.TemporaryDirectory() as temp:

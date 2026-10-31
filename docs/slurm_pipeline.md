@@ -18,7 +18,24 @@ bash thesis_testing_tools/run_slurm.sh --dry-run
 ```
 
 Dry-run reads inputs without creating files, submitting jobs, or loading the
-model or simulator. Set resource options for your cluster, for example:
+model or simulator.
+
+Use `--test-only` to contact Slurm and validate every job's resource request
+without submitting jobs or creating run files. It omits holds and dependencies
+because no real job IDs exist. Progress goes to stderr; stdout is a JSON report
+with overall `status` (`accepted` or `rejected`) and each stage's command,
+return code, stdout, and stderr. All stages are checked even if one is rejected;
+any rejection exits with code 1. For example:
+
+```bash
+bash thesis_testing_tools/run_slurm.sh --test-only > scheduler-check.json
+```
+
+This checks current scheduler acceptance, not model/data execution, dependency
+behavior, or guaranteed acceptance at a later submission. Combining `--dry-run`
+and `--test-only` only previews validation commands and does not contact Slurm.
+
+Set resource options for your cluster, for example:
 
 ```bash
 export SLURM_PARTITION=gpu
@@ -32,6 +49,10 @@ Replace the example partition/account names with your site's values. The shell
 launcher supplies `--gres gpu:1 --cpus 4 --memory 32G --time 12:00:00`;
 trailing arguments override defaults. Finalization requests no GPU and has a
 separate `--finalize-time` limit (default `02:00:00`). Use
+`--finalize-gres gpu:1` when a GPU-only allocation requires every job to
+request a GPU (including finalization). This reserves and charges for a GPU
+even though finalization does not use it. Select a GPU partition for finalization.
+Use
 `--finalize-partition` when it needs a CPU partition. Without that option,
 finalization uses the scheduler's default partition.
 
