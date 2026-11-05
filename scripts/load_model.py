@@ -19,7 +19,7 @@ def load_model(args, training_cfg, action_vocabulary: ActionTokenVocabulary):
         image_token_num = args.image_seq_length
 
         # Use MemoryBankAnoleForConditionalGeneration for prediction tasks
-        if args.use_memory_bank_inference and args.do_task_level_eval and not args.do_train:
+        if args.do_task_level_eval and not args.do_train:
             from uniwm.memory_bank import MemoryBankAnoleForConditionalGeneration
             print("Loading MemoryBankAnoleForConditionalGeneration for prediction task")
             model = MemoryBankAnoleForConditionalGeneration.from_pretrained(

@@ -13,9 +13,20 @@ not contain the full 7B-parameter base model.
 
 ## Provenance and license
 
-Model lineage: Meta Chameleon → GAIR `Anole-7b-v0.1` →
-`leloy/Anole-7b-v0.1-hf` conversion → UniWM fine-tuning. The local
+Model lineage: Meta Chameleon -> GAIR `Anole-7b-v0.1` ->
+`leloy/Anole-7b-v0.1-hf` conversion -> separate Adapt-UniWM fine-tuning using
+modified UniWM code. **This is not the original UniWM checkpoint or an adapter
+inherited from the UniWM research release.** The local
 `adapter_config.json` records the Hugging Face conversion as the base model.
+
+The [model-provenance table](../../docs/model_provenance.md) records the adapter
+hash, saved training settings, dataset counts, and modifications requested
+for the thesis provenance deliverable. The accepted training commit is
+`60d52a4cdd0b8ca81646df3b29a9c56bcf9ae35c` (29 July 2026), reconstructed from
+matching saved artifacts and Git history and accepted by the researcher.
+The current loader pins base revision
+`96df52301e844d8a624a13953051ead4c008343b`; the base revision used during offline
+training has not been established.
 
 GAIR states that Anole weights follow the Chameleon Research License. The same
 terms conservatively govern this model-derived adapter. Any release containing
@@ -31,13 +42,18 @@ allowed by the Chameleon Research License are out of scope.
 
 ## Data, evaluation, and limitations
 
-The adapter was inherited from the UniWM research release. Its complete
-fine-tuning history, duration, and energy use are not available in this fork.
+The accompanying training records identify a local four-source training run
+(Go Stanford, SACSoN, RECON, and SCAND), with this checkpoint recorded at 3,000
+steps / approximately 5.43 epochs. Saved arguments specify initial LR `8e-5`,
+seed 42, per-device batch size 1, gradient accumulation 8, and a 10-epoch plan;
+the plan must not be confused with completed training. The accepted manifest
+configures 208 training, 24 validation, and 24 test trajectories; saved evaluation
+outputs match all 24 validation trajectories (908 examples). See the provenance
+table for the requested information and supporting evidence.
 Adapt-UniWM evaluates it on the source domains and Habitat protocol documented
 in [running experiments](../../docs/running_experiments.md). Reported behavior is specific to the pinned model
 conversion, data manifests, Habitat assets, and software stack, and should not
 be interpreted as a general safety or deployment evaluation.
-
 ## Loading
 
 Follow the [repository setup](../../README.md#setup) and

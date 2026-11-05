@@ -60,8 +60,13 @@ def snapshot_code(root):
 
 
 def sbatch_command(name, parents, ids, root, code_root, resources, test_only=False):
+    if "/" in name:
+        condition, stage = name.split("/")
+        label = f"{condition.split('_')[0]}-{'post' if stage == 'source_post' else stage}"
+    else:
+        label = {"prepare": "prep", "source_pre": "c0-pre", "finalize": "final"}[name]
     args = ["sbatch", "--parsable", "--nodes=1", "--ntasks=1", "--no-requeue", "--export=ALL",
-            f"--job-name={root.name}-{name.replace('/', '-')}", f"--chdir={resources['repository_root']}",
+            f"--job-name={label}-{root.name}", f"--chdir={resources['repository_root']}",
             f"--output={root / 'slurm' / (name.replace('/', '-') + '-%j.out')}",
             f"--error={root / 'slurm' / (name.replace('/', '-') + '-%j.err')}",
             f"--cpus-per-task={resources['cpus']}", f"--mem={resources['memory']}",

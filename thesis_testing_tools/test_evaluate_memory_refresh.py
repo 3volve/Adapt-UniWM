@@ -1,12 +1,15 @@
 """CPU tests of the standalone evaluator; no claim of real-model validation."""
 import random
+from dataclasses import dataclass
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-from thesis_testing_tools.evaluate_memory_refresh import compare_memory, next_forced_action, sampling_steps, summarize
+from thesis_testing_tools.evaluate_memory_refresh import compare_memory, next_forced_action, sampling_steps, summarize, repeat_transition, write_report
 
 
 class FakeEngine:
@@ -49,6 +52,74 @@ class FakeEngine:
 
 
 class EvaluationTest(unittest.TestCase):
+    def test_repeated_transition_is_paired_and_observed_only_once_after_all_draws(self):
+        from PIL import Image
+
+        @dataclass
+        class Bundle:
+            action_text: str = "fixed"
+            prediction_seed: int = 0
+            current_observation: object = None
+
+        engine = FakeEngine()
+        engine.history_inputs = [{"version": i} for i in range(19)]
+        engine.weight_version = 19
+        current = Bundle(current_observation=Image.new("RGB", (2, 2)))
+        seen = []
+        original_predict = engine._predict_step
+
+        def predict(bundle):
+            seen.append(bundle.prediction_seed)
+            return original_predict(bundle)
+
+        def observe():
+            self.assertEqual(len(seen), 150)
+            return SimpleNamespace(current_observation=Image.new("RGB", (2, 2), "red"), collision=False)
+
+        fake_torch = SimpleNamespace(get_rng_state=lambda: 0, set_rng_state=lambda value: None,
+            cuda=SimpleNamespace(get_rng_state_all=lambda: [], set_rng_state_all=lambda value: None))
+        seed_inputs = []
+
+        def derive_seed(seed, episode, step):
+            seed_inputs.append((seed, episode, step))
+            return seed * 1000 + step
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict("sys.modules", {
+            "torch": fake_torch, "runtime_scripts.runtime_utils": SimpleNamespace(prediction_seed=derive_seed)
+        }), patch.object(engine, "_predict_step", side_effect=predict), patch("builtins.print"):
+            from unittest.mock import Mock
+            observer = Mock(side_effect=observe)
+            rows = repeat_transition(engine, current, episode_id="827", step=19, count=50,
+                                     seed=100, output=Path(directory), observe=observer)
+            observer.assert_called_once()
+            self.assertEqual(seed_inputs, [(100 + i, "827", 19) for i in range(50)])
+            self.assertEqual(len(set(seen)), 50)
+            self.assertTrue(all(len(set(seen[i:i+3])) == 1 for i in range(0, 150, 3)))
+            self.assertEqual({r["weight_version"] for r in rows}, {19})
+            self.assertTrue(all(r["history_update_ages"] == list(range(19, 0, -1)) for r in rows))
+            targets = [p.read_bytes() for p in Path(directory).glob("context_*/target.png")]
+            self.assertEqual(len(targets), 50)
+            self.assertEqual(len(set(targets)), 1)
+            for row in rows:
+                for condition in row["conditions"].values():
+                    condition["scores"] = None
+            summary = write_report(Path(directory), rows, ["mae"], 50, {"probe_step": 19})
+            self.assertEqual(summary["unique_transitions"], 1)
+            self.assertEqual(summary["evaluated_contexts"], 50)
+            self.assertIn("prediction_seed", (Path(directory) / "scores.csv").read_text())
+        self.assertEqual(engine.attention.global_stored_keys, [1, 2])
+        self.assertEqual(engine.prior_actions, ["previous"])
+        self.assertEqual(engine.weight_version, 19)
+
+    def test_repeat_rejects_insufficient_history_before_predicting(self):
+        engine = FakeEngine()
+        engine.history_inputs = [{}] * 9
+        with patch.dict("sys.modules", {"runtime_scripts.runtime_utils": SimpleNamespace(prediction_seed=None)}):
+            with self.assertRaisesRegex(ValueError, "only 9 stored memories"):
+                repeat_transition(engine, None, episode_id="827", step=19, count=50,
+                                  seed=100, output=None, observe=None)
+        self.assertEqual(engine.observed, [])
+
     def check_isolation(self, fail):
         engine = FakeEngine(fail)
         fake_torch = SimpleNamespace(get_rng_state=lambda: 0, set_rng_state=lambda value: None,

@@ -1,8 +1,7 @@
 """Standalone memory-staleness evaluation.
 
 Example (run in the normal UniWM GPU environment):
-  python -m thesis_testing_tools.evaluate_memory_refresh --config cfg/memory_refresh_development.yaml \
-      --output output/memory_refresh --contexts 50
+  python -m thesis_testing_tools.evaluate_memory_refresh --config cfg/memory_refresh_development.yaml --output output/memory_refresh --contexts 50
 
 Uses the config's Habitat/replay source, initial checkpoint and base learning rate.
 Missing Habitat action sequences are generated automatically for configured
@@ -15,12 +14,16 @@ action. Predictions are generated BEFORE observing or training on that target;
 saved predictions are scored after the inference run finishes.
 
 Outputs report.html, scores.csv, summary.json and per-context images/metadata.
+With --probe-step 19, --contexts counts paired generation seeds at one frozen
+transition in the first configured episode, after 19 real history transitions.
+Each invocation creates a unique run_<UTC timestamp>_<UUID> directory under --output.
 No changes to the normal runner, checkpoint files or memory implementation.
 """
 from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import datetime, timezone
 import csv
 import html
 import importlib
@@ -28,8 +31,9 @@ import json
 from pathlib import Path
 import random
 import shutil
-from statistics import mean
+from statistics import mean, median
 import sys
+from uuid import uuid4
 
 # Support direct execution as well as `python -m thesis_testing_tools...`.
 if __package__ in (None, ""):
@@ -172,6 +176,39 @@ def sampling_steps(max_steps, warmup, count):
     return [warmup + round(i * (available - 1) / (count - 1)) for i in range(count)]
 
 
+def repeat_transition(engine, current, *, episode_id, step, count, seed, output, observe):
+    """Sample fixed weights/history; observe the target once, after every prediction."""
+    from runtime_scripts.runtime_utils import prediction_seed
+
+    if len(engine.history_inputs) < 10:
+        raise ValueError(f"Probe step {step}: only {len(engine.history_inputs)} stored memories; "
+                         "need at least 10. Choose a later step or a different episode.")
+    rows = []
+    for repeat in range(count):
+        # Vary only the generation seed, not initialization, history, or training.
+        trial = replace(current, prediction_seed=prediction_seed(seed + repeat, episode_id, step))
+        predictions, conditions = compare_memory(engine, trial)
+        folder = output / f"context_{repeat:03d}"
+        folder.mkdir()
+        current.current_observation.save(folder / "input.png")
+        for mode, prediction in predictions.items():
+            if prediction.visualization is not None:
+                prediction.visualization.save(folder / f"{mode}.png")
+        rows.append({"context": repeat, "episode_id": episode_id, "step": step,
+                     "repeat_index": repeat, "prediction_seed": trial.prediction_seed,
+                     "weight_version": engine.weight_version,
+                     "history_update_ages": [engine.weight_version - r["version"] for r in engine.history_inputs],
+                     "action": current.action_text, "conditions": conditions})
+        print(f"[MEMORY COMPARISON] seed {repeat + 1}/{count}: {trial.prediction_seed}", flush=True)
+    observed = observe()
+    for row in rows:
+        folder = output / f"context_{row['context']:03d}"
+        observed.current_observation.save(folder / "target.png")
+        row["collision"] = observed.collision
+        (folder / "context.json").write_text(json.dumps(row, indent=2) + "\n", encoding="utf-8")
+    return rows
+
+
 def prepare_habitat_actions(config, config_path, output, seed):
     """Reuse compatible files and generate only missing configured episodes."""
     source = config["runner"]
@@ -233,6 +270,9 @@ def summarize(rows, metrics):
             episode_means = {ep: mean(d for e, d in pairs if e == ep) for ep, _ in pairs}
             comparisons[metric] = {"paired_contexts": len(pairs),
                 "mean_delta": mean(d for _, d in pairs) if pairs else None,
+                "median_delta": median(d for _, d in pairs) if pairs else None,
+                "left_better_count": sum(d > 0 if metric == "ssim" else d < 0 for _, d in pairs),
+                "tie_count": sum(d == 0 for _, d in pairs),
                 "episode_mean_deltas": episode_means,
                 "equal_episode_mean_delta": mean(episode_means.values()) if episode_means else None}
         paired[f"{left}_minus_{right}"] = comparisons
@@ -245,23 +285,27 @@ def write_report(output, rows, metrics, requested, provenance):
         "missing_predictions": {mode: sum(r["conditions"][mode]["scores"] is None for r in rows)
                                 for mode in ("bypass", "cached", "refreshed")},
         "paired": summarize(rows, metrics), "provenance": provenance,
-        "interpretation": "Negative refreshed-minus-cached MAE/LPIPS, or positive SSIM, favors refreshed history. Inspect images and episode variation. A null result is not proof of no staleness effect."}
+        "unique_transitions": len({(r["episode_id"], r["step"]) for r in rows}),
+        "interpretation": "Negative refreshed-minus-cached MAE/LPIPS, or positive SSIM, favors refreshed history. Repeated seeds measure generation variability at one fixed transition, not generalization across contexts. A null result is not proof of no staleness effect."}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     with (output / "scores.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["context", "episode_id", "step", "weight_version", "condition", "available", *metrics])
+        writer = csv.DictWriter(handle, fieldnames=["context", "episode_id", "step", "weight_version", "repeat_index", "prediction_seed", "condition", "available", *metrics])
         writer.writeheader()
         for r in rows:
             for mode, condition in r["conditions"].items():
                 writer.writerow({k: r[k] for k in ("context", "episode_id", "step", "weight_version")} |
+                    {k: r.get(k) for k in ("repeat_index", "prediction_seed")} |
                     {"condition": mode, "available": condition["scores"] is not None} | (condition["scores"] or {}))
     body = ["<!doctype html><meta charset='utf-8'><title>Memory refresh comparison</title>",
         "<style>body{font:16px system-ui;margin:24px}table{border-collapse:collapse}td,th{padding:8px;vertical-align:top}img{width:180px}pre{white-space:pre-wrap}section{margin:30px 0}</style>",
         "<h1>Memory refresh comparison</h1>",
-        f"<p>{len(rows)} / {requested} contexts. Fixed-LR, one-step adaptation. Same current weights and action across conditions.</p>",
+        f"<p>{len(rows)} / {requested} comparisons; {summary['unique_transitions']} unique transitions. Fixed-LR, one-step adaptation. Same current weights and action across conditions.</p>",
+        "<p>Repeated-seed probes hold history and weights fixed across all draws. They measure generation variability, not independent scene coverage.</p>",
         "<p>Cached history was encoded before intervening updates; refreshed history was re-encoded afterward. Bypass disables memory injection. Lower MAE/LPIPS and higher SSIM are better. Contexts within episodes are correlated.</p>",
         "<pre>" + html.escape(json.dumps(summary["paired"], indent=2)) + "</pre>"]
     for r in rows:
         body.append(f"<section><h2>Context {r['context']} — episode {html.escape(str(r['episode_id']))}, step {r['step']}</h2>")
+        body.append(f"<p>Prediction seed: {r.get('prediction_seed', 'not recorded')}; repeat: {r.get('repeat_index', 'not a repeated probe')}</p>")
         body.append(f"<p>Weight version {r['weight_version']}; memory update ages: {r['history_update_ages']}</p><table><tr>")
         for name in ("input", "target", "bypass", "cached", "refreshed"):
             body.append(f"<th>{name}</th>")
@@ -294,6 +338,14 @@ def run(args):
         raise ValueError("Use a Habitat or replay source config")
     if source["source_type"] == "habitat" and not source["adapter_params"].get("fixed_action_files_dir"):
         raise ValueError("Set runner.adapter_params.fixed_action_files_dir to the development action sequences")
+    if args.probe_step is not None:
+        if not 10 <= args.probe_step < source["max_episode_steps"]:
+            raise ValueError("--probe-step must be at least 10 and below runner.max_episode_steps")
+        if not config["engine"]["generation"]["visualization"].get("do_sample", False):
+            raise ValueError("Repeated-seed probes require engine.generation.visualization.do_sample=true")
+        source["max_total_episodes"] = 1
+        if source["source_type"] == "habitat":
+            source["adapter_params"]["episode_ids"] = source["adapter_params"]["episode_ids"][:1]
     args.output.mkdir(parents=True, exist_ok=False)
     shutil.copyfile(args.config, args.output / "config.yaml")
     action_setup = prepare_habitat_actions(config, args.config, args.output, args.seed)
@@ -304,10 +356,9 @@ def run(args):
     rows = []
     with EventLogger(args.output / "events.jsonl") as log:
         engine = make_engine_class(UniWMEngine)(source["source_type"], str(args.config), event_logger=log)
-        if args.learning_rate is not None:
-            engine.config["training"]["hyper_params"]["initial_lr"] = args.learning_rate
-        if engine.config["training"]["hyper_params"]["initial_lr"] <= 0:
-            raise ValueError("Use a positive learning rate to test memories across weight updates")
+        hyper_params = engine.config["training"]["hyper_params"]
+        learning_rate = float(args.learning_rate if args.learning_rate is not None else hyper_params["initial_lr"])
+        hyper_params["initial_lr"] = learning_rate
         module = importlib.import_module("source_tools." + source["source_file_name"])
         params = source["adapter_params"].copy()
         if "bin_step" in params:
@@ -339,6 +390,17 @@ def run(args):
                     eligible = (use_memory and bool(engine.history_inputs) and sampled < len(sample_after)
                                 and step >= sample_after[sampled])
                     eligible = eligible and any(r["version"] < engine.weight_version for r in engine.history_inputs)
+                    if args.probe_step is not None:
+                        if step == args.probe_step:
+                            converted = formatter.convert_action(action)
+                            if not converted:
+                                raise ValueError(f"Source action produced no executable primitives: {action}")
+                            rows = repeat_transition(engine, current, episode_id=episode_id, step=step, count=args.contexts,
+                                seed=args.seed, output=args.output,
+                                observe=lambda: formatter.convert_from_source(adapter.step(converted)))
+                            # Do not train on the probe target or continue this trajectory.
+                            break
+                        eligible = False
                     if eligible:
                         predictions, conditions = compare_memory(engine, current)
                         training_prediction = predictions["cached"]
@@ -358,6 +420,7 @@ def run(args):
                             if prediction.visualization is not None:
                                 prediction.visualization.save(folder / f"{mode}.png")
                         row = {"context": len(rows), "episode_id": episode_id, "step": step,
+                            "prediction_seed": current.prediction_seed,
                             "weight_version": engine.weight_version,
                             "history_update_ages": [engine.weight_version - r["version"] for r in engine.history_inputs],
                             "action": action, "collision": observed.collision, "conditions": conditions}
@@ -383,6 +446,11 @@ def run(args):
             "learning_rate": engine.config["training"]["hyper_params"]["initial_lr"], "updates": engine.weight_version,
             "sampling": "Evenly spaced slots over configured episode length; deferred until memory is eligible", "per_episode_cap": args.per_episode,
             "controller": False, "horizon": 1, "action_sequences": action_setup}
+        if args.probe_step is not None:
+            provenance.update(sampling="Repeated generation seeds at one frozen transition in the first configured episode",
+                probe_step=args.probe_step, per_episode_cap=None,
+                prediction_seed_rule="prediction_seed(seed + repeat_index, episode_id, probe_step)",
+                target_used_for_training=False)
         log.feed({"evaluation": provenance})
     # Initialize metrics AFTER inference: the repository metric backend changes
     # Torch deterministic settings, which should not affect model generation.
@@ -411,9 +479,11 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True, help="New directory; never overwrite an existing run")
+    parser.add_argument("--output", type=Path, required=True, help="Output root; each invocation creates a unique run subdirectory")
     parser.add_argument("--contexts", type=int, default=50)
     parser.add_argument("--per-episode", type=int, default=5)
+    parser.add_argument("--probe-step", type=int,
+                        help="Repeat --contexts paired seeds at this zero-based step in the first episode; requires >=10 stored memories")
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--learning-rate", type=float, help="Default: engine base LR from config")
     parser.add_argument("--metrics", nargs="+", choices=("mae", "ssim", "lpips"), default=["mae", "ssim", "lpips"])
@@ -422,7 +492,10 @@ def main():
         parser.error("Use positive context/episode counts and a seed in [0, 2**32)")
     if args.learning_rate is not None and not 0 < args.learning_rate < float("inf"):
         parser.error("--learning-rate must be finite and positive")
-    args.config, args.output = args.config.resolve(), args.output.resolve()
+    run_id = f"run_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}_{uuid4().hex}"
+    args.config, args.output = args.config.resolve(), args.output.resolve() / run_id
+    print(f"[MEMORY COMPARISON] Run ID: {run_id}", flush=True)
+    print(f"[MEMORY COMPARISON] Output: {args.output}", flush=True)
     return run(args)
 
 
